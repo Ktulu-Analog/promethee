@@ -58,7 +58,6 @@ Pour activer tous les outils en une seule ligne :
     register_all()
 
 Pour activer uniquement certains modules :
-    import tools.math_tools
     import tools.python_tools
     import tools.web_tools
 
