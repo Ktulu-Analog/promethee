@@ -29,7 +29,7 @@ Pour activer uniquement certains modules :
 Prérequis pour web_tools :
     pip install requests beautifulsoup4 lxml markdownify
 
-Prérequis pour legifrance_tools (.env) :
+Prérequis pour legifrance_tools (.env) (obtenir les clés via Piste):
     LEGIFRANCE_CLIENT_ID=votre_client_id
     LEGIFRANCE_CLIENT_SECRET=votre_client_secret
 
