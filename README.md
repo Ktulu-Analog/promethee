@@ -112,6 +112,11 @@ python3 main.py
 *   **Dialogue classique** : Posez des questions de cours ou demandez de générer des exercices.
 *   **Correction de copie** : Envoyez une photo de la copie d'un élève. Le bot attendra 30 secondes pour voir si vous envoyez d'autres pages (photos suivantes) à la suite. Il analysera ensuite le lot complet.
 *   **Création de fichiers** : Demandez explicitement "Crée un script python qui trace un circuit RC". L'IA écrira le fichier sur le disque de la machine hôte et vous l'enverra en pièce jointe.
+*   **Invocation des outils spécifiques** : Pour forcer le déclenchement d'un outil externe, utilisez son mot-clé dans votre message :
+    * *"Vérifie sur **Eduscol** le programme de..."*
+    * *"Cherche sur **PubChem** la molécule de..."*
+    * *"Donne-moi la valeur **NIST** de la constante de Planck"*
+    * *"Exporte ce QCM au format **Moodle** XML"*
 
 ---
 
