@@ -22,7 +22,7 @@ set_current_family("physics_tools", "Physique (CODATA/NIST)", "🧲")
 
 @tool(
     name="get_physical_constant",
-    description="Récupère la valeur, l'unité et l'incertitude d'une constante physique fondamentale (CODATA). "
+    description="Récupère la valeur, l'unité et l'incertitude d'une constante physique fondamentale (CODATA / NIST). "
     "Recherche les constantes par mot-clé (ex: 'Planck', 'Avogadro', 'faraday', 'electron mass'). "
     "Privilégiez des mots-clés en anglais pour avoir plus de résultats (ex: 'speed of light', 'Boltzmann').",
     parameters={
