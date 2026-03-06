@@ -11,15 +11,44 @@ curriculum_tools.py — Outils de requête pour les programmes de l'Éducation N
 """
 
 import json
+import logging
+import subprocess
+from pathlib import Path
 
 from core.tools_engine import report_progress, set_current_family, tool
+from core import rag_engine
+
+_log = logging.getLogger(__name__)
 
 set_current_family("curriculum_tools", "Programmes (Eduscol)", "🎒")
+
+_GDRIVE_ID = "1pQJdpj6J5peR-1FFvHL_1j5EyTQnXKd8"
+_LOCAL_DIR = Path("data/programmes_eduscol")
+
+def _sync_and_ingest_programs():
+    _LOCAL_DIR.mkdir(parents=True, exist_ok=True)
+    
+    # Vérifier l'ingestion
+    if not rag_engine.is_available():
+        return
+
+    # list_sources retourne [{"source": "...", ...}, ...]
+    existing_sources = {s["source"] for s in rag_engine.list_sources(conversation_id="global")}
+    
+    for pdf_path in _LOCAL_DIR.glob("*.pdf"):
+        # Ignorer les fichiers vides
+        if pdf_path.stat().st_size == 0:
+            continue
+            
+        if pdf_path.name not in existing_sources:
+            report_progress(f"Vectorisation du programme local : {pdf_path.name}...")
+            rag_engine.ingest_file(str(pdf_path), conversation_id="global")
 
 
 @tool(
     name="get_curriculum_guidelines",
     description="Récupère les grandes lignes directives, le programme officiel ou les capacités exigibles d'un niveau donné en Physique-Chimie (ex: 'Terminale Spécialité', 'PCSI', 'MPSI', 'Seconde'). "
+    "Mots-clés : Eduscol, programme officiel, capacités exigibles. "
     "Très utile avant de rédiger un exercice ou un TP pour s'assurer qu'il respecte le Bulletin Officiel (B.O.) publié sur Eduscol.",
     parameters={
         "type": "object",
@@ -38,102 +67,38 @@ set_current_family("curriculum_tools", "Programmes (Eduscol)", "🎒")
 )
 def get_curriculum_guidelines(level: str, domain: str = "") -> str:
     """
-    Fournit un résumé des attentes du programme.
-    Note : Dans une version de production, cet outil devrait scrapper Eduscol ou
-    interroger une base de données PDF/RAG interne contenant les B.O. 
-    Pour l'instant, on simule une banque de donnée statique (Mock) avec les grands thèmes.
+    Fournit un résumé des attentes du programme via une base vectorielle RAG
+    synchronisée avec un Google Drive d'enseignant.
     """
     report_progress(f"Recherche des directives du programme pour le niveau '{level}'...")
     
-    # Base de données simulée. Un vrai backend RAG ferait une requête sémantique ici.
-    db = {
-        "Seconde": {
-            "Mouvement et interactions": "Principe d'inertie, modélisation d'une force, chute libre.",
-            "L'énergie": "Formes d'énergie, principe de conservation, transfert thermique.",
-            "Ondes et signaux": "Émission et perception d'un son, spectres d'émission, réfraction.",
-            "Constitution de la matière": "Corps purs, mélanges, entités chimiques, quantité de matière (mole).",
-            "Transformations chimiques": "Réactions chimiques, bilan de matière, solutions aqueuses, dilution.",
-        },
-        "Première Spécialité": {
-            "Constitution et transformations": "Mole, concentration, réactions d'oxydoréduction, combustions, dissolution.",
-            "Énergie": "Énergie cinétique, énergie potentielle, conservation de l'énergie mécanique, travail d'une force.",
-            "Ondes et signaux": "Réfraction, loi de Snell-Descartes, ondes mécaniques, signaux sonores.",
-            "Mouvement": "Vecteur vitesse, mouvement rectiligne uniforme/accéléré, lois de Newton (introduction).",
-            "Chimie organique": "Formules semi-développées, groupes caractéristiques (alcool, aldéhyde, cétone, acide carboxylique).",
-            "Structure de la matière": "Configuration électronique, tableau périodique, liaison covalente, schéma de Lewis.",
-        },
-        "Terminale Spécialité": {
-            "Acide/Base": "pH, Ka, pKa, diagramme de prédominance, titrages pH-métriques.",
-            "Cinétique": "Vitesse volumique, temps de demi-réaction, loi de vitesse d'ordre 1, catalyse.",
-            "Mécanique": "Lois de Newton, mouvement dans un champ uniforme, équations horaires.",
-            "Ondes": "Interférences, diffraction, effet Doppler.",
-            "Thermodynamique": "Premier principe de la thermodynamique, bilan enthalpique, enthalpie de réaction.",
-            "Chimie organique": "Stratégie de synthèse, rendement, catalyse, polymères.",
-            "Électricité": "Condensateur, bobine, circuit RLC, résonance.",
-        },
-        "PCSI": {
-            "Cristallographie": "Modèle du cristal parfait, systèmes cubiques, sites interstitiels.",
-            "Thermodynamique": "Premier et Second principe, machines thermiques, changements d'état.",
-            "Chimie orga": "Stéréochimie, substitution nucléophile, élimination (SN/E).",
-            "Mécanique du point": "Cinématique, dynamique en référentiel non galiléen, oscillateurs.",
-            "Optique": "Lois de Snell-Descartes, systèmes optiques centrés, lentilles, miroirs.",
-            "Chimie des solutions": "Équilibres acido-basiques, précipitation, complexation, oxydo-réduction.",
-        },
-        "MPSI": {
-            "Mécanique du point": "Cinématique, lois de Newton, théorèmes de l'énergie, oscillateurs harmoniques.",
-            "Électrocinétique": "Circuits RC/RL/RLC, régime transitoire, régime sinusoïdal forcé, résonance.",
-            "Optique géométrique": "Lois de Snell-Descartes, lentilles, instruments d'optique.",
-            "Thermodynamique": "Gaz parfaits, premier principe, second principe, machines thermiques.",
-            "Signal": "Analyse de Fourier, filtrage linéaire, fonction de transfert, diagramme de Bode.",
-            "Chimie des solutions": "Réactions acido-basiques, de précipitation, d'oxydo-réduction, diagrammes E-pH.",
-        },
-        "PC": {
-            "Thermodynamique chimique": "Potentiel chimique, affinité chimique, variance, loi d'action des masses.",
-            "Électromagnétisme": "Équations de Maxwell, ARQS, ondes électromagnétiques dans le vide et dans les plasmas.",
-            "Chimie orga": "Composés carbonylés, organomagnésiens, synthèse multi-étapes.",
-            "Mécanique des fluides": "Statique des fluides, équation d'Euler, théorème de Bernoulli.",
-            "Chimie des matériaux": "Cristallographie, diagrammes binaires, cinétique électrochimique.",
-        },
-        "MP": {
-            "Mécanique des systèmes": "Mécanique du solide, moments d'inertie, théorème du moment cinétique.",
-            "Électromagnétisme": "Équations de Maxwell, ondes EM dans le vide et les milieux, guides d'ondes.",
-            "Physique quantique": "Fonction d'onde, équation de Schrödinger, puits de potentiel, effet tunnel.",
-            "Thermodynamique statistique": "Ensemble microcanonique, distribution de Boltzmann, gaz parfait quantique.",
-            "Optique ondulatoire": "Diffraction de Fraunhofer, interférences, réseaux, interféromètre de Michelson.",
-        },
-    }
+    _sync_and_ingest_programs()
     
-    # Recherche approximative du niveau
-    level_lower = level.lower()
-    matched_level = None
-    for k in db.keys():
-        if k.lower() in level_lower or level_lower in k.lower():
-            matched_level = k
-            break
-            
-    if not matched_level:
+    if not rag_engine.is_available():
         return json.dumps({
-            "error": "Niveau non trouvé dans la base restreinte actuelle. Essayez Seconde, Terminale Spécialité, PCSI ou PC.",
-            "available_levels": list(db.keys())
+            "error": "Le moteur RAG (Qdrant) n'est pas disponible. Impossible de lire les B.O."
         }, ensure_ascii=False)
         
-    guidelines = db[matched_level]
-    
+    query = f"Programme officiel {level}"
     if domain:
-        # Filtrer par domaine si précisé
-        domain_lower = domain.lower()
-        filtered = {k: v for k, v in guidelines.items() if domain_lower in k.lower()}
-        if filtered:
-             return json.dumps({
-                "level": matched_level,
-                "domain_requested": domain,
-                "guidelines": filtered,
-                "note": "Recommandation : structurez l'exercice en utilisant UNIQUEMENT les notions ci-dessus."
-             }, ensure_ascii=False, indent=2)
-             
-    # Retourner tout le programme du niveau
+        query += f" capacités exigibles limites attendues pour : {domain}"
+        
+    hits = rag_engine.search(query, top_k=7, conversation_id="global")
+    
+    if not hits:
+        return json.dumps({
+            "error": f"Aucun document trouvé pour le niveau {level} dans le domaine {domain}. Le PDF correspondant a-t-il été déposé sur le Google Drive ?",
+            "note_stricte": "INTERDICTION ABSOLUE d'aborder des notions de niveau supérieur (pas d'entropie ni de second principe au lycée, etc.). Restreignez-vous aux fondamentaux."
+        }, ensure_ascii=False, indent=2)
+        
+    extracted_texts = []
+    for h in hits:
+        extracted_texts.append(f"Source: {h['source']} (Score: {h['score']:.2f})\nExtrait:\n{h['text']}\n")
+        
     return json.dumps({
-        "level": matched_level,
-        "full_curriculum_summary": guidelines,
-        "note": "Recommandation : vérifiez que les concepts de votre réponse ne dépassent pas ce cadre exigible."
+        "level_requested": level,
+        "domain_requested": domain,
+        "official_guidelines_excerpts": extracted_texts,
+        "strict_instruction": "N'utilisez QUE les notions évoquées dans ces extraits officiels du B.O. Ne mentionnez AUCUN concept de niveau supérieur ou universitaire non présent explicitement ici."
     }, ensure_ascii=False, indent=2)
+
