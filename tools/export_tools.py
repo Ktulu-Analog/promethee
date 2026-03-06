@@ -1347,3 +1347,184 @@ def export_libreoffice_native(target_format: str, document: dict,
         return _ok(final_dest, {"intermediate_format": intermediate_format})
     except Exception as e:
         return _err(f"export_libreoffice_native : {e}")
+
+# ═════════════════════════════════════════════════════════════════════════════
+# LATEX / COMPILATION PDF
+# ═════════════════════════════════════════════════════════════════════════════
+
+@tool(
+    name="export_latex",
+    description=(
+        r"Génère un fichier LaTeX (.tex) complet à partir du contenu brut fourni. "
+        r"Très utile pour écrire des sujets de DS de Physique-Chimie, avec le support "
+        r"de packages scientifiques : amsmath, siunitx, mhchem, chemfig, tikz. "
+        r"Le contenu doit comporter un préambule (\documentclass{article}) et la structure "
+        r"document (\begin{document} ... \end{document})."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "latex_content": {
+                "type": "string",
+                "description": "Code source LaTeX valide et complet."
+            },
+            "output_path": {
+                "type": "string",
+                "description": "Chemin de destination (.tex). Si omis, créé dans ~/Exports/Prométhée/."
+            },
+            "filename": {
+                "type": "string",
+                "description": "Nom du fichier si output_path est omis (ex: ds_chimie.tex)."
+            }
+        },
+        "required": ["latex_content"]
+    }
+)
+def export_latex(latex_content: str, output_path: str = "", filename: str = "") -> str:
+    try:
+        name = filename or "sujet.tex"
+        if not name.endswith(".tex"):
+            name += ".tex"
+        p = _resolve_output(output_path, name)
+        p.write_text(latex_content, encoding="utf-8")
+        return _ok(p, {"lines": latex_content.count("\n") + 1})
+    except Exception as e:
+        return _err(f"export_latex : {e}")
+
+
+@tool(
+    name="export_pdf_latex",
+    description=(
+        "Génère un fichier PDF en compilant directement du code LaTeX via 'pdflatex' (ou 'lualatex'). "
+        "L'ordinateur (macOS/Linux) DOIT posséder une distribution TeX (TeX Live, MacTeX) installée. "
+        "La compilation est effectuée en deux passes pour résoudre les références croisées et la table des matières."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "latex_content": {
+                "type": "string",
+                "description": r"Code source LaTeX valide et complet (incluant \begin{document})."
+            },
+            "engine": {
+                "type": "string",
+                "enum": ["pdflatex", "lualatex", "xelatex"],
+                "description": "Moteur de compilation à utiliser (défaut : pdflatex)."
+            },
+            "output_path": {
+                "type": "string",
+                "description": "Chemin de destination du PDF. Si omis, créé dans ~/Exports/Prométhée/."
+            },
+            "filename": {
+                "type": "string",
+                "description": "Nom du PDF si output_path est omis (ex: corrige_physique.pdf)."
+            }
+        },
+        "required": ["latex_content"]
+    }
+)
+def export_pdf_latex(latex_content: str, engine: str = "pdflatex", output_path: str = "", filename: str = "") -> str:
+    try:
+        name = filename or "sujet_compile.pdf"
+        if not name.endswith(".pdf"):
+            name += ".pdf"
+        final_p = _resolve_output(output_path, name)
+        
+        # Check if the engine exists in PATH
+        if not shutil.which(engine):
+            return _err(f"compilateur '{engine}' introuvable sur le système. TeX Live / MacTeX est-il installé ?")
+
+        # Pré-traitement du code LaTeX pour corriger les erreurs courantes du LLM
+        latex_content = _sanitize_latex(latex_content)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            tex_file = tmp / "document.tex"
+            tex_file.write_text(latex_content, encoding="utf-8")
+            
+            # Compilation en DEUX PASSES (nécessaire pour \ref, \label, \tableofcontents, etc.)
+            cmd = [engine, "-interaction=nonstopmode", "-output-directory", str(tmp), str(tex_file)]
+            for pass_num in range(2):
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+            
+            pdf_file = tmp / "document.pdf"
+            if not pdf_file.exists():
+                # Extraire les lignes d'erreur pertinentes du log
+                log_content = result.stdout or ""
+                # Chercher les lignes d'erreur spécifiques de LaTeX
+                import re as _re
+                error_lines = _re.findall(r'^!.*$', log_content, _re.MULTILINE)
+                error_context = '\n'.join(error_lines[:5]) if error_lines else log_content[-2000:]
+                return _err(
+                    f"Erreur de compilation LaTeX (passe {pass_num + 1}).\n"
+                    f"Erreurs identifiées :\n{error_context}\n\n"
+                    f"Conseil : vérifie que le code LaTeX est complet (\\documentclass, "
+                    f"\\begin{{document}}, \\end{{document}}) et que les packages "
+                    f"utilisés sont installés. Utilise uniquement amsmath, geometry, inputenc."
+                )
+                
+            shutil.copy2(str(pdf_file), str(final_p))
+            
+        return _ok(final_p, {"engine": engine, "passes": 2})
+    except Exception as e:
+        return _err(f"export_pdf_latex : {e}")
+
+
+def _sanitize_latex(content: str) -> str:
+    """
+    Pré-traitement du code LaTeX généré par le LLM pour corriger
+    les erreurs courantes avant compilation.
+    """
+    import re as _re
+
+    # 0. Retirer les clôtures markdown ```latex ... ``` si le LLM en a ajouté
+    content = _re.sub(r'^```(?:latex|tex)?\s*\n', '', content, flags=_re.MULTILINE)
+    content = _re.sub(r'\n```\s*$', '', content, flags=_re.MULTILINE)
+
+    # 1. S'assurer qu'il y a un \documentclass
+    if r'\documentclass' not in content:
+        # Le LLM a envoyé du contenu sans preamble — on l'encapsule
+        content = (
+            r"\documentclass[12pt,a4paper]{article}" "\n"
+            r"\usepackage[utf8]{inputenc}" "\n"
+            r"\usepackage[T1]{fontenc}" "\n"
+            r"\usepackage[french]{babel}" "\n"
+            r"\usepackage{amsmath,amssymb}" "\n"
+            r"\usepackage[margin=2cm]{geometry}" "\n"
+            r"\begin{document}" "\n"
+            + content + "\n"
+            r"\end{document}" "\n"
+        )
+    else:
+        # 2. S'assurer que les packages essentiels sont chargés
+        essential_packages = {
+            'amsmath': r'\usepackage{amsmath}',
+            'amssymb': r'\usepackage{amssymb}',
+            'inputenc': r'\usepackage[utf8]{inputenc}',
+            'fontenc': r'\usepackage[T1]{fontenc}',
+        }
+        # Trouver la position juste après \documentclass[...]{...}
+        dc_match = _re.search(r'\\documentclass(\[.*?\])?\{.*?\}', content)
+        if dc_match:
+            insert_pos = dc_match.end()
+            for pkg_name, pkg_line in essential_packages.items():
+                if pkg_name not in content:
+                    content = content[:insert_pos] + "\n" + pkg_line + content[insert_pos:]
+                    insert_pos += len(pkg_line) + 1
+
+    # 3. Corriger les tirets d'environnement markdown (---) qui ne sont pas du LaTeX
+    content = _re.sub(r'^---+\s*$', r'\\medskip\\hrule\\medskip', content, flags=_re.MULTILINE)
+
+    # 4. Corriger le Markdown bold **texte** → \textbf{texte}
+    content = _re.sub(r'\*\*(.+?)\*\*', r'\\textbf{\1}', content)
+
+    # 5. Corriger le Markdown italic *texte* → \textit{texte} (attention aux listes)
+    content = _re.sub(r'(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)', r'\\textit{\1}', content)
+
+    # 6. Corriger les # Markdown → \section, ## → \subsection
+    content = _re.sub(r'^### (.+)$', r'\\subsubsection*{\1}', content, flags=_re.MULTILINE)
+    content = _re.sub(r'^## (.+)$', r'\\subsection*{\1}', content, flags=_re.MULTILINE)
+    content = _re.sub(r'^# (.+)$', r'\\section*{\1}', content, flags=_re.MULTILINE)
+
+    return content
+

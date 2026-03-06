@@ -65,7 +65,7 @@ def _init_embedder():
         # Mode local : utiliser sentence-transformers
         try:
             from sentence_transformers import SentenceTransformer
-            _embedder = SentenceTransformer(Config.EMBEDDING_MODEL)
+            _embedder = SentenceTransformer(Config.EMBEDDING_MODEL, device='cpu')
             _embedder_type = "local"
             EMBED_OK = True
             _log.info(f"[RAG] Embeddings local initialisé : {Config.EMBEDDING_MODEL}")
@@ -110,16 +110,27 @@ _init_embedder()
 
 
 def _client() -> "QdrantClient":
-    """Retourne le singleton QdrantClient, en le créant (ou recréant) si nécessaire.
-
-    La connexion est réutilisée entre tous les appels RAG au sein du même
-    processus. Si l'URL de configuration change (rare, mais possible lors
-    d'un rechargement de .env à chaud), le client est recréé automatiquement.
-    """
+    """Retourne le singleton QdrantClient, en le créant (ou recréant) si nécessaire."""
     global _qdrant_client, _qdrant_url
     current_url = Config.QDRANT_URL
+    
+    # Si on est déjà tombé en fallback local pendant cette session, on garde "local"
+    if _qdrant_url == "local":
+        current_url = "local"
+        
     if _qdrant_client is None or _qdrant_url != current_url:
-        _qdrant_client = QdrantClient(url=current_url)
+        if not current_url or current_url.lower() == "local":
+            _qdrant_client = QdrantClient(path="data/qdrant_local")
+            current_url = "local"
+        else:
+            try:
+                _qdrant_client = QdrantClient(url=current_url)
+                _qdrant_client.get_collections() # Test de connexion
+            except Exception as e:
+                _log.warning(f"[RAG] Serveur Qdrant inaccessible à {current_url} ({e}). Fallback local.")
+                _qdrant_client = QdrantClient(path="data/qdrant_local")
+                current_url = "local"
+                
         _qdrant_url = current_url
         _log.info(f"[RAG] QdrantClient initialisé → {current_url}")
     return _qdrant_client

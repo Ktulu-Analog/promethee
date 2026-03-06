@@ -53,6 +53,7 @@ _TOOL_ICONS.update({
     "ocr_pdf":        "📄",
     "ocr_pdf_detect": "🔬",
     "ocr_languages":  "🌐",
+    "ocr_vision_openrouter": "👁️",
 })
 
 # ── Constantes ────────────────────────────────────────────────────────────────
@@ -531,3 +532,154 @@ def ocr_languages() -> dict:
 
     except Exception as e:
         return {"status": "error", "error": f"Erreur listage langues : {e}"}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# VISION MULTIMODALE (OPENROUTER / CLAUDE 3.5 SONNET)
+# ══════════════════════════════════════════════════════════════════════════════
+
+import base64
+import os
+import requests
+
+# Prompt système scientifique injecté automatiquement avant le prompt utilisateur
+_SCIENTIFIC_SYSTEM_PROMPT = (
+    "Analyse cette copie de physique-chimie. "
+    "Transcris fidèlement tout le texte, les formules, les équations de réaction et les calculs "
+    "en utilisant le formatage LaTeX (avec les délimiteurs $ et $$). "
+    "Décris de manière exhaustive les schémas présents : "
+    "topologie des circuits électriques (vérifie le respect de la convention récepteur/générateur "
+    "européenne avec des flèches de tension et d'intensité parfaitement droites), "
+    "allures des courbes de titrage (points d'équivalence, sauts de pH), "
+    "mécanismes réactionnels (flèches courbes) et tracés de vecteurs (forces, vitesses). "
+    "Ne juge pas encore, fournis uniquement une retranscription textuelle et géométrique absolue."
+)
+
+@tool(
+    name="ocr_vision_openrouter",
+    description=(
+        "Extrait le texte, analyse les schémas et évalue les copies manuscrites "
+        "via un modèle Vision scientifique sur OpenRouter "
+        "(par défaut qwen/qwen3-vl-235b-a22b-thinking, 235B paramètres, spécialisé STEM). "
+        "À utiliser en relais de ocr_image quand l'intelligence est requise : "
+        "copie d'élève raturée, montage expérimental dessiné, circuits électriques, "
+        "courbes de titrage, formules de Lewis, vecteurs. "
+        "Attention : ce modèle est payant (API OpenRouter), utilisez-le de façon ciblée."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "chemin": {
+                "type": "string",
+                "description": "Chemin absolu vers l'image à analyser (png, jpg, webp, etc.)."
+            },
+            "prompt": {
+                "type": "string",
+                "description": (
+                    "Instructions spécifiques pour le modèle vision (en plus du prompt scientifique injecté). "
+                    "Exemples : 'Transcris cette copie d\'élève fidèlement', "
+                    "'Que représente ce schéma de TP ?', 'Évalue cette réponse en fonction du BO.'"
+                )
+            },
+            "model": {
+                "type": "string",
+                "description": "Modèle OpenRouter à utiliser (défaut: 'qwen/qwen3-vl-235b-a22b-thinking').",
+                "default": "qwen/qwen3-vl-235b-a22b-thinking"
+            }
+        },
+        "required": ["chemin", "prompt"],
+    },
+)
+def ocr_vision_openrouter(chemin: str, prompt: str, model: str = "qwen/qwen3-vl-235b-a22b-thinking") -> dict:
+    from core.tools_engine import report_progress
+    report_progress(f"Analyse vision de l'image (modèle {model})...")
+
+    # Table de correspondance MIME complète pour toutes les extensions supportées
+    _MIME_MAP = {
+        ".png": "image/png", ".webp": "image/webp",
+        ".gif": "image/gif", ".tiff": "image/tiff", ".tif": "image/tiff",
+        ".bmp": "image/bmp", ".ppm": "image/x-portable-pixmap",
+        ".pgm": "image/x-portable-graymap",
+    }
+    
+    path = Path(chemin).expanduser().resolve()
+    if not path.exists() or not path.is_file():
+        return {"status": "error", "error": f"Fichier introuvable : {chemin}"}
+
+    ext = path.suffix.lower()
+    if ext not in _IMAGE_EXTENSIONS:
+        return {"status": "error", "error": f"Format image non supporté : {ext}"}
+        
+    # Récupérer la clé API OpenRouter — PAS de fallback sur OPENAI_API_KEY (risque 401)
+    api_key = getattr(Config, "OPENROUTER_API_KEY", None) or os.getenv("OPENROUTER_API_KEY")
+
+    if not api_key:
+        return {
+            "status": "error",
+            "error": (
+                "Variable OPENROUTER_API_KEY introuvable. "
+                "Ajoutez OPENROUTER_API_KEY=sk-or-... dans votre fichier .env"
+            ),
+        }
+
+    # Encoder l'image en base 64
+    try:
+        with open(path, "rb") as image_file:
+            encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
+    except Exception as e:
+        return {"status": "error", "error": f"Erreur lecture fichier: {e}"}
+
+    # Déterminer le mime type via la table complète
+    mime_type = _MIME_MAP.get(ext, "image/jpeg")
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "HTTP-Referer": "https://github.com/Ktulu-Analog/promethee", # Required by OpenRouter
+        "X-Title": "Promethee AI Physique-Chimie",
+        "Content-Type": "application/json"
+    }
+
+    # Construire le prompt complet : prompt système scientifique + prompt utilisateur
+    full_prompt = f"{_SCIENTIFIC_SYSTEM_PROMPT}\n\n{prompt}"
+
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": full_prompt
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{mime_type};base64,{encoded_string}"
+                        }
+                    }
+                ]
+            }
+        ]
+    }
+
+    try:
+        response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=60)
+        response.raise_for_status()
+        result = response.json()
+        
+        reply = result["choices"][0]["message"]["content"]
+        
+        return {
+            "status": "success",
+            "fichier": str(path),
+            "model_used": model,
+            "texte": reply
+        }
+    except requests.exceptions.RequestException as e:
+        error_msg = str(e)
+        if hasattr(e, 'response') and e.response is not None:
+             error_msg += f" - Response: {e.response.text}"
+        return {"status": "error", "error": f"Erreur API Vision OpenRouter: {error_msg}"}
+    except Exception as e:
+        return {"status": "error", "error": f"Erreur inattendue API Vision: {e}"}
+

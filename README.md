@@ -1,165 +1,129 @@
-# 🔥 Prométhée AI
+# 🧪 Prométhée — Édition Physique-Chimie
 
-**Assistant IA desktop souverain** — Interface PyQt6 connectée à un LLM (OpenAI-compatible, Albert API ou Ollama), avec outils intégrés, RAG, et support Légifrance/Judilibre.
-
----
-
-## ✨ Fonctionnalités
-
-- 💬 **Chat en streaming** avec historique chiffré (AES-GCM)
-- 🔧 **Outils intégrés** : web, données, export (docx/pptx/pdf), analyse de données, Python, SQL, OCR, Légifrance, Judilibre, data.gouv.fr, Thunderbird
-- 📚 **RAG** (Retrieval-Augmented Generation) via Qdrant
-- 🏛️ **Légifrance & Judilibre** via API PISTE
-- 🖥️ **100% local possible** avec Ollama
-- 🔒 **Chiffrement optionnel** de la base de données SQLite
-- 🎨 **Thème clair/sombre**
+**Assistant IA spécialisé pour l'enseignement de la Physique-Chimie** — Fork du projet Prométhée adapté pour opérer via Telegram. Interagit avec les API Albert (IA souveraine) et OpenRouter (Modèles de vision pour les schémas complexes).
 
 ---
 
-## 🚀 Installation
+## ✨ Fonctionnalités clés
 
-### Prérequis
+- 💬 **Bot Telegram interactif** : Envoi de messages, correction de copies via photos, génération de scripts et de documents.
+- 📸 **Correction par lots (Batching)** : Prenez 4, 5 ou 6 photos d'une même copie, le bot les assemble après un délai de 30 secondes et génère une correction globale avec une note normalisée sur 20.
+- 👁️ **Vision Scientifique Avancée** : Intégration de Qwen3-VL-235B (via OpenRouter) pour lire de l'écriture manuscrite et analyser des circuits électriques, des forces, ou des mécanismes réactionnels.
+- 📦 **Envoi multi-formats** : Le bot peut générer et vous renvoyer sur Telegram plus de 30 types de fichiers (`.py`, `.pdf`, `.docx`, `.xlsx`, `.html`, etc.).
+- 📐 **Conversion LaTeX intégrée** : Génération de PDF esthétiques ou conversion des formules en symboles Unicode lisibles directement dans l'interface Telegram.
+- 🛠️ **Outils spécifiques intégrés** :
+  - `physics_tools` : Constantes fondamentales (NIST / CODATA)
+  - `chemistry_tools` : Base de données moléculaire (PubChem)
+  - `curriculum_tools` : Consultations des programmes officiels par RAG (déposez vos B.O. en PDF dans `data/programmes_eduscol/`). Utilise le modèle d'embeddings ultra-léger `all-MiniLM-L6-v2` pour tourner 100% sur processeur (CPU) sans surcharger la carte graphique.
+  - `lms_tools` : Export de quiz au format Moodle XML
 
-- Python **3.10+ (testé avec 3.12.8)**
-- [Tesseract OCR](https://github.com/tesseract-ocr/tesseract) *(optionnel, pour l'OCR)*
+---
 
+## 🚀 Installation & Déploiement
+
+L'application est conçue pour fonctionner de manière autonome sur un serveur ou un poste local (testé sous **Linux** et **macOS**).
+
+### 1. Prérequis Système
+
+Vous devez avoir Python 3.10 ou supérieur installé sur votre machine.
+
+**Sous Linux (Ubuntu/Debian) :**
 ```bash
-# Ubuntu/Debian
-sudo apt install tesseract-ocr tesseract-ocr-fra tesseract-ocr-eng
-
-# macOS
-brew install tesseract tesseract-lang
+sudo apt update
+sudo apt install python3 python3-venv python3-pip texlive-full
 ```
+*(Note : `texlive-full` est lourd, mais garantit que tous les packages LaTeX comme `amsmath` ou `babel` sont présents pour la génération des PDF).*
 
-### Installation des dépendances
+**Sous macOS (via Homebrew) :**
+```bash
+brew install python cmake
+brew install --cask mactex-no-gui
+```
+*(Note : Mactex est requis pour compiler les réponses de l'IA en fichiers PDF).*
+
+### 2. Cloner et préparer l'environnement
 
 ```bash
-# Cloner le dépôt
-git clone https://github.com/Ktulu-Analog/promethee.git
-cd promethee
+# Cloner ce dépôt (Fork Physique-Chimie)
+git clone https://github.com/Prof-Krapu/promethee-physiquechimie.git
+cd promethee-physiquechimie
 
-# Créer un environnement virtuel (recommandé)
-python -m venv .venv
-source .venv/bin/activate  # Linux/macOS
-# .venv\Scripts\activate   # Windows
+# Créer un environnement virtuel isolé
+python3 -m venv .venv
 
-# Installer les dépendances
+# Activer l'environnement
+# -> Sous Linux ou macOS :
+source .venv/bin/activate
+
+# Installer les dépendances Python
 pip install -r requirements.txt
 ```
 
-### Configuration
+### 3. Configuration des Clés API
+
+Le bot nécessite des accès à Telegram, à Albert (ou OpenAI compatible), et à OpenRouter pour la Vision.
 
 ```bash
-# Copier le fichier de configuration
+# Copier le modèle de configuration
 cp .env.example .env
 
-# Éditer .env avec vos paramètres
+# Éditer le fichier avec votre éditeur favori (nano, vim, VSCode...)
 nano .env
 ```
 
-Les paramètres clés à configurer dans `.env` :
+Dans ce fichier `.env`, vous devez renseigner :
+- `TELEGRAM_TOKEN` : Le jeton fourni par BotFather sur Telegram.
+- `OPENAI_API_KEY` : Votre clé API (Albert API de l'État, ou OpenAI).
+- `OPENAI_BASE_URL` : L'URL du serveur (ex: `https://albert.api.etalab.gouv.fr/v1`).
+- `OPENROUTER_API_KEY` : Clé API OpenRouter pour le modèle de vision (nécessaire pour la correction de copies).
 
-| Variable | Description |
-|---|---|
-| `OPENAI_API_KEY` | Clé API (Albert, OpenAI, etc.) |
-| `OPENAI_API_BASE` | URL du serveur LLM |
-| `OPENAI_MODEL` | Modèle à utiliser |
-| `OAUTH_CLIENT_ID` | Identifiants PISTE (Légifrance) |
-| `QDRANT_URL` | URL Qdrant pour le RAG |
+### 4. Lancement (2 Modes Disponibles)
 
-### Lancement
+L'application Physique-Chimie propose **deux interfaces indépendantes** selon vos besoins. Assurez-vous que l'environnement virtuel est toujours activé avant de lancer l'une d'elles.
 
-```bash
-python main.py
-```
+#### Option A : Lancer le Bot Telegram
 
----
-
-## 📁 Structure du projet
-
-```
-promethee/
-├── core/               # Moteur : config, BDD, LLM, RAG, mémoire, outils
-├── tools/              # Outils disponibles pour l'agent
-├── ui/                 # Interface graphique PyQt6
-│   ├── panels/         # Panneaux : chat, RAG, monitoring
-│   ├── widgets/        # Composants réutilisables
-│   └── dialogs/        # Boîtes de dialogue
-├── skills/             # Guides de compétences injectés en contexte
-├── assets/             # Logo, KaTeX
-├── tests/              # Tests unitaires (pytest)
-├── main.py             # Point d'entrée
-├── prompts.yml         # Prompts système
-├── pyproject.toml      # Métadonnées du projet
-├── requirements.txt    # Dépendances Python
-└── .env.example        # Modèle de configuration
-```
-
----
-
-## 🛠️ Outils disponibles
-
-| Outil | Description |
-|---|---|
-| `web_tools` | Navigation et scraping web |
-| `web_search_tools` | Recherche DuckDuckGo / SearXNG |
-| `export_tools` | Génération docx, pptx, pdf, xlsx |
-| `data_tools` | Manipulation de données |
-| `sql_tools` | Requêtes SQL (SQLite, PostgreSQL, MySQL) |
-| `ocr_tools` | OCR via Tesseract |
-| `legifrance_tools` | API Légifrance (PISTE) |
-| `judilibre_tools` | API Judilibre (PISTE) |
-| `datagouv_tools` | API data.gouv.fr (MCP) |
-| `python_tools` | Exécution de code Python sandboxé |
-| `system_tools` | Opérations système (fichiers, dossiers) |
-| `thunderbird_tools` | Lecture des e-mails Thunderbird |
-
----
-
-## 🧪 Tests
+C'est l'interface principale de ce fork, idéale pour une utilisation mobile et l'envoi de photos de copies.
 
 ```bash
-pytest tests/
-# Avec couverture :
-pytest tests/ --cov=core --cov=tools
+python3 main_telegram.py
+```
+*Le terminal affichera `Application started`. Le bot est maintenant à l'écoute de vos messages sur Telegram !*
+
+#### Option B : Lancer l'Interface Scientifique Native (Windows, macOS, Linux)
+
+L'interface graphique d'origine (PyQt6) est toujours disponible et intègre toutes les améliorations Physique-Chimie (outils, génération de PDF, rendu LaTeX via KaTeX). Elle est idéale pour une utilisation sur grand écran ou avec le RAG local.
+
+Avant le tout premier lancement sous **Linux (Ubuntu/Debian)**, assurez-vous d'avoir les bibliothèques graphiques requises par Qt6 :
+```bash
+sudo apt install libxcb-cursor0 libgl1
+```
+*(Aucune action système n'est requise sous macOS).*
+
+Puis, lancez l'application :
+```bash
+python3 main.py
 ```
 
 ---
 
-## ⚙️ Options avancées
+## 🛠️ Utilisation courante sur Telegram
 
-### Utilisation avec Ollama (100% local)
-
-Dans `.env` :
-```env
-LOCAL=ON
-OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=nemotron-3-nano:latest
-```
-
-### Chiffrement de la base de données
-
-Dans `.env` :
-```env
-DB_ENCRYPTION=ON
-```
-Au premier lancement, une passphrase vous sera demandée.
-
-### RAG avec Qdrant
-
-1. Lancer Qdrant : `docker run -p 6333:6333 qdrant/qdrant`
-2. Dans `.env` : `QDRANT_URL=http://localhost:6333`
-3. Utiliser le panneau RAG dans l'interface pour ingérer des documents
+*   **Dialogue classique** : Posez des questions de cours ou demandez de générer des exercices.
+*   **Correction de copie** : Envoyez une photo de la copie d'un élève. Le bot attendra 30 secondes pour voir si vous envoyez d'autres pages (photos suivantes) à la suite. Il analysera ensuite le lot complet.
+*   **Création de fichiers** : Demandez explicitement "Crée un script python qui trace un circuit RC". L'IA écrira le fichier sur le disque de la machine hôte et vous l'enverra en pièce jointe.
+*   **Invocation des outils spécifiques** : Pour forcer le déclenchement d'un outil externe, utilisez son mot-clé dans votre message :
+    * *"Vérifie sur **Eduscol** le programme de..."*
+    * *"Cherche sur **PubChem** la molécule de..."*
+    * *"Donne-moi la valeur **NIST** de la constante de Planck"*
+    * *"Exporte ce QCM au format **Moodle** XML"*
 
 ---
 
-## 📄 Licence
+## 📄 Informations
 
-Ce projet est distribué sous licence **AGPL-3.0**.  
-Voir [https://www.gnu.org/licenses/agpl-3.0.html](https://www.gnu.org/licenses/agpl-3.0.html).
+*Consultez le fichier `README_IMPLEMENTATIONS.md` pour un détail complet de toutes les modifications techniques apportées par rapport au projet Prométhée original.*
 
----
-
-## 👤 Auteur
-
-Pierre COUGET — 2026
+Licence : GNU Affero General Public License v3.0 (AGPL-3.0)
+Auteur de la surcouche Physique-Chimie : Vincent Durieux, professeur agrégé de Chimie
+Auteur original : Pierre Couget
