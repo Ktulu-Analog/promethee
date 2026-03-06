@@ -14,7 +14,7 @@
 - 🛠️ **Outils spécifiques intégrés** :
   - `physics_tools` : Constantes fondamentales (NIST / CODATA)
   - `chemistry_tools` : Base de données moléculaire (PubChem)
-  - `curriculum_tools` : Consultations des programmes officiels par RAG (déposez vos B.O. en PDF dans `data/programmes_eduscol/`)
+  - `curriculum_tools` : Consultations des programmes officiels par RAG (déposez vos B.O. en PDF dans `data/programmes_eduscol/`). Utilise le modèle d'embeddings ultra-léger `all-MiniLM-L6-v2` pour tourner 100% sur processeur (CPU) sans surcharger la carte graphique.
   - `lms_tools` : Export de quiz au format Moodle XML
 
 ---
