@@ -214,9 +214,12 @@ except Exception:
         "Supporte tous les imports, expressions simples et programmes complets. "
         "L'état est PERSISTANT entre les appels : variables, fonctions et imports "
         "définis restent disponibles lors des appels suivants de la même session. "
-        "Exemples : calculs, manipulation de données, graphiques matplotlib, "
-        "lecture/écriture de fichiers, appels d'API, etc. "
-        "Pour les packages manquants, utilisez python_install d'abord. "
+        "TRÈS IMPORTANT POUR LA PHYSIQUE-CHIMIE : Utilisez cet outil pour l'analyse "
+        "de données de TP (incertitudes, régressions linéaires, tracés de courbes) "
+        "en utilisant 'numpy', 'scipy' et 'matplotlib'. N'hésitez pas à demander "
+        "à l'utilisateur d'importer un CSV via les outils data, puis utilisez Python "
+        "pour faire le travail. "
+        "Pour les packages manquants, utilisez python_install d'abord (ex: scipy). "
         "Si le code génère un graphique matplotlib, il sera automatiquement affiché dans le chat."
     ),
     parameters={

@@ -35,3 +35,5 @@ pytesseract>=0.3.10
 pytest>=8.0.0
 pytest-cov>=5.0.0
 tiktoken>=0.7.0
+scipy>=1.11.0
+pubchempy>=1.0.4

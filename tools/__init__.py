@@ -80,19 +80,28 @@ Note sur python_tools :
 
 
 def register_all() -> None:
-    """Importe tous les modules d'outils pour les enregistrer dans tools_engine."""
-    from tools import system_tools
-    from tools import export_tools
-    from tools import python_tools
-    from tools import data_tools
-    from tools import data_file_tools
-    from tools import sql_tools
-    from tools import ocr_tools
-    from tools import web_tools
-    from tools import legifrance_tools
-    from tools import judilibre_tools
-    from tools import datagouv_tools
-    from tools import thunderbird_tools
-    from tools import skill_tools
+    # Modules core (Système, Fichiers, Web, DB, etc.)
+    import tools.system_tools
+    import tools.data_file_tools
+    import tools.web_search_tools
+    import tools.web_tools
+    import tools.export_tools
+    import tools.data_tools
+    import tools.sql_tools
+    import tools.ocr_tools
+    import tools.python_tools
+    import tools.skill_tools
+    import tools.thunderbird_tools
+    
+    # Sciences pures
+    import tools.physics_tools
+    import tools.chemistry_tools
 
+    # Programmes et évaluations
+    import tools.curriculum_tools
+    import tools.lms_tools
 
+    # Modules spécifiques PISTE / Data.gouv
+    import tools.legifrance_tools
+    import tools.judilibre_tools
+    import tools.datagouv_tools
