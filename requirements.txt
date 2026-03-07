@@ -37,3 +37,10 @@ pytest-cov>=5.0.0
 tiktoken>=0.7.0
 markdown>=3.5.0
 Pygments>=2.17.0
+matplotlib>=3.8.0
+
+
+# ── Optionnel : SQL distant ──────────────────────────────────
+# Décommenter selon les bases utilisées avec sql_tools :
+# psycopg2-binary>=2.9.0   # PostgreSQL
+# pymysql>=1.1.0            # MySQL / MariaDB

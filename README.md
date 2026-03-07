@@ -64,8 +64,10 @@ Les paramètres clés à configurer dans `.env` :
 | `OPENAI_API_KEY` | Clé API (Albert, OpenAI, etc.) |
 | `OPENAI_API_BASE` | URL du serveur LLM |
 | `OPENAI_MODEL` | Modèle à utiliser |
-| `OAUTH_CLIENT_ID` | Identifiants PISTE (Légifrance) |
+| `OAUTH_CLIENT_ID` | Identifiants PISTE (Légifrance / Judilibre) |
 | `QDRANT_URL` | URL Qdrant pour le RAG |
+| `GRIST_API_KEY` | Clé API Grist |
+| `GRIST_BASE_URL` | URL de l'instance Grist (défaut : `https://docs.getgrist.com`) |
 
 ### Lancement
 
@@ -101,17 +103,20 @@ promethee/
 
 | Outil | Description |
 |---|---|
-| `web_tools` | Navigation et scraping web |
-| `web_search_tools` | Recherche DuckDuckGo / SearXNG |
-| `export_tools` | Génération docx, pptx, pdf, xlsx |
-| `data_tools` | Manipulation de données |
+| `web_tools` | Navigation, scraping web et recherche DuckDuckGo / SearXNG |
+| `export_tools` | Génération docx, pptx, pdf, xlsx, md, odt/odp/ods (LibreOffice) |
+| `export_template_tools` | Génération docx et pptx depuis un gabarit organisationnel |
+| `data_tools` | Manipulation et analyse de données |
+| `data_file_tools` | Chargement, transformation et export de fichiers CSV/Excel (pandas) |
 | `sql_tools` | Requêtes SQL (SQLite, PostgreSQL, MySQL) |
 | `ocr_tools` | OCR via Tesseract |
+| `python_tools` | Exécution de code Python sandboxé (venv isolé) |
+| `system_tools` | Opérations système (fichiers, dossiers, diff) |
+| `skill_tools` | Consultation dynamique des guides de bonnes pratiques (skills) |
+| `grist_tools` | API Grist : lecture et écriture dans des tableurs collaboratifs |
 | `legifrance_tools` | API Légifrance (PISTE) |
 | `judilibre_tools` | API Judilibre (PISTE) |
-| `datagouv_tools` | API data.gouv.fr (MCP) |
-| `python_tools` | Exécution de code Python sandboxé |
-| `system_tools` | Opérations système (fichiers, dossiers) |
+| `datagouv_tools` | API data.gouv.fr |
 | `thunderbird_tools` | Lecture des e-mails Thunderbird |
 
 ---

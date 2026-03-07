@@ -117,14 +117,17 @@ def skill_list(tag_filter: str = "") -> str:
     name="skill_read",
     description=(
         "Lit le contenu complet d'un guide de bonnes pratiques (skill) par son slug. "
-        "Un skill contient des instructions, conventions ou templates que tu dois "
-        "respecter lors de la génération d'un output. "
-        "TOUJOURS appeler ce tool avant de produire un document, une requête SQL "
-        "ou un output formaté lorsqu'un skill pertinent existe (utiliser skill_list "
-        "pour les découvrir). "
-        "Exemples : skill_read('conventions_nommage') avant d'enregistrer un fichier, "
-        "skill_read('schema_bdd_production') avant une requête SQL, "
-        "skill_read('template_cr_reunion') avant de rédiger un compte-rendu."
+        "Un skill contient des instructions et un protocole à suivre étape par étape. "
+        "TOUJOURS appeler ce tool avant de produire un document ou un output formaté. "
+        "CAS OBLIGATOIRES — appeler skill_read AVANT tout appel d'outil export, "
+        "puis suivre scrupuleusement le protocole décrit dans le skill : "
+        "• skill_read('guide_creation_powerpoint') avant tout export .pptx — "
+        "  le protocole impose de chercher un gabarit avec list_files('~/Modèles') "
+        "  AVANT de choisir l'outil d'export ; "
+        "• skill_read('guide_export_excel') avant export_xlsx_* ; "
+        "• skill_read('guide_redactionnel_administratif') avant export_docx_*, export_pdf ; "
+        "• skill_read('guide_utilisation_templates') avant export_docx_template ou export_pptx_template. "
+        "Autres exemples : skill_read('schema_bdd_production') avant une requête SQL."
     ),
     parameters={
         "type": "object",

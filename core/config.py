@@ -51,6 +51,10 @@ class Config:
     # Audio / Whisper
     AUDIO_MODEL: str = os.getenv("AUDIO_MODEL", "")
 
+    # Grist
+    GRIST_API_KEY: str = os.getenv("GRIST_API_KEY", "")
+    GRIST_BASE_URL: str = os.getenv("GRIST_BASE_URL", "https://docs.getgrist.com")
+
     # Thunderbird
     TB_PROFILE_PATH: str = os.getenv("TB_PROFILE_PATH", "")
 

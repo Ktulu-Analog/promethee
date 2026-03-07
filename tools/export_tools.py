@@ -800,7 +800,13 @@ def _add_slide(prs, layout_idx: int, title: str, bullets: list[str],
         "Génère une présentation PowerPoint (.pptx) depuis une structure JSON. "
         "Chaque slide peut avoir un titre, une liste de puces, du contenu texte "
         "et des notes de présentation. "
-        "À utiliser pour créer des présentations, des pitch decks, des diaporamas."
+        "À utiliser pour créer des présentations, des pitch decks, des diaporamas "
+        "QUAND AUCUN GABARIT organisationnel n'est disponible. "
+        "Si un fichier .pptx de modèle/gabarit existe dans ~/Modèles/ ou si "
+        "l'utilisateur mentionne une charte graphique ou un modèle maison, "
+        "utiliser export_pptx_template à la place. "
+        "Avant tout export PowerPoint, appeler skill_list puis "
+        "skill_read('guide_creation_powerpoint') pour respecter les conventions."
     ),
     parameters={
         "type": "object",
@@ -870,7 +876,13 @@ def export_pptx_json(presentation: dict, output_path: str = "", filename: str = 
         "Génère une présentation PowerPoint (.pptx) depuis un outline texte simple. "
         "Format : '# Titre du slide' pour un nouveau slide, '- Puce' pour une puce, "
         "'> Note' pour une note de présentation, texte libre pour contenu. "
-        "Plus rapide à écrire que le format JSON pour des présentations simples."
+        "Plus rapide à écrire que le format JSON pour des présentations simples. "
+        "À utiliser QUAND AUCUN GABARIT organisationnel n'est disponible. "
+        "Si un fichier .pptx de modèle/gabarit existe dans ~/Modèles/ ou si "
+        "l'utilisateur mentionne une charte graphique ou un modèle maison, "
+        "utiliser export_pptx_template à la place. "
+        "Avant tout export PowerPoint, appeler skill_list puis "
+        "skill_read('guide_creation_powerpoint') pour respecter les conventions."
     ),
     parameters={
         "type": "object",

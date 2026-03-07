@@ -40,6 +40,10 @@ Prérequis pour thunderbird_tools :
 Note sur python_tools :
     Crée automatiquement un environnement virtuel dans ~/.promethee_python_env/
     où les packages peuvent être installés et le code exécuté en toute sécurité.
+
+Prérequis pour grist_tools (.env) :
+    GRIST_API_KEY=votre_clé_api_grist
+    GRIST_BASE_URL=https://votre-instance.grist.com   # défaut: https://docs.getgrist.com
 """
 
 
@@ -47,6 +51,7 @@ def register_all() -> None:
     """Importe tous les modules d'outils pour les enregistrer dans tools_engine."""
     from tools import system_tools
     from tools import export_tools
+    from tools import export_template_tools
     from tools import python_tools
     from tools import data_tools
     from tools import data_file_tools
@@ -58,5 +63,4 @@ def register_all() -> None:
     from tools import datagouv_tools
     from tools import thunderbird_tools
     from tools import skill_tools
-
-
+    from tools import grist_tools

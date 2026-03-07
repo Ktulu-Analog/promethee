@@ -490,28 +490,28 @@ class AttachmentButton(QToolButton):
         """)
 
     def _select_file(self):
-        """Ouvre un dialogue pour sélectionner un fichier."""
-        path, _ = QFileDialog.getOpenFileName(
+        """Ouvre un dialogue pour sélectionner un ou plusieurs fichiers."""
+        paths, _ = QFileDialog.getOpenFileNames(
             self,
-            "Sélectionner un fichier",
+            "Sélectionner des fichiers",
             "",
             "Tous les fichiers (*.*);;"
             "Texte (*.txt *.md *.py *.js *.json *.xml *.yaml *.csv);;"
             "PDF (*.pdf);;"
             "Office (*.docx *.xlsx *.pptx)"
         )
-        if path:
+        for path in paths:
             self.file_selected.emit(path)
 
     def _select_image(self):
-        """Ouvre un dialogue pour sélectionner une image."""
-        path, _ = QFileDialog.getOpenFileName(
+        """Ouvre un dialogue pour sélectionner une ou plusieurs images."""
+        paths, _ = QFileDialog.getOpenFileNames(
             self,
-            "Sélectionner une image",
+            "Sélectionner des images",
             "",
             "Images (*.png *.jpg *.jpeg *.gif *.bmp *.webp)"
         )
-        if path:
+        for path in paths:
             self.image_selected.emit(path)
 
     def _add_url(self):

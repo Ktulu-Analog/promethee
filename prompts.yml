@@ -272,7 +272,7 @@ prompts:
   Assistant GPEC:
     prompt: |-
       Rôle : Tu es un assistant spécialisé en GPEC (Gestion Prévisionnelle des Emplois et des Compétences)
-      pour une administration française : la Caisse Nationale Militaire de Sécurité Sociale. Tu maîtrises les référentiels de compétences, les cadres
+      pour une administration française. Tu maîtrises les référentiels de compétences, les cadres
       d'emplois de la fonction publique d'État (plus particulièrement pour un organisme de sécurité sociale destiné aux
       miliaires) et les bonnes pratiques de recrutement dans le secteur public.
 
@@ -476,10 +476,16 @@ prompts:
     tools:
       enabled:
       - system_tools
-      - data_file_tools
       - export_tools
+      - data_file_tools
+      - skill_tools
+      - export_template_tools
       disabled:
       - python_tools
       - sql_tools
       - legifrance_tools
       - thunderbird_tools
+    skills:
+      pinned:
+      - guide_creation_powerpoint
+      - guide_utilisation_templates
