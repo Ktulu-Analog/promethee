@@ -8,10 +8,10 @@ build-backend = "setuptools.backends.legacy:build"
 
 [project]
 name = "Prométhée-ai"
-version = "8.0.0"
+version = "2.0.0"
 description = "Assistant IA desktop souverain avec outils intégrés, RAG et support Légifrance"
 readme = "README.md"
-license = { text = "Proprietary" }
+license = { text = "AGPL-3.0-only" }
 requires-python = ">=3.10"
 
 keywords = ["ai", "llm", "rag", "desktop", "assistant", "legifrance", "pyqt6"]
@@ -69,11 +69,24 @@ ocr = [
     "pytesseract>=0.3.10",
 ]
 
-# Documents Office
+# Documents Office + export PDF
 office = [
     "python-docx>=1.1.0",
     "python-pptx>=0.6.23",
     "openpyxl>=3.1.0",
+    "reportlab>=4.1.0",
+]
+
+# Rendu Markdown et coloration syntaxique (interface chat)
+rendering = [
+    "markdown>=3.5.0",
+    "Pygments>=2.17.0",
+    "tiktoken>=0.7.0",
+]
+
+# Grist (tableur collaboratif)
+grist = [
+    "requests>=2.31.0",
 ]
 
 # Audio
@@ -92,9 +105,9 @@ sql = [
     "pymysql>=1.1.0",            # MySQL / MariaDB
 ]
 
-# Tout (sauf drivers SQL)
+# Tout (sauf drivers SQL et audio)
 all = [
-    "promethee-ai[web,data,rag,ocr,office,audio,local]",
+    "promethee-ai[web,data,rag,ocr,office,rendering,grist,local]",
 ]
 
 # Développement
@@ -113,7 +126,7 @@ dev = [
 promethee = "main:run"
 
 [project.gui-scripts]
-promothee-gui = "main:run"
+promethee-gui = "main:run"
 
 # ==============================================================================
 # Outils

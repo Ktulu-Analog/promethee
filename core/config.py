@@ -14,7 +14,10 @@
 """
 config.py — Chargement de la configuration depuis .env
 """
+import getpass
 import os
+import platform
+import re
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -23,6 +26,34 @@ _env_path = Path(__file__).parent.parent / ".env"
 if not _env_path.exists():
     _env_path = Path(".env")
 load_dotenv(_env_path)
+
+
+def _qdrant_collection() -> str:
+    """Calcule le nom de collection Qdrant de l'utilisateur courant.
+
+    Priorité :
+      1. QDRANT_COLLECTION dans .env  → respecté tel quel (rétro-compatibilité)
+      2. RAG_USER_ID dans .env        → promethee_<rag_user_id>
+      3. Nom d'utilisateur système    → promethee_<getuser()>
+      4. Nom de machine               → promethee_<hostname>
+      5. Fallback                     → promethee_default
+
+    Le résultat est normalisé : minuscules, caractères non-alphanumériques → _.
+    Calculée une seule fois au chargement du module (le .env est déjà chargé).
+    """
+    explicit = os.getenv("QDRANT_COLLECTION", "").strip()
+    if explicit:
+        return explicit
+
+    user_id = os.getenv("RAG_USER_ID", "").strip()
+    if not user_id:
+        try:
+            user_id = getpass.getuser()
+        except Exception:
+            user_id = platform.node()
+
+    safe = re.sub(r"[^a-z0-9]+", "_", user_id.lower()).strip("_") or "default"
+    return f"promethee_{safe}"
 
 
 class Config:
@@ -40,7 +71,15 @@ class Config:
 
     # Qdrant
     QDRANT_URL: str = os.getenv("QDRANT_URL", "")
-    QDRANT_COLLECTION: str = os.getenv("QDRANT_COLLECTION", "prométhée_docs")
+
+    # Identifiant utilisateur pour la collection Qdrant.
+    # Priorité : RAG_USER_ID dans .env > nom d'utilisateur système > nom de machine.
+    # Permet à plusieurs postes de partager un serveur Qdrant sans collision.
+    RAG_USER_ID: str = os.getenv("RAG_USER_ID", "").strip()
+
+    # Nom de la collection Qdrant calculé une fois au démarrage (voir _qdrant_collection()).
+    # Rétro-compatible : tout accès à Config.QDRANT_COLLECTION continue de fonctionner.
+    QDRANT_COLLECTION: str = _qdrant_collection()
 
     # Embeddings
     EMBEDDING_MODE: str = os.getenv("EMBEDDING_MODE", "")

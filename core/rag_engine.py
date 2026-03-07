@@ -418,6 +418,32 @@ def _make_scope_filter(conversation_id: str = None):
     return Filter(should=[global_cond, conv_cond])
 
 
+def _is_own_collection(collection_name: str) -> bool:
+    """Vérifie que la collection appartient à l'utilisateur courant.
+
+    Une collection est considérée comme appartenant à l'utilisateur si :
+      - c'est sa collection configurée (Config.QDRANT_COLLECTION), ou
+      - son nom est exactement "promethee_<user_id>" (nommage automatique).
+
+    Les collections d'autres utilisateurs (promethee_marie quand on est pierre)
+    et les collections externes (sans préfixe promethee_) sont refusées.
+    """
+    if collection_name == Config.QDRANT_COLLECTION:
+        return True
+    # Construire le nom attendu depuis le user_id pour la comparaison exacte
+    import re as _re
+    import getpass as _getpass
+    user_id = Config.RAG_USER_ID or ""
+    if not user_id:
+        try:
+            user_id = _getpass.getuser()
+        except Exception:
+            import platform as _platform
+            user_id = _platform.node()
+    safe = _re.sub(r"[^a-z0-9]+", "_", user_id.lower()).strip("_") or "default"
+    return collection_name == f"promethee_{safe}"
+
+
 def search(query: str, top_k: int = 5, conversation_id: str = None, collection_name: str = None) -> list[dict]:
     """Recherche sémantique combinant docs globaux + docs de la conversation.
 
@@ -433,6 +459,14 @@ def search(query: str, top_k: int = 5, conversation_id: str = None, collection_n
     if collection_name is None:
         collection_name = Config.QDRANT_COLLECTION
         _log.debug(f"[RAG] collection par défaut : {collection_name!r}")
+
+    # Vérifier que la collection appartient à l'utilisateur courant.
+    # Les collections internes d'autres utilisateurs sont refusées en lecture.
+    # Les collections externes (sans préfixe promethee_) sont autorisées en lecture seule
+    # car elles peuvent être des sources documentaires partagées intentionnellement.
+    if collection_name.startswith("promethee_") and not _is_own_collection(collection_name):
+        _log.warning(f"[RAG] search refusé : collection '{collection_name}' appartient à un autre utilisateur")
+        return []
 
     # Vérifier que la collection existe
     try:
@@ -495,10 +529,17 @@ def search(query: str, top_k: int = 5, conversation_id: str = None, collection_n
         )
         if vector_name is not None:
             kwargs["using"] = vector_name
-        # Appliquer le filtre de scope uniquement pour la collection interne Prométhée.
+        # Appliquer le filtre de scope uniquement pour les collections internes Prométhée.
         # Les collections externes n'ont pas de champ conversation_id dans leur payload —
         # appliquer le filtre retournerait 0 résultat.
-        if collection_name == Config.QDRANT_COLLECTION:
+        # Une collection est considérée interne si elle porte le préfixe "promethee_"
+        # (nommage automatique multi-postes) ou si c'est explicitement la collection
+        # configurée (QDRANT_COLLECTION forcé via .env).
+        is_internal = (
+            collection_name.startswith("promethee_")
+            or collection_name == Config.QDRANT_COLLECTION
+        )
+        if is_internal:
             kwargs["query_filter"] = _make_scope_filter(conversation_id)
         else:
             _log.debug(f"[RAG] collection externe {collection_name!r} — pas de filtre de scope")
@@ -571,6 +612,9 @@ def delete_by_source(source: str, conversation_id: str = None) -> int:
     if not QDRANT_OK:
         return 0
     if not ensure_collection():
+        return 0
+    if not _is_own_collection(Config.QDRANT_COLLECTION):
+        _log.warning("[RAG] delete_by_source refusé : collection non autorisée")
         return 0
     try:
         qc = _client()

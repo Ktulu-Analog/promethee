@@ -9,6 +9,7 @@
 - 💬 **Chat en streaming** avec historique chiffré (AES-GCM)
 - 🔧 **Outils intégrés** : web, données, export (docx/pptx/pdf), analyse de données, Python, SQL, OCR, Légifrance, Judilibre, data.gouv.fr, Thunderbird
 - 📚 **RAG** (Retrieval-Augmented Generation) via Qdrant
+- 📊 **Outils collaboratifs** : intégration de l'API Grist
 - 🏛️ **Légifrance & Judilibre** via API PISTE
 - 🖥️ **100% local possible** avec Ollama
 - 🔒 **Chiffrement optionnel** de la base de données SQLite

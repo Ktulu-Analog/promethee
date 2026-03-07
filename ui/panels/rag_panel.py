@@ -24,6 +24,7 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QAction
 
 from core import rag_engine
+from core.config import Config
 from ui.widgets import SectionLabel
 from ui.workers import IngestWorker
 from ui.widgets.styles import ThemeManager
@@ -205,8 +206,19 @@ class RagPanel(QWidget):
     # ── Collections Qdrant ────────────────────────────────────────────
 
     def _load_collections(self):
-        """Charge la liste des collections depuis Qdrant."""
-        collections = rag_engine.list_collections()
+        """Charge la liste des collections depuis Qdrant, filtrée pour l'utilisateur courant."""
+        all_collections = rag_engine.list_collections()
+
+        # Ne conserver que :
+        #  - la collection de l'utilisateur courant (promethee_<user_id>)
+        #  - les collections externes (sans préfixe promethee_), qui sont des
+        #    sources documentaires partagées intentionnellement
+        own = Config.QDRANT_COLLECTION
+        collections = [
+            c for c in all_collections
+            if c == own or not c.startswith("promethee_")
+        ]
+
         self._collection_combo.clear()
 
         if not collections:
@@ -221,8 +233,7 @@ class RagPanel(QWidget):
                 self._collection_combo.addItem(coll)
 
             # Sélectionner automatiquement la collection par défaut si elle existe
-            from core.config import Config
-            default_idx = self._collection_combo.findText(Config.QDRANT_COLLECTION)
+            default_idx = self._collection_combo.findText(own)
             if default_idx > 0:
                 self._collection_combo.setCurrentIndex(default_idx)
 
