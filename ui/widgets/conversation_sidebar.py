@@ -27,8 +27,9 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QStackedWidget,
     QPushButton, QTreeWidget, QTreeWidgetItem, QLineEdit,
     QLabel, QMenu, QInputDialog, QMessageBox, QAbstractItemView,
+    QStyledItemDelegate,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QSize, QByteArray, QPoint, QMimeData
+from PyQt6.QtCore import Qt, pyqtSignal, QSize, QByteArray, QPoint, QMimeData, QRect
 from PyQt6.QtGui import QPainter, QIcon, QPixmap, QPalette, QColor
 from PyQt6.QtSvg import QSvgRenderer
 
@@ -125,6 +126,45 @@ def _svg_icon(template: str, color: str, size: int = 14) -> QIcon:
     except Exception:
         pass
     return QIcon(px)
+
+
+_ARROW_CLOSED_SVG = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><polygon points='5,3 11,8 5,13' fill='{c}'/></svg>"
+_ARROW_OPEN_SVG   = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><polygon points='3,5 13,5 8,11' fill='{c}'/></svg>"
+
+
+class _FolderDelegate(QStyledItemDelegate):
+    """Dessine la flèche expand/collapse dans la zone ::branch via QSvgRenderer,
+    exactement comme _svg_icon() — sans QSS ni fichier disque."""
+
+    ARROW_SIZE = 14
+
+    def paint(self, painter: QPainter, option, index) -> None:
+        super().paint(painter, option, index)
+        tree = self.parent()
+        item = tree.itemFromIndex(index)
+        if item is None or item.childCount() == 0:
+            return
+        kind = item.data(0, _ROLE_KIND)
+        if kind not in ("folder", "unfiled_header"):
+            return
+        color = ThemeManager.inline("text_muted")
+        svg_tpl = _ARROW_OPEN_SVG if item.isExpanded() else _ARROW_CLOSED_SVG
+        svg = svg_tpl.replace("{c}", color).encode()
+        s      = self.ARROW_SIZE
+        indent = tree.indentation()
+        # Positionner la flèche dans la zone ::branch (à gauche de option.rect)
+        x = option.rect.left() - indent + (indent - s) // 2
+        y = option.rect.top() + (option.rect.height() - s) // 2
+        px = QPixmap(s, s)
+        px.fill(Qt.GlobalColor.transparent)
+        try:
+            r = QSvgRenderer(QByteArray(svg))
+            p = QPainter(px)
+            r.render(p)
+            p.end()
+        except Exception:
+            return
+        painter.drawPixmap(QRect(x, y, s, s), px)
 
 
 
@@ -249,6 +289,7 @@ class ConvSidePanel(QWidget):
         self._tree.setHeaderHidden(True)
         self._tree.setIndentation(14)
         self._tree.setAnimated(True)
+        self._tree.setItemDelegate(_FolderDelegate(self._tree))
         self._tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._tree.customContextMenuRequested.connect(self._on_context_menu)
         self._tree.currentItemChanged.connect(self._on_item_changed)
