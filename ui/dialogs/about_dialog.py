@@ -62,7 +62,7 @@ class AboutDialog(QDialog):
             layout.addWidget(title)
 
         # Version
-        version_label = QLabel("Prométhée IA v2.0")
+        version_label = QLabel(f"{Config.APP_TITLE} v{Config.APP_VERSION}")
         version_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         version_label.setStyleSheet(
             f"font-size: 14px; color: {ThemeManager.inline('model_badge_color')};"

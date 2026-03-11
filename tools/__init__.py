@@ -64,3 +64,4 @@ def register_all() -> None:
     from tools import thunderbird_tools
     from tools import skill_tools
     from tools import grist_tools
+

@@ -39,6 +39,7 @@ from pathlib import Path
 from PyQt6.QtWidgets import QSplashScreen, QLabel, QVBoxLayout, QWidget
 from PyQt6.QtCore    import Qt, QTimer
 from PyQt6.QtGui     import QPixmap, QPainter, QColor, QFont, QPen
+from core.config import Config
 
 
 # ── Configuration (modifier ici ou depuis l'extérieur avant instanciation) ───
@@ -60,7 +61,7 @@ class SplashScreen(QSplashScreen):
     BG_BOTTOM: str = "#1c1c1f"       # couleur bas du dégradé
     ACCENT:    str = "#d4813d"       # couleur d'accentuation
     APP_NAME:  str = "Prométhée"
-    VERSION:   str = "v2.0"              # ex : "v2.0" — laisser vide pour masquer
+    VERSION:   str = f"v{Config.APP_VERSION}"  # défini via APP_VERSION dans .env
     DURATION_MS: int = 0             # 0 = fermeture via finish() uniquement
 
     def __init__(self):

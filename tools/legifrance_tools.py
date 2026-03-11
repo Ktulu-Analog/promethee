@@ -574,7 +574,7 @@ def legifrance_article_par_numero(code: str, numero: str) -> str:
 def legifrance_versions_article(article_cid: str) -> str:
     c        = _get_client()
     data     = c._req("/consult/getArticleByCid", body={"cid": article_cid})
-    versions = data.get("versions", data.get("articles", []))
+    versions = data.get("listArticle", [])
     if not versions:
         return f"Aucune version trouvée pour le CID `{article_cid}`."
     lines = [f"**{len(versions)} version(s) de l'article `{article_cid}`**\n"]
@@ -588,7 +588,8 @@ def legifrance_versions_article(article_cid: str) -> str:
     name="legifrance_loi_decret",
     description=(
         "Consulte le contenu complet d'une loi, d'un décret, d'une ordonnance ou d'un arrêté "
-        "(fonds LODA). Retourne les articles structurés du texte."
+        "(fonds LODA) à partir de son identifiant et de sa date de vigueur."
+        "Retourne les articles structurés du texte."
     ),
     parameters={
         "type": "object",
@@ -611,10 +612,10 @@ def legifrance_loi_decret(text_id: str, date: Optional[str] = None) -> str:
         "textId": text_id,
         "date":   date or globals()["date"].today().isoformat(),
     })
-    titre    = data.get("titre", data.get("title", text_id))
+    titre    = data.get("title", text_id)
     nature   = data.get("nature", "")
     nor      = data.get("nor", "")
-    date_pub = data.get("datePubliTexte", "")
+    date_pub = data.get("dateParution", "")
     lines    = [f"# {titre}\n"]
     if nature:   lines.append(f"**Nature** : {nature}")
     if nor:      lines.append(f"**NOR** : {nor}")
@@ -650,15 +651,17 @@ def legifrance_loi_decret(text_id: str, date: Optional[str] = None) -> str:
 def legifrance_jorf(text_cid: str) -> str:
     c      = _get_client()
     data   = c._req("/consult/jorf", body={"textCid": text_cid})
-    titre  = data.get("titre", data.get("title", text_cid))
+    # ConsultJorfResponse → title, dateParution, nor, sections, articles (swagger)
+    titre  = data.get("title", text_cid)
+    date_p = data.get("dateParution", "")
+    nor    = data.get("nor", "")
     lines  = [f"# {titre}\n"]
-    date_p = data.get("datePubliTexte", "")
     if date_p: lines.append(f"**Publication JO** : {date_p}")
-    texte  = _strip_html(data.get("texte", data.get("content", "")))
-    if texte:
-        lines.append(f"\n{texte[:4000]}")
-        if len(texte) > 4000:
-            lines.append("\n*[Texte tronqué — consultez Légifrance pour le texte intégral]*")
+    if nor:    lines.append(f"**NOR** : {nor}")
+    arts  = data.get("articles", [])
+    sects = data.get("sections", [])
+    nb    = len(arts) + sum(len(s.get("articles", [])) for s in sects)
+    if nb: lines.append(f"\n*{nb} article(s) — utilisez legifrance_jorf_part pour le contenu*")
     return "\n".join(lines)
 
 
@@ -682,13 +685,16 @@ def legifrance_jorf(text_cid: str) -> str:
 def legifrance_jurisprudence(text_id: str) -> str:
     c     = _get_client()
     data  = c._req("/consult/juri", body={"textId": text_id})
-    titre = data.get("titre", data.get("title", text_id))
+    # ConsultJuriTextResponse → text (list[TexteSimple]) (swagger)
+    txt   = data.get("text") or [{}]
+    txt   = txt[0] if isinstance(txt, list) else txt
+    titre = txt.get("titre", text_id)
+    juri  = txt.get("juridiction", "")
+    dt    = txt.get("dateTexte", "")
+    texte = _strip_html(txt.get("texteHtml", txt.get("texte", "")))
     lines = [f"# {titre}\n"]
-    juri  = data.get("juridiction", "")
-    dt    = data.get("dateDecision", data.get("date", ""))
-    if juri: lines.append(f"**Juridiction** : {juri}")
-    if dt:   lines.append(f"**Date** : {dt}")
-    texte = _strip_html(data.get("texte", data.get("content", "")))
+    if juri:  lines.append(f"**Juridiction** : {juri}")
+    if dt:    lines.append(f"**Date** : {dt}")
     if texte:
         lines.append(f"\n{texte[:5000]}")
         if len(texte) > 5000:
@@ -723,7 +729,8 @@ def legifrance_lister_codes(filtre: Optional[str] = None, en_vigueur_seulement: 
     if filtre:               body["codeName"] = filtre
     if en_vigueur_seulement: body["states"]   = ["VIGUEUR"]
     data  = c._req("/list/code", body=body)
-    codes = data.get("results", data.get("codes", []))
+    # CodeListResponse → results (swagger)
+    codes = data.get("results", [])
     if not codes:
         return "Aucun code trouvé."
     lines = [f"**{len(codes)} code(s)**\n"]
@@ -769,7 +776,8 @@ def legifrance_conventions(
     if titre: body["titre"] = titre
     if idcc:  body["idcc"]  = idcc
     data  = c._req("/list/conventions", body=body)
-    items = data.get("results", data.get("conventions", []))
+    # ConventionsListResponse → results (swagger)
+    items = data.get("results", [])
     if not items:
         return "Aucune convention collective trouvée."
     lines = [f"**{len(items)} convention(s)**\n"]
@@ -805,14 +813,19 @@ def legifrance_conventions(
 def legifrance_suggerer(texte: str) -> str:
     c    = _get_client()
     data = c._req("/suggest", body={"searchText": texte})
-    suggestions = data.get("suggestions", data.get("results", []))
-    if not suggestions:
+    # SuggestResponse → results (object) (swagger)
+    results = data.get("results", {})
+    if not results:
         return f"Aucune suggestion pour : « {texte} »"
-    lines = [f"**Suggestions pour « {texte} »**\n"]
-    for s in suggestions[:15]:
-        t   = s.get("title", s.get("titre", s.get("text", str(s))))
-        rid = s.get("id", "")
-        lines.append(f"- {t}" + (f" (`{rid}`)" if rid else ""))
+    total = data.get("totalResultNumber", "")
+    lines = [f"**Suggestions pour « {texte} »**" + (f" ({total})" if total else "") + "\n"]
+    # results est un objet dict (fonds → liste)
+    if isinstance(results, dict):
+        for fond, items in list(results.items())[:5]:
+            for s in (items if isinstance(items, list) else [])[:5]:
+                t = s.get("title", s.get("titre", s.get("text", str(s))))
+                rid = s.get("id", "")
+                lines.append(f"- [{fond}] {t}" + (f" (`{rid}`)" if rid else ""))
     return "\n".join(lines)
 
 
@@ -948,17 +961,16 @@ def legifrance_version_proche(cid_text: str, date: str, cid_section: Optional[st
 def legifrance_jo_par_nor(nor: str) -> str:
     c     = _get_client()
     data  = c._req("/consult/getJoWithNor", body={"nor": nor})
-    titre = data.get("titre", data.get("title", nor))
-    lines = [f"# {titre}\n"]
+    # ConsultJorfResponse → title, dateParution, nor, sections (swagger)
+    titre  = data.get("title", nor)
+    date_p = data.get("dateParution", "")
+    lines  = [f"# {titre}\n"]
     lines.append(f"**NOR** : {nor}")
-    date_p = data.get("datePubliTexte", "")
-    if date_p:
-        lines.append(f"**Publication JO** : {date_p}")
-    texte = _strip_html(data.get("texte", data.get("content", "")))
-    if texte:
-        lines.append(f"\n{texte[:4000]}")
-        if len(texte) > 4000:
-            lines.append("\n*[Texte tronqué — consultez Légifrance pour le texte intégral]*")
+    if date_p: lines.append(f"**Publication JO** : {date_p}")
+    arts  = data.get("articles", [])
+    sects = data.get("sections", [])
+    nb    = len(arts) + sum(len(s.get("articles", [])) for s in sects)
+    if nb: lines.append(f"\n*{nb} article(s) — utilisez legifrance_jorf_part pour le contenu*")
     return "\n".join(lines)
 
 
@@ -980,20 +992,24 @@ def legifrance_jo_par_nor(nor: str) -> str:
     },
 )
 def legifrance_derniers_jo(nb: int = 10) -> str:
-    c     = _get_client()
-    data  = c._req("/consult/lastNJo", body={"nbElement": nb})
-    items = data.get("results", data.get("jos", data.get("journaux", [])))
+    c    = _get_client()
+    data = c._req("/consult/lastNJo", body={"nbElement": nb})
+    # La réponse réelle utilise "containers" (GetJorfContResponse swagger)
+    items = data.get("containers", [])
     if not items:
         return "Aucun Journal Officiel trouvé."
-    lines = [f"**{len(items)} dernier(s) Journal(aux) Officiel(s)**\n"]
+    total = data.get("totalNbResult", len(items))
+    lines = [f"**{len(items)} dernier(s) Journal(aux) Officiel(s)** (total API : {total})\n"]
     for jo in items:
-        date_p = jo.get("dateParution", jo.get("date", ""))
-        num    = jo.get("numero", jo.get("num", ""))
-        rid    = jo.get("id", "")
+        date_p = jo.get("datePubli", "")          # clé réelle : datePubli
+        num    = jo.get("num", jo.get("numero", ""))  # clé réelle : num
+        cid    = jo.get("cid", jo.get("id", ""))  # préférer cid (stable)
+        titre  = jo.get("titre", "")
         label  = f"JO du {date_p}" if date_p else "JO"
         if num:
             label += f" n°{num}"
-        lines.append(f"- **{label}**" + (f" — `{rid}`" if rid else ""))
+        detail = f" — {titre}" if titre else ""
+        lines.append(f"- **{label}**{detail}" + (f" — `{cid}`" if cid else ""))
     return "\n".join(lines)
 
 
@@ -1041,17 +1057,26 @@ def legifrance_sommaire_jorf(
     if recherche:
         body["searchText"] = recherche
     data  = c._req("/consult/jorfCont", body=body)
-    items = data.get("results", data.get("textes", []))
+    # La réponse réelle utilise "items" (GetJosResponse swagger).
+    # Chaque item est un dict { joCont: {...}, joInap: {...}, joEA: {...} }.
+    # joCont est le conteneur principal : id, cid, titre, datePubli, nature, num.
+    items = data.get("items", [])
     label = date or jorf_id or "JO"
     if not items:
-        return f"Aucun texte trouvé dans le sommaire du {label}."
-    total = data.get("totalResultNumber", len(items))
-    lines = [f"**{total} texte(s) au JO du {label}** — {len(items)} affiché(s)\n"]
-    for t in items:
-        titre  = t.get("titre", t.get("title", "Sans titre"))
-        nature = t.get("nature", "")
-        rid    = t.get("id", t.get("cid", ""))
-        lines.append(f"- **{titre}**" + (f" ({nature})" if nature else "") + (f" — `{rid}`" if rid else ""))
+        return f"Aucun résultat dans le sommaire du {label}."
+    total = data.get("totalNbResult", len(items))
+    lines = [f"**{total} résultat(s) au JO du {label}** — {len(items)} affiché(s)\n"]
+    for item in items:
+        cont = item.get("joCont") or item.get("joInap") or item.get("joEA") or item
+        if not cont:
+            continue
+        titre  = cont.get("titre", "Sans titre")
+        nature = cont.get("nature", "")
+        date_p = cont.get("datePubli", "")
+        cid    = cont.get("cid", cont.get("id", ""))
+        num    = cont.get("num", "")
+        suffix = " | ".join(filter(None, [nature, f"n°{num}" if num else "", date_p]))
+        lines.append(f"- **{titre}**" + (f" ({suffix})" if suffix else "") + (f" — `{cid}`" if cid else ""))
     return "\n".join(lines)
 
 
@@ -1079,26 +1104,23 @@ def legifrance_sommaire_jorf(
 def legifrance_convention_par_idcc(idcc: str) -> str:
     c     = _get_client()
     data  = c._req("/consult/kaliContIdcc", body={"id": idcc})
-    titre = data.get("titre", data.get("title", f"Convention IDCC {idcc}"))
-    lines = [f"# {titre}\n", f"**IDCC** : {idcc}"]
-    rid   = data.get("id", "")
-    if rid:
-        lines.append(f"**ID** : `{rid}`")
-    etat  = data.get("etat", data.get("state", ""))
-    if etat:
-        lines.append(f"**État** : {etat}")
-    date_debut = data.get("dateDebut", "")
-    if date_debut:
-        lines.append(f"**En vigueur depuis** : {date_debut}")
-    sections = data.get("sections", data.get("articles", []))
-    if sections:
-        lines.append(f"\n**{len(sections)} section(s)/article(s)**")
-        for s in sections[:20]:
-            t = s.get("titre", s.get("title", s.get("num", "")))
-            if t:
-                lines.append(f"  - {t}")
-        if len(sections) > 20:
-            lines.append(f"  *… {len(sections)-20} élément(s) supplémentaires*")
+    # ConsultKaliContResponse → titre, id, num, nature, sections (swagger)
+    titre   = data.get("titre", f"Convention IDCC {idcc}")  # clé réelle : titre
+    rid     = data.get("id", "")
+    num     = data.get("num", "")
+    nature  = data.get("nature", "")
+    sects   = data.get("sections", [])
+    lines   = [f"# {titre}\n", f"**IDCC** : {idcc}"]
+    if rid:    lines.append(f"**ID** : `{rid}`")
+    if num:    lines.append(f"**Numéro** : {num}")
+    if nature: lines.append(f"**Nature** : {nature}")
+    if sects:
+        lines.append(f"\n**{len(sects)} section(s)**")
+        for s in sects[:20]:
+            t = s.get("titre", s.get("num", ""))
+            if t: lines.append(f"  - {t}")
+        if len(sects) > 20:
+            lines.append(f"  *… {len(sects)-20} élément(s) supplémentaires*")
     return "\n".join(lines)
 
 
@@ -1122,11 +1144,11 @@ def legifrance_convention_par_idcc(idcc: str) -> str:
 def legifrance_convention_texte(text_id: str) -> str:
     c     = _get_client()
     data  = c._req("/consult/kaliText", body={"id": text_id})
-    titre = data.get("titre", data.get("title", text_id))
+    # ConsultKaliTextResponse → title, nor, etat (swagger)
+    titre = data.get("title", text_id)   # clé réelle : title (pas titre)
+    nor   = data.get("nor", "")
     lines = [f"# {titre}\n"]
-    idcc  = data.get("idcc", "")
-    if idcc:
-        lines.append(f"**IDCC** : {idcc}")
+    if nor: lines.append(f"**NOR** : {nor}")
     etat = data.get("etat", "")
     if etat:
         lines.append(f"**État** : {etat}")
@@ -1184,18 +1206,18 @@ def legifrance_convention_article(article_id: str) -> str:
 def legifrance_convention_section(section_id: str) -> str:
     c     = _get_client()
     data  = c._req("/consult/kaliSection", body={"id": section_id})
-    titre = data.get("titre", data.get("title", section_id))
-    lines = [f"**Section : {titre}**\n"]
+    # ConsultKaliTextResponse → title, articles, sections (swagger)
+    titre    = data.get("title", section_id)  # clé réelle : title
     articles = data.get("articles", [])
+    sects    = data.get("sections", [])
+    lines    = [f"**Section : {titre}**\n"]
     if articles:
         lines.append(f"**{len(articles)} article(s)**\n")
         for a in articles:
             lines.append(_fmt_article(a))
             lines.append("")
-    else:
-        texte = _strip_html(data.get("texte", data.get("content", "")))
-        if texte:
-            lines.append(texte)
+    if sects:
+        lines.append(f"*{len(sects)} sous-section(s)*")
     return "\n".join(lines)
 
 
@@ -1241,7 +1263,8 @@ def legifrance_jurisprudence_plan_classement(
     if niveau is not None:
         body["niveau"] = niveau
     data  = c._req("/consult/getJuriPlanClassement", body=body)
-    items = data.get("results", data.get("items", []))
+    # GetListPlanClassementJuriResponse → listPlanClassementJuri (swagger)
+    items = data.get("listPlanClassementJuri", [])
     if not items:
         return "Aucune entrée de plan de classement trouvée."
     lines = [f"**Plan de classement jurisprudence**\n"]
@@ -1284,12 +1307,15 @@ def legifrance_jurisprudence_plan_classement(
 def legifrance_cnil(text_id: str) -> str:
     c     = _get_client()
     data  = c._req("/consult/cnil", body={"textId": text_id})
-    titre = data.get("titre", data.get("title", text_id))
-    lines = [f"# {titre}\n"]
-    date_d = data.get("dateDecision", data.get("date", ""))
+    # ConsultCnilTextResponse → text (list[TexteSimple]) (swagger)
+    txt   = data.get("text") or [{}]
+    txt   = txt[0] if isinstance(txt, list) else txt
+    titre = txt.get("titre", text_id)
+    date_d = txt.get("dateTexte", "")
+    texte  = _strip_html(txt.get("texteHtml", txt.get("texte", "")))
+    lines  = [f"# {titre}\n"]
     if date_d:
         lines.append(f"**Date** : {date_d}")
-    texte = _strip_html(data.get("texte", data.get("content", "")))
     if texte:
         lines.append(f"\n{texte[:5000]}")
         if len(texte) > 5000:
@@ -1317,22 +1343,17 @@ def legifrance_cnil(text_id: str) -> str:
 def legifrance_acco(acco_id: str) -> str:
     c     = _get_client()
     data  = c._req("/consult/acco", body={"id": acco_id})
-    titre = data.get("titre", data.get("title", acco_id))
-    lines = [f"# {titre}\n"]
-    siret = data.get("siret", "")
-    rs    = data.get("raisonSociale", data.get("entreprise", ""))
-    if siret:
-        lines.append(f"**SIRET** : {siret}")
-    if rs:
-        lines.append(f"**Entreprise** : {rs}")
-    date_d = data.get("dateDepot", data.get("date", ""))
-    if date_d:
-        lines.append(f"**Date de dépôt** : {date_d}")
-    texte = _strip_html(data.get("texte", data.get("content", "")))
-    if texte:
-        lines.append(f"\n{texte[:4000]}")
-        if len(texte) > 4000:
-            lines.append("\n*[Texte tronqué]*")
+    # ConsultAccoResponse → acco (list[Accord]) (swagger)
+    acc   = data.get("acco") or [{}]
+    acc   = acc[0] if isinstance(acc, list) else acc
+    titre = acc.get("titreTexte", acco_id)  # Accord.titreTexte
+    siret = acc.get("siret", "")
+    rs    = acc.get("raisonSociale", "")
+    date_d = acc.get("dateDepot", "")
+    lines  = [f"# {titre}\n"]
+    if siret:  lines.append(f"**SIRET** : {siret}")
+    if rs:     lines.append(f"**Entreprise** : {rs}")
+    if date_d: lines.append(f"**Date de dépôt** : {date_d}")
     return "\n".join(lines)
 
 
@@ -1356,19 +1377,15 @@ def legifrance_acco(acco_id: str) -> str:
 def legifrance_circulaire(circulaire_id: str) -> str:
     c     = _get_client()
     data  = c._req("/consult/circulaire", body={"id": circulaire_id})
-    titre = data.get("titre", data.get("title", circulaire_id))
-    lines = [f"# {titre}\n"]
-    nor   = data.get("nor", "")
-    if nor:
-        lines.append(f"**NOR** : {nor}")
-    date_p = data.get("datePubliTexte", data.get("date", ""))
-    if date_p:
-        lines.append(f"**Publication** : {date_p}")
-    texte = _strip_html(data.get("texte", data.get("content", "")))
-    if texte:
-        lines.append(f"\n{texte[:4000]}")
-        if len(texte) > 4000:
-            lines.append("\n*[Texte tronqué]*")
+    # ConsultCirculaireResponse → circulaire (list[Circulaire]) (swagger)
+    circ  = data.get("circulaire") or [{}]
+    circ  = circ[0] if isinstance(circ, list) else circ
+    titre = circ.get("titre", circulaire_id)  # Circulaire.titre
+    nor   = circ.get("nor", "")
+    date_p = circ.get("dateSignature", "")  # dateSignature (pas datePubliTexte)
+    lines  = [f"# {titre}\n"]
+    if nor:    lines.append(f"**NOR** : {nor}")
+    if date_p: lines.append(f"**Date de signature** : {date_p}")
     return "\n".join(lines)
 
 
@@ -1392,19 +1409,19 @@ def legifrance_circulaire(circulaire_id: str) -> str:
 def legifrance_debat(debat_id: str) -> str:
     c     = _get_client()
     data  = c._req("/consult/debat", body={"id": debat_id})
-    titre = data.get("titre", data.get("title", debat_id))
-    lines = [f"# {titre}\n"]
-    jorf  = data.get("dateSeance", data.get("date", ""))
-    if jorf:
-        lines.append(f"**Séance du** : {jorf}")
-    parlement = data.get("typeParlement", data.get("parlement", ""))
-    if parlement:
-        lines.append(f"**Chambre** : {parlement}")
-    texte = _strip_html(data.get("texte", data.get("content", "")))
-    if texte:
-        lines.append(f"\n{texte[:5000]}")
-        if len(texte) > 5000:
-            lines.append("\n*[Texte tronqué — consultez Légifrance pour le texte intégral]*")
+    # ConsultDebatResponse → debat (list[Debat]) (swagger)
+    deb   = data.get("debat") or [{}]
+    deb   = deb[0] if isinstance(deb, list) else deb
+    date_s = deb.get("dateSeance", "")
+    assemblee = deb.get("typeAssemblee", "")  # typeAssemblee (pas typeParlement)
+    legis  = deb.get("legislature", "")
+    session = deb.get("session", "")
+    rid    = deb.get("id", debat_id)
+    lines  = [f"# Débat parlementaire `{rid}`\n"]
+    if date_s:   lines.append(f"**Séance du** : {date_s}")
+    if assemblee: lines.append(f"**Assemblée** : {assemblee}")
+    if legis:    lines.append(f"**Législature** : {legis}")
+    if session:  lines.append(f"**Session** : {session}")
     return "\n".join(lines)
 
 
@@ -1429,22 +1446,19 @@ def legifrance_debat(debat_id: str) -> str:
 def legifrance_dossier_legislatif(dossier_id: str) -> str:
     c     = _get_client()
     data  = c._req("/consult/dossierLegislatif", body={"id": dossier_id})
-    titre = data.get("titre", data.get("title", dossier_id))
-    lines = [f"# {titre}\n"]
-    etat  = data.get("etat", data.get("statut", ""))
-    if etat:
-        lines.append(f"**État** : {etat}")
-    legislature = data.get("legislature", "")
-    if legislature:
-        lines.append(f"**Législature** : {legislature}")
-    etapes = data.get("etapes", data.get("phases", []))
-    if etapes:
-        lines.append(f"\n**{len(etapes)} étape(s) législative(s)**")
-        for e in etapes[:10]:
-            label = e.get("libelle", e.get("titre", e.get("type", "")))
-            date_e = e.get("date", "")
-            if label:
-                lines.append(f"  - {label}" + (f" ({date_e})" if date_e else ""))
+    # ConsultDossierLegislatifResponse → dossierLegislatif (list[DossierLegislatif]) (swagger)
+    dos   = data.get("dossierLegislatif") or [{}]
+    dos   = dos[0] if isinstance(dos, list) else dos
+    titre = dos.get("titre", dossier_id)          # DossierLegislatif.titre
+    type_d = dos.get("type", "")
+    legis  = dos.get("legislature", "")
+    date_c = dos.get("dateCreation", "")
+    date_m = dos.get("dateDerniereModification", "")
+    lines  = [f"# {titre}\n"]
+    if type_d: lines.append(f"**Type** : {type_d}")
+    if legis:  lines.append(f"**Législature** : {legis}")
+    if date_c: lines.append(f"**Créé le** : {date_c}")
+    if date_m: lines.append(f"**Modifié le** : {date_m}")
     return "\n".join(lines)
 
 
@@ -1468,16 +1482,16 @@ def legifrance_dossier_legislatif(dossier_id: str) -> str:
 def legifrance_section_par_cid(cid: str) -> str:
     c     = _get_client()
     data  = c._req("/consult/getSectionByCid", body={"cid": cid})
-    titre = data.get("titre", data.get("title", cid))
-    lines = [f"**Section : {titre}**\n"]
-    articles = data.get("articles", data.get("sections", []))
-    if articles:
-        lines.append(f"**{len(articles)} article(s)**\n")
-        for a in articles[:20]:
-            lines.append(_fmt_article(a))
-            lines.append("")
-        if len(articles) > 20:
-            lines.append(f"*… {len(articles)-20} article(s) supplémentaire(s)*")
+    # GetListSectionResponse → listSection (list[Section]) (swagger)
+    sects = data.get("listSection", [])
+    if not sects:
+        return f"Aucune section trouvée pour le CID `{cid}`."
+    lines = [f"**{len(sects)} section(s) pour** `{cid}`\n"]
+    for s in sects[:20]:
+        titre_s = s.get("titre", "")
+        cid_s   = s.get("cid", s.get("id", ""))
+        debut   = s.get("dateDebut", "")
+        lines.append(f"- **{titre_s}**" + (f" `{cid_s}`" if cid_s else "") + (f" ({debut})" if debut else ""))
     return "\n".join(lines)
 
 
@@ -1529,21 +1543,15 @@ def legifrance_historique_texte(
         "startYear":   annee_debut,
         "endYear":     annee_fin,
     })
-    versions = data.get("versions", data.get("chronolegi", []))
-    if not versions:
+    # ChronolegiResponse → regroupements (list[RegroupementDTO]) (swagger)
+    regroupements = data.get("regroupements", [])
+    if not regroupements:
         return f"Aucune version trouvée pour `{text_cid}` entre {annee_debut} et {annee_fin}."
-    lines = [f"**{len(versions)} version(s) de `{text_cid}` ({annee_debut}–{annee_fin})**\n"]
-    for v in versions:
-        debut = v.get("dateDebut", v.get("startDate", ""))
-        fin   = v.get("dateFin",   v.get("endDate", "en cours"))
-        rid   = v.get("id",        "")
-        etat  = v.get("etat",      "")
-        line  = f"- **{debut}** → {fin}"
-        if etat:
-            line += f" ({etat})"
-        if rid:
-            line += f" — `{rid}`"
-        lines.append(line)
+    lines = [f"**{len(regroupements)} regroupement(s) de `{text_cid}` ({annee_debut}–{annee_fin})**\n"]
+    for rg in regroupements:
+        title_rg = rg.get("title", "")
+        vers     = rg.get("versions", [])
+        lines.append(f"- **{title_rg}** ({len(vers)} version(s))")
     return "\n".join(lines)
 
 
@@ -1574,21 +1582,15 @@ def legifrance_versions_element(text_cid: str, element_cid: str) -> str:
         "textCid":    text_cid,
         "elementCid": element_cid,
     })
-    versions = data.get("versions", data.get("chronolegi", []))
-    if not versions:
+    # ChronolegiResponse → regroupements (list[RegroupementDTO]) (swagger)
+    regroupements = data.get("regroupements", [])
+    if not regroupements:
         return f"Aucune version trouvée pour l'élément `{element_cid}`."
-    lines = [f"**{len(versions)} version(s) de l'élément `{element_cid}`**\n"]
-    for v in versions:
-        debut = v.get("dateDebut", v.get("startDate", ""))
-        fin   = v.get("dateFin",   v.get("endDate", "en cours"))
-        rid   = v.get("id", "")
-        etat  = v.get("etat", "")
-        line  = f"- **{debut}** → {fin}"
-        if etat:
-            line += f" ({etat})"
-        if rid:
-            line += f" — `{rid}`"
-        lines.append(line)
+    lines = [f"**{len(regroupements)} regroupement(s) pour `{element_cid}`**\n"]
+    for rg in regroupements:
+        title_rg = rg.get("title", "")
+        vers     = rg.get("versions", [])
+        lines.append(f"- **{title_rg}** ({len(vers)} version(s))")
     return "\n".join(lines)
 
 
@@ -1661,23 +1663,22 @@ def legifrance_lister_loda(
     if en_vigueur_seulement:
         body["legalStatus"] = ["VIGUEUR"]
     data  = c._req("/list/loda", body=body)
-    items = data.get("results", data.get("textes", []))
+    # LODAListResponse → results, totalResultNumber (swagger)
+    # LODAListResult : titre, cid, etat, dateDebut, dateFin, lastUpdate
+    items = data.get("results", [])
     if not items:
         return "Aucun texte LODA trouvé."
     total = data.get("totalResultNumber", len(items))
     lines = [f"**{total} texte(s) LODA** — {len(items)} affiché(s)\n"]
     for t in items:
-        titre  = t.get("titre", t.get("title", ""))
-        nature = t.get("nature", "")
-        rid    = t.get("id", t.get("cid", ""))
-        date_p = t.get("datePubliTexte", "")
+        titre  = t.get("titre", "")
+        etat   = t.get("etat", "")
+        cid    = t.get("cid", t.get("id", ""))
+        debut  = t.get("dateDebut", "")
         line   = f"- **{titre}**"
-        if nature:
-            line += f" ({nature})"
-        if date_p:
-            line += f" — {date_p}"
-        if rid:
-            line += f" — `{rid}`"
+        if etat:  line += f" ({etat})"
+        if debut: line += f" — {debut}"
+        if cid:   line += f" — `{cid}`"
         lines.append(line)
     return "\n".join(lines)
 
@@ -1696,7 +1697,8 @@ def legifrance_lister_loda(
 def legifrance_lister_legislatures() -> str:
     c     = _get_client()
     data  = c._req("/list/legislatures", body={})
-    items = data.get("results", data.get("legislatures", []))
+    # LegislaturesListResponse → legislatures (swagger)
+    items = data.get("legislatures", [])
     if not items:
         return "Aucune législature trouvée."
     lines = [f"**{len(items)} législature(s)**\n"]
@@ -1745,20 +1747,19 @@ def legifrance_lister_dossiers_legislatifs(
         "legislatureId": legislature_id,
         "type":          type_dossier,
     })
-    items = data.get("results", data.get("dossiers", []))
+    # DossiersLegislatifsListResponse → dossiersLegislatifs (swagger)
+    # DossierLegislatifResult : titre, id, dateCreation, dateDerniereModification, type
+    items = data.get("dossiersLegislatifs", [])
     if not items:
         return f"Aucun dossier législatif trouvé pour la législature {legislature_id} (type: {type_dossier})."
-    total = data.get("totalResultNumber", len(items))
-    lines = [f"**{total} dossier(s)** — législature {legislature_id} / {type_dossier} — {len(items)} affiché(s)\n"]
+    lines = [f"**{len(items)} dossier(s)** — législature {legislature_id} / {type_dossier}\n"]
     for d in items:
-        titre = d.get("titre", d.get("title", "Sans titre"))
+        titre = d.get("titre", "Sans titre")
         rid   = d.get("id", "")
-        etat  = d.get("etat", "")
+        type_d = d.get("type", "")
         line  = f"- **{titre}**"
-        if etat:
-            line += f" ({etat})"
-        if rid:
-            line += f" — `{rid}`"
+        if type_d: line += f" ({type_d})"
+        if rid:    line += f" — `{rid}`"
         lines.append(line)
     return "\n".join(lines)
 
@@ -1801,23 +1802,20 @@ def legifrance_lister_debats_parlementaires(
     if date_parution:
         body["dateParution"] = date_parution
     data  = c._req("/list/debatsParlementaires", body=body)
-    items = data.get("results", data.get("debats", []))
+    # DebatsParlementairesListResponse → results (swagger)
+    # Debat : dateParution, dateSeance, typeAssemblee, id, legislature
+    items = data.get("results", [])
     if not items:
         return "Aucun débat parlementaire trouvé."
     total = data.get("totalResultNumber", len(items))
     lines = [f"**{total} débat(s)** — {len(items)} affiché(s)\n"]
     for d in items:
-        titre = d.get("titre", d.get("title", "Sans titre"))
-        date_s = d.get("dateSeance", d.get("dateParution", d.get("date", "")))
-        chambre = d.get("typeParlement", d.get("parlement", ""))
-        rid    = d.get("id", "")
-        line   = f"- **{titre}**"
-        if chambre:
-            line += f" ({chambre})"
-        if date_s:
-            line += f" — {date_s}"
-        if rid:
-            line += f" — `{rid}`"
+        date_s    = d.get("dateSeance", d.get("dateParution", ""))
+        assemblee = d.get("typeAssemblee", "")  # typeAssemblee (pas typeParlement)
+        rid       = d.get("id", "")
+        line      = f"- **{date_s or rid}**"
+        if assemblee: line += f" ({assemblee})"
+        if rid:       line += f" — `{rid}`"
         lines.append(line)
     return "\n".join(lines)
 
@@ -1860,24 +1858,19 @@ def legifrance_lister_questions_parlementaires(
     if periode_publication:
         body["periodePublication"] = periode_publication
     data  = c._req("/list/questionsEcritesParlementaires", body=body)
-    items = data.get("results", data.get("questions", []))
+    # QuestionsEcritesParlementairesListResponse → results (swagger)
+    # EsQuestionsEcritesParlementaires : emetteur, dateParution, id, url, origine
+    items = data.get("results", [])
     if not items:
         return "Aucune question parlementaire trouvée."
     total = data.get("totalResultNumber", len(items))
     lines = [f"**{total} question(s) parlementaire(s)** — {len(items)} affiché(e)(s)\n"]
     for q in items:
-        titre   = q.get("titre", q.get("title", "Sans titre"))
-        auteur  = q.get("auteur", q.get("depute", q.get("senateur", "")))
-        date_p  = q.get("datePubliTexte", q.get("date", ""))
-        chambre = q.get("typeParlement", "")
-        rid     = q.get("id", "")
-        line    = f"- **{titre}**"
-        if auteur:
-            line += f" — par {auteur}"
-        if chambre:
-            line += f" ({chambre})"
-        if date_p:
-            line += f" — {date_p}"
+        emetteur = q.get("emetteur", "")
+        date_p   = q.get("dateParution", "")
+        rid      = q.get("id", "")
+        line     = f"- **{emetteur or rid}**"
+        if date_p: line += f" — {date_p}"
         if rid:
             line += f" — `{rid}`"
         lines.append(line)
@@ -1914,20 +1907,19 @@ def legifrance_lister_bocc(
     if interval_publication:
         body["intervalPublication"] = interval_publication
     data  = c._req("/list/bocc", body=body)
-    items = data.get("results", data.get("boccs", []))
+    # BoccGlobalListResponse → results (swagger)
+    # EsParutionBocc : id, refInjection, globalBocc, texts
+    items = data.get("results", [])
     if not items:
         return "Aucun BOCC trouvé."
     total = data.get("totalResultNumber", len(items))
     lines = [f"**{total} BOCC** — {len(items)} affiché(s)\n"]
     for b in items:
-        num   = b.get("numero", b.get("num", ""))
-        date_p = b.get("datePublication", b.get("date", ""))
-        rid   = b.get("id", "")
-        line  = f"- **BOCC {num}**"
-        if date_p:
-            line += f" — {date_p}"
-        if rid:
-            line += f" — `{rid}`"
+        rid  = b.get("id", "")
+        glob = b.get("globalBocc") or {}
+        num  = glob.get("numero", glob.get("num", ""))
+        line = f"- **BOCC {num or rid}**"
+        if rid: line += f" — `{rid}`"
         lines.append(line)
     return "\n".join(lines)
 
@@ -1970,20 +1962,19 @@ def legifrance_lister_bocc_textes(
     if idccs:
         body["idccs"] = idccs
     data  = c._req("/list/boccTexts", body=body)
-    items = data.get("results", data.get("textes", []))
+    # BoccTextsListResponse → texts, totalResultNumber (swagger)
+    # EsTextBocc : title, idccs, department, enteteTitle
+    items = data.get("texts", [])
     if not items:
         return "Aucun texte BOCC trouvé."
     total = data.get("totalResultNumber", len(items))
     lines = [f"**{total} texte(s) BOCC** — {len(items)} affiché(s)\n"]
     for t in items:
-        titre = t.get("titre", t.get("title", "Sans titre"))
-        idcc  = t.get("idcc", "")
-        rid   = t.get("id", "")
+        titre = t.get("title", t.get("enteteTitle", "Sans titre"))
+        idccs = t.get("idccs", [])
+        idcc_str = ", ".join(str(i) for i in idccs[:3]) if idccs else ""
         line  = f"- **{titre}**"
-        if idcc:
-            line += f" (IDCC {idcc})"
-        if rid:
-            line += f" — `{rid}`"
+        if idcc_str: line += f" (IDCC {idcc_str})"
         lines.append(line)
     return "\n".join(lines)
 
@@ -2032,7 +2023,8 @@ def legifrance_lister_boccs_et_textes(
     if interval_publication:
         body["intervalPublication"] = interval_publication
     data  = c._req("/list/boccsAndTexts", body=body)
-    items = data.get("results", data.get("textes", []))
+    # BoccGlobalListResponse → results (swagger)
+    items = data.get("results", [])
     if not items:
         return "Aucun résultat BOCC/texte trouvé."
     total = data.get("totalResultNumber", len(items))
@@ -2076,7 +2068,8 @@ def legifrance_lister_docs_admins(annees: Optional[List[int]] = None) -> str:
     if annees:
         body["years"] = annees
     data  = c._req("/list/docsAdmins", body=body)
-    items = data.get("results", data.get("documents", []))
+    # DocsAdminsListResponse → results (swagger)
+    items = data.get("results", [])
     if not items:
         return "Aucun document administratif trouvé."
     lines = [f"**{len(items)} document(s) administratif(s)**\n"]
@@ -2117,12 +2110,14 @@ def legifrance_lister_docs_admins(annees: Optional[List[int]] = None) -> str:
 def legifrance_suggerer_acco(texte: str) -> str:
     c    = _get_client()
     data = c._req("/suggest/acco", body={"searchText": texte})
-    suggestions = data.get("suggestions", data.get("results", []))
-    if not suggestions:
+    # SuggestAccoResponse → results (swagger)
+    results = data.get("results", {})
+    if not results:
         return f"Aucune suggestion entreprise pour : « {texte} »"
     lines = [f"**Entreprises suggérées pour « {texte} »**\n"]
-    for s in suggestions[:15]:
-        rs    = s.get("raisonSociale", s.get("title", s.get("text", str(s))))
+    items = results if isinstance(results, list) else []
+    for s in items[:15]:
+        rs    = s.get("raisonSociale", s.get("title", str(s)))
         siret = s.get("siret", "")
         lines.append(f"- **{rs}**" + (f" (SIRET : {siret})" if siret else ""))
     return "\n".join(lines)
@@ -2155,14 +2150,17 @@ def legifrance_suggerer_pdc(texte: str, fond: Optional[str] = None) -> str:
     if fond:
         body["fond"] = fond
     data = c._req("/suggest/pdc", body=body)
-    suggestions = data.get("suggestions", data.get("results", []))
-    if not suggestions:
+    # SuggestResponse → results (object dict fonds→liste) (swagger)
+    results = data.get("results", {})
+    if not results:
         return f"Aucune suggestion de plan de classement pour : « {texte} »"
     lines = [f"**Plan de classement — suggestions pour « {texte} »**\n"]
-    for s in suggestions[:15]:
-        libelle = s.get("libelle", s.get("title", s.get("text", str(s))))
-        rid     = s.get("id", "")
-        lines.append(f"- {libelle}" + (f" (`{rid}`)" if rid else ""))
+    if isinstance(results, dict):
+        for fond_k, items in list(results.items())[:5]:
+            for s in (items if isinstance(items, list) else [])[:5]:
+                libelle = s.get("libelle", s.get("title", str(s)))
+                rid     = s.get("id", "")
+                lines.append(f"- [{fond_k}] {libelle}" + (f" (`{rid}`)" if rid else ""))
     return "\n".join(lines)
 
 
@@ -2184,7 +2182,8 @@ def legifrance_suggerer_pdc(texte: str, fond: Optional[str] = None) -> str:
 def legifrance_dates_sans_jo() -> str:
     c     = _get_client()
     data  = c._req("/misc/datesWithoutJo", method="GET")
-    dates = data.get("dates", data.get("results", []))
+    # DatesWithNoJoResponse → lstDateDisabled (swagger)
+    dates = data.get("lstDateDisabled", [])
     if not dates:
         return "Aucune date sans JO trouvée (ou liste indisponible)."
     lines = [f"**{len(dates)} date(s) sans Journal Officiel**\n"]
@@ -2212,7 +2211,8 @@ def legifrance_dates_sans_jo() -> str:
 def legifrance_annees_sans_table() -> str:
     c      = _get_client()
     data   = c._req("/misc/yearsWithoutTable", method="GET")
-    annees = data.get("years", data.get("results", data.get("annees", [])))
+    # YearsWithNoTableResponse → lstYearDisabled (swagger)
+    annees = data.get("lstYearDisabled", [])
     if not annees:
         return "Aucune année sans table trouvée (ou liste indisponible)."
     lines = [f"**{len(annees)} année(s) sans table annuelle du JO**\n"]
@@ -2283,20 +2283,17 @@ def legifrance_lister_bodmr(
     if annees:
         body["years"] = annees
     data  = c._req("/list/bodmr", body=body)
-    items = data.get("results", data.get("bodmrs", []))
+    # BodmrListResponse → results (swagger), Bodmr : id, texts, refInjection
+    items = data.get("results", [])
     if not items:
         return "Aucun BODMR trouvé."
     total = data.get("totalResultNumber", len(items))
     lines = [f"**{total} BODMR** — {len(items)} affiché(s)\n"]
     for b in items:
-        num    = b.get("numero", b.get("num", ""))
-        date_p = b.get("datePublication", b.get("date", ""))
-        rid    = b.get("id", "")
-        line   = f"- **BODMR {num}**"
-        if date_p:
-            line += f" — {date_p}"
-        if rid:
-            line += f" — `{rid}`"
+        rid   = b.get("id", "")
+        nb_t  = len(b.get("texts", []))
+        line  = f"- `{rid}`"
+        if nb_t: line += f" ({nb_t} texte(s))"
         lines.append(line)
     return "\n".join(lines)
 
@@ -2341,7 +2338,8 @@ def legifrance_code_complet(code: str, date: Optional[str] = None) -> str:
         "textId": tid,
         "date":   date or globals()["date"].today().isoformat(),
     })
-    titre   = data.get("titre", data.get("title", code))
+    # ConsultTextResponse → title (swagger)
+    titre   = data.get("title", code)  # clé réelle : title
     lines   = [f"# {titre}\n"]
     articles = data.get("articles", data.get("sections", []))
     if articles:
@@ -2445,13 +2443,20 @@ def legifrance_articles_meme_numero(
         "textCid":    text_cid,
         "date":       date,
     })
-    articles = data.get("articles", data.get("results", []))
-    if not articles:
-        return f"Aucun autre article avec le numéro '{article_num}' trouvé dans ce texte."
-    lines = [f"**{len(articles)} article(s) avec le numéro '{article_num}'**\n"]
-    for a in articles:
-        lines.append(_fmt_article(a))
-        lines.append("")
+    # SectionsRevisionArticleResponse → newTexts, oldTexts (swagger)
+    # ArticleDTO : name, cid, nature, dateDebut, dateFin, id, modifications
+    new_texts = data.get("newTexts", [])
+    old_texts = data.get("oldTexts", [])
+    all_arts  = new_texts + old_texts
+    if not all_arts:
+        return f"Aucun autre article avec le numéro '{article_num}' trouvé."
+    lines = [f"**{len(all_arts)} article(s)** : {len(new_texts)} nouveau(x), {len(old_texts)} ancien(s)\n"]
+    for label, lst in [("Nouveau", new_texts), ("Ancien", old_texts)]:
+        for a in lst:
+            name  = a.get("name", "")
+            cid   = a.get("cid", a.get("id", ""))
+            debut = a.get("dateDebut", "")
+            lines.append(f"- [{label}] **{name}**" + (f" `{cid}`" if cid else "") + (f" ({debut})" if debut else ""))
     return "\n".join(lines)
 
 
@@ -2479,14 +2484,18 @@ def legifrance_articles_meme_numero(
 def legifrance_liens_concordance(article_id: str) -> str:
     c     = _get_client()
     data  = c._req("/consult/concordanceLinksArticle", body={"articleId": article_id})
-    liens = data.get("links", data.get("concordances", data.get("results", [])))
-    if not liens:
+    # SectionsRevisionArticleResponse → newTexts, oldTexts (swagger)
+    new_texts = data.get("newTexts", [])
+    old_texts = data.get("oldTexts", [])
+    if not new_texts and not old_texts:
         return f"Aucun lien de concordance trouvé pour l'article `{article_id}`."
-    lines = [f"**{len(liens)} lien(s) de concordance pour `{article_id}`**\n"]
-    for l in liens:
-        titre = l.get("titre", l.get("title", l.get("text", "")))
-        rid   = l.get("id", "")
-        lines.append(f"- {titre}" + (f" — `{rid}`" if rid else ""))
+    lines = [f"**Concordances** : {len(new_texts)} nouveau(x), {len(old_texts)} ancien(s) pour `{article_id}`\n"]
+    for label, lst in [("Nouveau", new_texts), ("Ancien", old_texts)]:
+        for t in lst:
+            name = t.get("name", "")
+            nat  = t.get("nature", "")
+            cid  = t.get("cid", t.get("id", ""))
+            lines.append(f"- [{label}] **{name}**" + (f" ({nat})" if nat else "") + (f" — `{cid}`" if cid else ""))
     return "\n".join(lines)
 
 
@@ -2510,20 +2519,19 @@ def legifrance_liens_concordance(article_id: str) -> str:
 def legifrance_liens_relatifs(article_id: str) -> str:
     c     = _get_client()
     data  = c._req("/consult/relatedLinksArticle", body={"articleId": article_id})
-    liens = data.get("links", data.get("related", data.get("results", [])))
-    if not liens:
-        return f"Aucun lien relatif trouvé pour l'article `{article_id}`."
-    lines = [f"**{len(liens)} lien(s) relatif(s) pour `{article_id}`**\n"]
-    for l in liens:
-        titre = l.get("titre", l.get("title", l.get("text", "")))
-        type_lien = l.get("typeLien", l.get("type", ""))
-        rid   = l.get("id", "")
-        line  = f"- {titre}"
-        if type_lien:
-            line += f" ({type_lien})"
-        if rid:
-            line += f" — `{rid}`"
-        lines.append(line)
+    # RelatedLinksArticleResponse → liensCite, liensCitePar (swagger)
+    # LiensRelatifsDTO : cidText, id, cidParent, dateVigeur, nature, name
+    cites     = data.get("liensCite", [])
+    cites_par = data.get("liensCitePar", [])
+    if not cites and not cites_par:
+        return f"Aucun lien relatif trouvé pour `{article_id}`."
+    lines = [f"**Liens relatifs** : {len(cites)} cité(s), {len(cites_par)} cité par\n"]
+    for label, lst in [("Cité", cites), ("Cité par", cites_par)]:
+        for l in lst:
+            name = l.get("name", "")
+            nat  = l.get("nature", "")
+            cid  = l.get("cidText", l.get("id", ""))
+            lines.append(f"- [{label}] **{name}**" + (f" ({nat})" if nat else "") + (f" — `{cid}`" if cid else ""))
     return "\n".join(lines)
 
 
@@ -2558,17 +2566,14 @@ def legifrance_liens_service_public(
     if fond:
         body["fond"] = fond
     data  = c._req("/consult/servicePublicLinksArticle", body=body)
-    liens = data.get("links", data.get("results", []))
+    # ServicePublicLinksArticleResponse → liensSP (object) (swagger)
+    liens = data.get("liensSP", {})
     if not liens:
         return "Aucun lien service-public trouvé."
-    lines = [f"**{len(liens)} lien(s) service-public**\n"]
-    for l in liens:
-        titre = l.get("titre", l.get("title", l.get("text", "")))
-        url   = l.get("url", l.get("href", ""))
-        line  = f"- {titre}"
-        if url:
-            line += f" — {url}"
-        lines.append(line)
+    lines = ["**Liens service-public.fr**\n"]
+    if isinstance(liens, dict):
+        for k, v in list(liens.items())[:20]:
+            lines.append(f"- {k}: {v}")
     return "\n".join(lines)
 
 
@@ -2629,22 +2634,20 @@ def legifrance_a_liens_service_public(article_ids: List[str]) -> str:
 def legifrance_jorf_part(text_cid: str) -> str:
     c     = _get_client()
     data  = c._req("/consult/jorfPart", body={"textCid": text_cid})
-    titre = data.get("titre", data.get("title", text_cid))
-    lines = [f"# {titre}\n"]
-    date_p = data.get("datePubliTexte", "")
-    if date_p:
-        lines.append(f"**Publication JO** : {date_p}")
-    parties = data.get("parties", data.get("sections", data.get("articles", [])))
-    if parties:
-        lines.append(f"\n**{len(parties)} partie(s)**\n")
-        for p in parties[:20]:
-            t = p.get("titre", p.get("title", p.get("num", "")))
-            if t:
-                lines.append(f"- {t}")
-    else:
-        texte = _strip_html(data.get("texte", data.get("content", "")))
-        if texte:
-            lines.append(f"\n{texte[:4000]}")
+    # ConsultJorfResponse → title, dateParution, nor, sections, articles (swagger)
+    titre  = data.get("title", text_cid)
+    date_p = data.get("dateParution", "")
+    nor    = data.get("nor", "")
+    lines  = [f"# {titre}\n"]
+    if date_p: lines.append(f"**Publication JO** : {date_p}")
+    if nor:    lines.append(f"**NOR** : {nor}")
+    sects = data.get("sections", [])
+    arts  = data.get("articles", [])
+    nb    = len(sects) + len(arts)
+    if nb: lines.append(f"\n**{nb} section(s)/article(s)**\n")
+    for s in (sects + arts)[:20]:
+        t = s.get("title", s.get("titre", s.get("num", "")))
+        if t: lines.append(f"- {t}")
     return "\n".join(lines)
 
 
@@ -2669,16 +2672,15 @@ def legifrance_jorf_part(text_cid: str) -> str:
 def legifrance_eli_alias_texte(id_eli_ou_alias: str) -> str:
     c     = _get_client()
     data  = c._req("/consult/eliAndAliasRedirectionTexte", body={"idEliOrAlias": id_eli_ou_alias})
-    titre = data.get("titre", data.get("title", id_eli_ou_alias))
-    lines = [f"# {titre}\n"]
-    date_p = data.get("datePubliTexte", "")
-    if date_p:
-        lines.append(f"**Publication JO** : {date_p}")
-    texte = _strip_html(data.get("texte", data.get("content", "")))
-    if texte:
-        lines.append(f"\n{texte[:4000]}")
-        if len(texte) > 4000:
-            lines.append("\n*[Texte tronqué — consultez Légifrance pour le texte intégral]*")
+    # ConsultJorfResponse → title, dateParution, nor, cid (swagger)
+    titre  = data.get("title", id_eli_ou_alias)
+    date_p = data.get("dateParution", "")
+    nor    = data.get("nor", "")
+    cid    = data.get("cid", "")
+    lines  = [f"# {titre}\n"]
+    if date_p: lines.append(f"**Publication JO** : {date_p}")
+    if nor:    lines.append(f"**NOR** : {nor}")
+    if cid:    lines.append(f"**CID** : `{cid}`")
     return "\n".join(lines)
 
 
@@ -2706,17 +2708,16 @@ def legifrance_eli_alias_texte(id_eli_ou_alias: str) -> str:
 def legifrance_convention_cont(cont_id: str) -> str:
     c     = _get_client()
     data  = c._req("/consult/kaliCont", body={"id": cont_id})
-    titre = data.get("titre", data.get("title", cont_id))
-    lines = [f"# {titre}\n"]
-    idcc  = data.get("idcc", "")
-    if idcc:
-        lines.append(f"**IDCC** : {idcc}")
-    etat = data.get("etat", "")
-    if etat:
-        lines.append(f"**État** : {etat}")
-    sections = data.get("sections", data.get("textes", []))
+    # ConsultKaliContResponse → titre, id, num, nature, sections (swagger)
+    titre   = data.get("titre", cont_id)  # clé réelle : titre (pas title)
+    num     = data.get("num", "")
+    nature  = data.get("nature", "")
+    sections = data.get("sections", [])
+    lines   = [f"# {titre}\n"]
+    if num:    lines.append(f"**Numéro** : {num}")
+    if nature: lines.append(f"**Nature** : {nature}")
     if sections:
-        lines.append(f"\n**{len(sections)} section(s)/texte(s)**")
+        lines.append(f"\n**{len(sections)} section(s)**")
         for s in sections[:20]:
             t = s.get("titre", s.get("title", s.get("num", "")))
             rid = s.get("id", "")
@@ -2751,15 +2752,16 @@ def legifrance_convention_cont(cont_id: str) -> str:
 def legifrance_jurisprudence_ancien_id(ancien_id: str) -> str:
     c     = _get_client()
     data  = c._req("/consult/getJuriWithAncienId", body={"ancienId": ancien_id})
-    titre = data.get("titre", data.get("title", ancien_id))
+    # ConsultJuriTextResponse → text (list[TexteSimple]) (swagger)
+    txt   = data.get("text") or [{}]
+    txt   = txt[0] if isinstance(txt, list) else txt
+    titre = txt.get("titre", ancien_id)
+    juri  = txt.get("juridiction", "")
+    dt    = txt.get("dateTexte", "")
+    texte = _strip_html(txt.get("texteHtml", txt.get("texte", "")))
     lines = [f"# {titre}\n"]
-    juri  = data.get("juridiction", "")
-    dt    = data.get("dateDecision", data.get("date", ""))
-    if juri:
-        lines.append(f"**Juridiction** : {juri}")
-    if dt:
-        lines.append(f"**Date** : {dt}")
-    texte = _strip_html(data.get("texte", data.get("content", "")))
+    if juri:  lines.append(f"**Juridiction** : {juri}")
+    if dt:    lines.append(f"**Date** : {dt}")
     if texte:
         lines.append(f"\n{texte[:5000]}")
         if len(texte) > 5000:
@@ -2790,13 +2792,16 @@ def legifrance_jurisprudence_ancien_id(ancien_id: str) -> str:
 )
 def legifrance_cnil_ancien_id(ancien_id: str) -> str:
     c     = _get_client()
-    data  = c._req("/consult/getCnilWithAncienId", body={"ancienId": ancien_id})
-    titre = data.get("titre", data.get("title", ancien_id))
-    lines = [f"# {titre}\n"]
-    date_d = data.get("dateDecision", data.get("date", ""))
+    data   = c._req("/consult/getCnilWithAncienId", body={"ancienId": ancien_id})
+    # ConsultCnilTextResponse → text (list[TexteSimple]) (swagger)
+    txt    = data.get("text") or [{}]
+    txt    = txt[0] if isinstance(txt, list) else txt
+    titre  = txt.get("titre", ancien_id)
+    date_d = txt.get("dateTexte", "")
+    texte  = _strip_html(txt.get("texteHtml", txt.get("texte", "")))
+    lines  = [f"# {titre}\n"]
     if date_d:
         lines.append(f"**Date** : {date_d}")
-    texte = _strip_html(data.get("texte", data.get("content", "")))
     if texte:
         lines.append(f"\n{texte[:5000]}")
         if len(texte) > 5000:
@@ -2835,14 +2840,15 @@ def legifrance_legi_part(text_id: str, date: Optional[str] = None) -> str:
         "textId": text_id,
         "date":   date or globals()["date"].today().isoformat(),
     })
-    titre   = data.get("titre", data.get("title", text_id))
+    # ConsultTextResponse → title, etat, dateParution, articles, sections (swagger)
+    titre   = data.get("title", text_id)   # clé réelle : title (pas titre)
     lines   = [f"# {titre}\n"]
     etat    = data.get("etat", "")
-    date_d  = data.get("dateDebut", "")
+    date_p  = data.get("dateParution", "")  # dateParution (pas dateDebut)
     if etat:
         lines.append(f"**État** : {etat}")
-    if date_d:
-        lines.append(f"**En vigueur depuis** : {date_d}")
+    if date_p:
+        lines.append(f"**Date de parution** : {date_p}")
     articles = data.get("articles", data.get("sections", []))
     if articles:
         lines.append(f"\n**{len(articles)} article(s)/section(s)**\n")
@@ -2889,7 +2895,8 @@ def legifrance_tables_annuelles(
     if annee_debut is not None:
         body["startYear"] = annee_debut
     data  = c._req("/consult/getTables", body=body)
-    items = data.get("tables", data.get("results", []))
+    # GetTableResponse → tables, totalNbResult (swagger)
+    items = data.get("tables", [])
     if not items:
         periode = f"{annee_debut}–{annee_fin}" if annee_debut else str(annee_fin)
         return f"Aucune table annuelle trouvée pour la période {periode}."

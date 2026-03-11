@@ -13,13 +13,26 @@
 
 """
 rag_engine.py — Moteur RAG : ingestion de documents → Qdrant, recherche sémantique
+
+Deux backends de recherche coexistent :
+
+  • Backend Qdrant (mode historique) — recherche vectorielle dense via qdrant-client.
+    Actif quand aucune collection Albert n'est configurée (RAG_ALBERT_COLLECTION_IDS vide).
+
+  • Backend Albert (mode amélioré) — recherche hybride dense+sparse (BGE-M3) via
+    l'API Albert /v1/search, suivie d'un reranking cross-encoder (BGE-Reranker-v2-M3)
+    via /v1/rerank. Actif quand RAG_ALBERT_COLLECTION_IDS contient au moins un ID.
+
+build_rag_context() choisit automatiquement le backend selon la configuration.
+Les deux backends produisent le même format de sortie : liste de dicts
+  {"text": str, "source": str, "scope": str, "score": float}
 """
 import logging
 import uuid
 import re
 from pathlib import Path
 from typing import Optional
-from .config import Config
+from .config import Config, get_safe_user_id
 
 _log = logging.getLogger(__name__)
 
@@ -41,6 +54,361 @@ EMBED_OK = False
 # Singleton QdrantClient — une seule instance réutilisée pour toutes les opérations
 _qdrant_client: "QdrantClient | None" = None
 _qdrant_url: str | None = None   # URL mémorisée pour détecter un changement de config
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Backend Albert — recherche hybride BGE-M3 + reranking BGE-Reranker-v2-M3
+# ══════════════════════════════════════════════════════════════════════════════
+#
+#  L'API Albert (OpenGateLLM) expose :
+#    POST /v1/search  — recherche hybride/sémantique/lexicale dans des collections
+#                       Albert gérées côté serveur (IDs entiers).
+#    POST /v1/rerank  — cross-encoder BGE-Reranker-v2-M3 pour scorer des paires
+#                       (query, passage) et produire un classement affiné.
+#
+#  Flux complet :
+#    1. /v1/search(method=hybrid, collection_ids=[…], limit=RAG_TOP_K)
+#       → candidats bruts triés par score RRF (dense BGE-M3 + sparse BM25)
+#    2. /v1/rerank(query, documents=[chunk.text for chunk in candidats], top_n=RAG_MAX_CHUNKS_TOTAL)
+#       → scores logit du cross-encoder, réordonnancement, filtre RAG_RERANK_MIN_SCORE
+#    3. Diversification par source (RAG_MAX_CHUNKS_PER_SOURCE) + plafond total
+#
+#  En cas d'erreur Albert (réseau, auth…), on logue et on retourne [].
+#  Le fallback vers Qdrant n'est PAS automatique pour ne pas masquer les erreurs.
+
+import urllib.request
+import urllib.error
+import json as _json
+
+
+def _albert_base_url() -> str:
+    """Retourne l'URL de base de l'API Albert, sans le suffixe /v1.
+
+    OPENAI_API_BASE est typiquement "https://albert.api.etalab.gouv.fr/v1".
+    Les endpoints non-standard (/v1/search, /v1/rerank, /v1/collections) sont
+    appelés via le client OpenAI qui ajoute lui-même le préfixe /v1.
+    On retire donc le /v1 final pour éviter le doublon /v1/v1/…
+    """
+    base = Config.OPENAI_API_BASE.rstrip("/")
+    if base.endswith("/v1"):
+        base = base[:-3]
+    return base
+
+
+def _get_openai_client():
+    """Retourne le client OpenAI disponible (embedder en mode API).
+
+    Utilisé pour les appels non-standard via ._client.request().
+    Retourne None si le client n'est pas initialisé ou pas en mode API.
+    """
+    if _embedder_type == "api" and _embedder is not None:
+        return _embedder
+    # Tentative de création à la volée si les credentials sont disponibles
+    base = _albert_base_url()
+    key  = Config.OPENAI_API_KEY
+    if base and key:
+        try:
+            from openai import OpenAI
+            return OpenAI(base_url=base + "/v1", api_key=key)
+        except Exception:
+            pass
+    return None
+
+
+def _albert_request(method: str, path: str, **kwargs) -> dict | None:
+    """
+    Effectue une requête HTTP sur l'API Albert.
+
+    Stratégie de transport (par ordre de préférence) :
+      1. Client OpenAI (._client.request) — utilise la session httpx configurée,
+         gère auth et base_url automatiquement. C'est la méthode que l'autre appli
+         utilise et qui fonctionne.
+      2. urllib (stdlib) — fallback si le client OpenAI n'est pas disponible.
+         Construit l'URL manuellement depuis _albert_base_url() (sans /v1).
+
+    Parameters
+    ----------
+    method  : "GET" ou "POST"
+    path    : chemin relatif sans base, ex: "/v1/collections" ou "/v1/search"
+    kwargs  : params= pour GET, json= pour POST
+    """
+    # ── Stratégie 1 : client OpenAI ._client.request() ──────────────
+    oa_client = _get_openai_client()
+    if oa_client is not None:
+        try:
+            # ._client est le httpx.Client sous-jacent du SDK OpenAI.
+            # Il utilise base_url + path, où base_url = https://host/v1/
+            # et path ne doit PAS commencer par /v1 pour éviter le doublon.
+            # On retire donc le préfixe /v1 du path.
+            rel_path = path.lstrip("/")
+            if rel_path.startswith("v1/"):
+                rel_path = rel_path[3:]
+
+            headers = {"Authorization": f"Bearer {Config.OPENAI_API_KEY}"}
+
+            if method == "GET":
+                resp = oa_client._client.request(
+                    method="GET",
+                    url=rel_path,
+                    params=kwargs.get("params", {}),
+                    headers=headers,
+                )
+            else:
+                resp = oa_client._client.request(
+                    method="POST",
+                    url=rel_path,
+                    json=kwargs.get("json", {}),
+                    headers=headers,
+                )
+
+            if resp.status_code != 200:
+                body = resp.text[:300] if hasattr(resp, "text") else ""
+                _log.error("[Albert] HTTP %d sur %s : %s", resp.status_code, path, body)
+                return None
+
+            return resp.json()
+
+        except Exception as e:
+            _log.warning("[Albert] client OpenAI échoué (%s), fallback urllib", e)
+            # on continue vers le fallback
+
+    # ── Stratégie 2 : urllib (fallback) ─────────────────────────────
+    base = _albert_base_url()
+    if not base:
+        return None
+
+    url = f"{base}{path}"  # base est sans /v1, path contient /v1/...
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {Config.OPENAI_API_KEY}",
+    }
+
+    try:
+        if method == "GET":
+            params = kwargs.get("params", {})
+            if params:
+                from urllib.parse import urlencode
+                url = f"{url}?{urlencode(params)}"
+            req = urllib.request.Request(url, headers=headers, method="GET")
+        else:
+            data = _json.dumps(kwargs.get("json", {})).encode("utf-8")
+            req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return _json.loads(resp.read().decode("utf-8"))
+
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode("utf-8", errors="replace")[:300]
+        except Exception:
+            pass
+        _log.error("[Albert] urllib HTTP %d sur %s : %s", e.code, path, body)
+        return None
+    except Exception as e:
+        _log.error("[Albert] urllib erreur réseau sur %s : %s", path, e)
+        return None
+
+
+def _albert_post(endpoint: str, payload: dict) -> dict | None:
+    """POST JSON sur l'API Albert. Conservé pour compatibilité."""
+    return _albert_request("POST", endpoint, json=payload)
+
+
+def _albert_get(path: str, params: dict | None = None) -> dict | None:
+    """GET sur l'API Albert."""
+    return _albert_request("GET", path, params=params or {})
+
+
+def _albert_search(
+    query: str,
+    collection_ids: list[int],
+    limit: int,
+    method: str = "hybrid",
+    rff_k: int = 60,
+) -> list[dict]:
+    """
+    Appelle POST /v1/search et retourne les chunks sous le format interne
+    {"text": str, "source": str, "scope": str, "score": float}.
+
+    Parameters
+    ----------
+    query          : question de l'utilisateur (brute ou reformulée)
+    collection_ids : IDs entiers des collections Albert à interroger
+    limit          : nombre maximum de candidats à récupérer (RAG_TOP_K)
+    method         : "hybrid" | "semantic" | "lexical"
+    rff_k          : constante RRF pour le mode hybrid (recommandé : 10–100)
+    """
+    if not collection_ids:
+        return []
+
+    payload = {
+        "query":          query,
+        "collection_ids": collection_ids,
+        "limit":          limit,
+        "method":         method,
+        "rff_k":          rff_k,
+        "score_threshold": 0.0,   # pas de pré-filtre ici : on laisse le reranker décider
+    }
+    _log.debug(
+        "[Albert] search — method=%s collections=%s limit=%d query=%r",
+        method, collection_ids, limit, query[:80],
+    )
+
+    resp = _albert_post("/v1/search", payload)
+    if resp is None:
+        return []
+
+    results = []
+    for item in resp.get("data", []):
+        chunk = item.get("chunk", {})
+        text  = chunk.get("content", "") or chunk.get("text", "")
+        # "metadata" peut contenir un champ "document_name" ou "source"
+        meta   = chunk.get("metadata") or {}
+        source = (
+            meta.get("document_name")
+            or meta.get("source")
+            or meta.get("filename")
+            or chunk.get("document_id", "albert")
+        )
+        # Convertir l'ID entier en str lisible si pas d'autre nom disponible
+        if isinstance(source, int):
+            source = f"document#{source}"
+        results.append({
+            "text":   str(text),
+            "source": str(source),
+            "scope":  "global",          # collections Albert = scope global
+            "score":  float(item.get("score", 0.0)),
+        })
+
+    _log.debug("[Albert] search → %d candidat(s)", len(results))
+    return results
+
+
+def _albert_rerank(
+    query: str,
+    candidates: list[dict],
+    top_n: int,
+    model: str,
+    min_score: float,
+) -> list[dict]:
+    """
+    Appelle POST /v1/rerank sur les candidats et retourne la liste
+    réordonnée + filtrée, en conservant le format interne des chunks.
+
+    Le reranker BGE-Reranker-v2-M3 produit des scores logit (non bornés).
+    Valeurs typiques : négatif = hors-sujet, > 0 = pertinent, > 5 = très pertinent.
+
+    Parameters
+    ----------
+    query      : question de l'utilisateur
+    candidates : chunks au format interne {"text", "source", "scope", "score"}
+    top_n      : nombre de chunks à retourner après reranking
+    model      : ID du modèle reranker (ex: "BAAI/bge-reranker-v2-m3")
+    min_score  : score logit minimal pour conserver un chunk
+    """
+    if not candidates:
+        return []
+
+    texts = [c["text"] for c in candidates]
+    payload = {
+        "query":     query,
+        "documents": texts,
+        "model":     model,
+        "top_n":     top_n,
+    }
+    _log.debug(
+        "[Albert] rerank — model=%s top_n=%d n_docs=%d",
+        model, top_n, len(texts),
+    )
+
+    resp = _albert_post("/v1/rerank", payload)
+    if resp is None:
+        # Fallback gracieux : conserver les candidats dans l'ordre original
+        _log.warning("[Albert] rerank échoué — conservation de l'ordre vectoriel")
+        return candidates[:top_n]
+
+    reranked = []
+    for result in resp.get("results", []):
+        idx   = result.get("index", -1)
+        score = float(result.get("relevance_score", 0.0))
+        if idx < 0 or idx >= len(candidates):
+            continue
+        if score < min_score:
+            _log.debug(
+                "[Albert] chunk #%d écarté par reranker (score=%.3f < min=%.3f)",
+                idx, score, min_score,
+            )
+            continue
+        chunk = dict(candidates[idx])
+        chunk["score"] = score          # remplacer le score vectoriel par le score cross-encoder
+        chunk["_reranked"] = True       # marqueur interne, retiré avant injection dans le prompt
+        reranked.append(chunk)
+
+    _log.debug("[Albert] rerank → %d chunk(s) retenus", len(reranked))
+    return reranked
+
+
+def _albert_search_and_rerank(query: str, force_collection_ids: list[int] | None = None) -> list[dict]:
+    """
+    Pipeline complet Albert pour une requête :
+      1. Recherche hybride BGE-M3 (dense + sparse, RRF)
+      2. Reranking BGE-Reranker-v2-M3
+      3. Diversification par source + plafond total
+
+    Parameters
+    ----------
+    query               : question de l'utilisateur
+    force_collection_ids: si fourni, utilise ces IDs au lieu de get_albert_collection_ids()
+                          (permet de cibler une seule collection sélectionnée dans le panneau)
+
+    Retourne les chunks au format interne, prêts pour build_rag_context().
+    """
+    collection_ids = force_collection_ids if force_collection_ids is not None else get_albert_collection_ids()
+    if not collection_ids:
+        return []
+
+    # ── Étape 1 : recherche hybride ────────────────────────────────────
+    candidates = _albert_search(
+        query=query,
+        collection_ids=collection_ids,
+        limit=Config.RAG_TOP_K,
+        method=Config.RAG_SEARCH_METHOD,
+        rff_k=Config.RAG_RFF_K,
+    )
+    if not candidates:
+        return []
+
+    # ── Étape 2 : reranking ────────────────────────────────────────────
+    if Config.RAG_RERANK_ENABLED:
+        candidates = _albert_rerank(
+            query=query,
+            candidates=candidates,
+            top_n=Config.RAG_MAX_CHUNKS_TOTAL * 2,  # marge avant diversification
+            model=Config.RAG_RERANK_MODEL,
+            min_score=Config.RAG_RERANK_MIN_SCORE,
+        )
+
+    # ── Étape 3 : diversification par source + plafond total ──────────
+    chunks_per_source: dict[str, int] = {}
+    selected: list[dict] = []
+    for chunk in candidates:
+        src   = chunk["source"]
+        count = chunks_per_source.get(src, 0)
+        if count < Config.RAG_MAX_CHUNKS_PER_SOURCE:
+            # Retirer le marqueur interne avant de servir le chunk
+            clean = {k: v for k, v in chunk.items() if k != "_reranked"}
+            selected.append(clean)
+            chunks_per_source[src] = count + 1
+        if len(selected) >= Config.RAG_MAX_CHUNKS_TOTAL:
+            break
+
+    n_src = len(chunks_per_source)
+    _log.debug(
+        "[Albert] pipeline complet → %d chunk(s) retenus, %d source(s) distincte(s)",
+        len(selected), n_src,
+    )
+    return selected
 
 
 def _init_embedder():
@@ -132,41 +500,49 @@ def reset_client():
     _qdrant_url = None
 
 
-def ensure_collection():
+def ensure_collection(collection_name: str = None):
+    """Crée la collection Qdrant si elle n'existe pas, et vérifie la dimension.
+
+    Parameters
+    ----------
+    collection_name : str, optional
+        Nom de la collection à vérifier/créer. Défaut : Config.QDRANT_COLLECTION.
+    """
     if not QDRANT_OK:
         return False
+    target = collection_name or Config.QDRANT_COLLECTION
     try:
         qc = _client()
         cols = {c.name: c for c in qc.get_collections().collections}
 
-        if Config.QDRANT_COLLECTION in cols:
+        if target in cols:
             # Vérifier que la dimension correspond
-            info = qc.get_collection(Config.QDRANT_COLLECTION)
+            info = qc.get_collection(target)
             existing_dim = info.config.params.vectors.size
             if existing_dim != Config.EMBEDDING_DIMENSION:
                 _log.warning(
                     f"[RAG] Dimension mismatch : collection={existing_dim}, "
                     f"config={Config.EMBEDDING_DIMENSION}. Recréation…"
                 )
-                qc.delete_collection(Config.QDRANT_COLLECTION)
+                qc.delete_collection(target)
                 # Recréer avec la bonne dimension
                 qc.create_collection(
-                    collection_name=Config.QDRANT_COLLECTION,
+                    collection_name=target,
                     vectors_config=VectorParams(
                         size=Config.EMBEDDING_DIMENSION,
                         distance=Distance.COSINE,
                     ),
                 )
-                _log.info(f"[RAG] Collection recréée avec dim={Config.EMBEDDING_DIMENSION}")
+                _log.info(f"[RAG] Collection '{target}' recréée avec dim={Config.EMBEDDING_DIMENSION}")
         else:
             qc.create_collection(
-                collection_name=Config.QDRANT_COLLECTION,
+                collection_name=target,
                 vectors_config=VectorParams(
                     size=Config.EMBEDDING_DIMENSION,
                     distance=Distance.COSINE,
                 ),
             )
-            _log.info(f"[RAG] Collection créée avec dim={Config.EMBEDDING_DIMENSION}")
+            _log.info(f"[RAG] Collection '{target}' créée avec dim={Config.EMBEDDING_DIMENSION}")
 
         return True
     except Exception as e:
@@ -348,11 +724,37 @@ def _chunk_text(
     return [c for c in chunks if c.strip()]
 
 
-def ingest_text(text: str, source: str = "manuel", conversation_id: str = None) -> int:
-    """Découpe, embed et stocke dans Qdrant. Retourne le nombre de chunks."""
+def ingest_text(text: str, source: str = "manuel", conversation_id: str = None,
+                collection_name: str = None, extra_payload: dict = None) -> int:
+    """Découpe, embed et stocke dans Qdrant. Retourne le nombre de chunks.
+
+    Parameters
+    ----------
+    text : str
+        Texte à ingérer.
+    source : str
+        Identifiant de la source (nom de fichier, URL, "memory:<conv_id>"…).
+    conversation_id : str, optional
+        Scope de la conversation (None → "global").
+    collection_name : str, optional
+        Collection Qdrant cible. Défaut : Config.QDRANT_COLLECTION.
+        La collection doit appartenir à l'utilisateur courant (_is_own_collection).
+    extra_payload : dict, optional
+        Champs supplémentaires ajoutés au payload de chaque point Qdrant.
+        Utilisé par LongTermMemory pour marquer les chunks consolidés
+        (_consolidated=True) et éviter leur inclusion dans les cycles suivants.
+    """
     if not QDRANT_OK or not EMBED_OK:
         return 0
-    if not ensure_collection():
+
+    target = collection_name or Config.QDRANT_COLLECTION
+
+    # Protection : on n'écrit jamais dans une collection d'un autre utilisateur
+    if not _is_own_collection(target):
+        _log.warning("[RAG] ingest_text refusé : collection '%s' non autorisée", target)
+        return 0
+
+    if not ensure_collection(target):
         return 0
 
     chunks = _chunk_text(text, max_tokens=256, overlap_tokens=32, hard_max_tokens=512)
@@ -372,11 +774,12 @@ def ingest_text(text: str, source: str = "manuel", conversation_id: str = None) 
                 "text":            chunk,
                 "source":          source,
                 "conversation_id": conversation_id or "global",
+                **(extra_payload or {}),
             }
         )
         for chunk, emb in zip(chunks, embeddings)
     ]
-    qc.upsert(collection_name=Config.QDRANT_COLLECTION, points=points)
+    qc.upsert(collection_name=target, points=points)
     return len(chunks)
 
 
@@ -422,26 +825,23 @@ def _is_own_collection(collection_name: str) -> bool:
     """Vérifie que la collection appartient à l'utilisateur courant.
 
     Une collection est considérée comme appartenant à l'utilisateur si :
-      - c'est sa collection configurée (Config.QDRANT_COLLECTION), ou
-      - son nom est exactement "promethee_<user_id>" (nommage automatique).
+      - c'est sa collection RAG documentaire (Config.QDRANT_COLLECTION), ou
+      - c'est sa collection LTM (Config.LTM_COLLECTION), ou
+      - son nom est exactement "promethee_<user_id>" ou
+        "promethee_memory_<user_id>" (nommage automatique).
 
     Les collections d'autres utilisateurs (promethee_marie quand on est pierre)
     et les collections externes (sans préfixe promethee_) sont refusées.
     """
-    if collection_name == Config.QDRANT_COLLECTION:
+    # Correspondance directe avec les collections configurées
+    if collection_name in (Config.QDRANT_COLLECTION, Config.LTM_COLLECTION):
         return True
-    # Construire le nom attendu depuis le user_id pour la comparaison exacte
-    import re as _re
-    import getpass as _getpass
-    user_id = Config.RAG_USER_ID or ""
-    if not user_id:
-        try:
-            user_id = _getpass.getuser()
-        except Exception:
-            import platform as _platform
-            user_id = _platform.node()
-    safe = _re.sub(r"[^a-z0-9]+", "_", user_id.lower()).strip("_") or "default"
-    return collection_name == f"promethee_{safe}"
+
+    # Reconstruire les deux noms attendus depuis le user_id.
+    # get_safe_user_id() est la source unique de vérité (définie dans config.py) ;
+    # on évite ainsi de dupliquer ici la logique de résolution RAG_USER_ID / getuser().
+    safe = get_safe_user_id()
+    return collection_name in (f"promethee_{safe}", f"promethee_memory_{safe}")
 
 
 def search(query: str, top_k: int = 5, conversation_id: str = None, collection_name: str = None) -> list[dict]:
@@ -602,19 +1002,27 @@ def list_sources(conversation_id: str = None) -> list[dict]:
         return []
 
 
-def delete_by_source(source: str, conversation_id: str = None) -> int:
+def delete_by_source(source: str, conversation_id: str = None,
+                     collection_name: str = None) -> int:
     """Supprime tous les chunks d'une source.
 
     Si conversation_id est fourni, ne supprime que les chunks de cette
     conversation (pas les chunks globaux du même nom).
     Passe conversation_id=None pour supprimer un doc global.
+
+    Parameters
+    ----------
+    collection_name : str, optional
+        Collection cible. Défaut : Config.QDRANT_COLLECTION.
+        Doit appartenir à l'utilisateur courant.
     """
     if not QDRANT_OK:
         return 0
-    if not ensure_collection():
+    target = collection_name or Config.QDRANT_COLLECTION
+    if not ensure_collection(target):
         return 0
-    if not _is_own_collection(Config.QDRANT_COLLECTION):
-        _log.warning("[RAG] delete_by_source refusé : collection non autorisée")
+    if not _is_own_collection(target):
+        _log.warning("[RAG] delete_by_source refusé : collection '%s' non autorisée", target)
         return 0
     try:
         qc = _client()
@@ -624,15 +1032,15 @@ def delete_by_source(source: str, conversation_id: str = None) -> int:
             FieldCondition(key="conversation_id", match=MatchValue(value=scope_value)),
         ]
         count_before = qc.count(
-            collection_name=Config.QDRANT_COLLECTION,
+            collection_name=target,
             count_filter=Filter(must=must),
             exact=True,
         ).count
         qc.delete(
-            collection_name=Config.QDRANT_COLLECTION,
+            collection_name=target,
             points_selector=FilterSelector(filter=Filter(must=must)),
         )
-        _log.info(f"[RAG] Supprimé {count_before} chunks — source='{source}' scope='{scope_value}'")
+        _log.info(f"[RAG] Supprimé {count_before} chunks — source='{source}' scope='{scope_value}' collection='{target}'")
         return count_before
     except Exception as e:
         _log.error(f"[RAG] Erreur delete_by_source : {e}")
@@ -640,15 +1048,127 @@ def delete_by_source(source: str, conversation_id: str = None) -> int:
 
 
 def build_rag_context(query: str, conversation_id: str = None, collection_name: str = None) -> str:
-    """Construit le contexte RAG (global + conversation) à injecter dans le prompt."""
-    _log.debug(f"[RAG] build_rag_context() — collection={collection_name!r} conv={conversation_id!r}")
-    hits = search(query, top_k=5, conversation_id=conversation_id, collection_name=collection_name)
-    if not hits:
-        _log.warning(f"[RAG] build_rag_context() — aucun résultat pour : {query[:80]!r}")
+    """Construit le contexte RAG à injecter dans le prompt système.
+
+    Sélection automatique du backend :
+
+    • Backend Albert  — activé si :
+        - collection_name est "albert:<ID>" (sélection explicite dans le panneau), OU
+        - collection_name est None ou vaut la collection Qdrant par défaut,
+          ET des collections Albert sont disponibles (config ou auto-découverte).
+      Pipeline : recherche hybride BGE-M3 (dense+sparse, RRF) → reranking
+      BGE-Reranker-v2-M3 → diversification par source → plafond total.
+
+    • Backend Qdrant  — actif dans tous les autres cas (comportement historique).
+      Pipeline : recherche vectorielle dense → filtre par score cosinus →
+      diversification par source → plafond total.
+    """
+    _log.debug(
+        "[RAG] build_rag_context() — collection=%r conv=%r",
+        collection_name, conversation_id,
+    )
+
+    # ── Sélection explicite d'une collection Albert depuis le panneau ──
+    # La valeur "albert:<ID>" est injectée par RagPanel._on_collection_index_changed.
+    if collection_name and collection_name.startswith("albert:"):
+        try:
+            col_id = int(collection_name.split(":", 1)[1])
+        except ValueError:
+            col_id = None
+        if col_id is not None:
+            return _build_rag_context_albert(query, force_collection_ids=[col_id])
+        # ID invalide → fallback Qdrant
+        return _build_rag_context_qdrant(query, conversation_id, None)
+
+    # ── Dispatch automatique ──────────────────────────────────────────
+    # On utilise Albert si des collections sont disponibles (config ou auto-découverte)
+    # et que l'utilisateur n'a pas sélectionné une collection Qdrant explicite.
+    use_albert = bool(get_albert_collection_ids()) and (
+        collection_name is None
+        or collection_name == Config.QDRANT_COLLECTION
+    )
+
+    if use_albert:
+        return _build_rag_context_albert(query)
+    else:
+        return _build_rag_context_qdrant(query, conversation_id, collection_name)
+
+
+def _build_rag_context_albert(query: str, force_collection_ids: list[int] | None = None) -> str:
+    """Build RAG context via le backend Albert (hybride + reranking)."""
+    selected = _albert_search_and_rerank(query, force_collection_ids=force_collection_ids)
+    if not selected:
+        _log.warning("[RAG/Albert] aucun chunk retenu pour : %r", query[:80])
         return ""
-    _log.debug(f"[RAG] build_rag_context() — {len(hits)} chunk(s) injectés dans le prompt")
+
+    method = Config.RAG_SEARCH_METHOD
+    rerank = "→ reranké" if Config.RAG_RERANK_ENABLED else ""
+    parts = [f"### Contexte documentaire pertinent ({method}{rerank}) :\n"]
+    for i, h in enumerate(selected, 1):
+        parts.append(
+            f"[{i}] 🌐 ({h['source']}, score={h['score']:.3f})\n{h['text']}\n"
+        )
+    _log.debug("[RAG/Albert] %d chunk(s) injectés dans le prompt", len(selected))
+    return "\n".join(parts)
+
+
+def _build_rag_context_qdrant(
+    query: str,
+    conversation_id: str = None,
+    collection_name: str = None,
+) -> str:
+    """Build RAG context via le backend Qdrant (vectoriel dense, comportement historique).
+
+    Stratégie de sélection des chunks :
+      1. Récupère RAG_TOP_K candidats depuis Qdrant (filet large).
+      2. Filtre les chunks sous le seuil de score RAG_MIN_SCORE (trop peu pertinents).
+      3. Limite à RAG_MAX_CHUNKS_PER_SOURCE chunks par document source
+         pour éviter qu'un seul document monopolise le contexte.
+      4. Retient au maximum RAG_MAX_CHUNKS_TOTAL chunks au total.
+    """
+    top_k       = Config.RAG_TOP_K
+    min_score   = Config.RAG_MIN_SCORE
+    max_per_src = Config.RAG_MAX_CHUNKS_PER_SOURCE
+    max_total   = Config.RAG_MAX_CHUNKS_TOTAL
+
+    candidates = search(query, top_k=top_k, conversation_id=conversation_id, collection_name=collection_name)
+    if not candidates:
+        _log.warning("[RAG/Qdrant] aucun résultat pour : %r", query[:80])
+        return ""
+
+    # ── Filtre par score minimum ───────────────────────────────────────
+    above_threshold = [h for h in candidates if h["score"] >= min_score]
+    n_dropped = len(candidates) - len(above_threshold)
+    if n_dropped:
+        _log.debug("[RAG/Qdrant] %d chunk(s) écarté(s) sous min_score=%.2f", n_dropped, min_score)
+
+    # ── Diversification par source ─────────────────────────────────────
+    chunks_per_source: dict[str, int] = {}
+    selected: list[dict] = []
+    for h in above_threshold:
+        src   = h["source"]
+        count = chunks_per_source.get(src, 0)
+        if count < max_per_src:
+            selected.append(h)
+            chunks_per_source[src] = count + 1
+        if len(selected) >= max_total:
+            break
+
+    n_sources = len(chunks_per_source)
+    _log.debug(
+        "[RAG/Qdrant] %d chunk(s) retenus sur %d candidats (%d source(s))",
+        len(selected), len(candidates), n_sources,
+    )
+
+    if not selected:
+        _log.warning(
+            "[RAG/Qdrant] aucun chunk retenu après filtrage (min_score=%.2f, top_k=%d)",
+            min_score, top_k,
+        )
+        return ""
+
     parts = ["### Contexte documentaire pertinent :\n"]
-    for i, h in enumerate(hits, 1):
+    for i, h in enumerate(selected, 1):
         tag = "🌐" if h["scope"] == "global" else "💬"
         parts.append(
             f"[{i}] {tag} ({h['source']}, score={h['score']:.2f})\n{h['text']}\n"
@@ -671,3 +1191,114 @@ def list_collections() -> list[str]:
     except Exception as e:
         _log.error(f"[RAG] Erreur lors de la récupération des collections : {e}")
         return []
+
+
+def list_albert_collections() -> list[dict]:
+    """Retourne la liste des collections accessibles sur le serveur Albert.
+
+    Récupère toutes les collections en une seule passe paginée (sans filtre
+    de visibilité), exactement comme le fait l'autre appli qui fonctionne.
+    Le serveur Albert retourne uniquement ce que l'API key courante peut voir
+    (collections publiques + collections privées de l'utilisateur) — pas besoin
+    de deux appels séparés.
+
+    Chaque entrée : {"id": int, "name": str, "description": str, "visibility": str}
+    Retourne [] si l'API Albert n'est pas configurée ou inaccessible.
+    """
+    base = _albert_base_url()
+    oa   = _get_openai_client()
+    if not base and oa is None:
+        return []
+
+    seen_ids: set[int] = set()
+    result:   list[dict] = []
+    offset = 0
+    limit  = 100
+
+    while True:
+        data = _albert_get("/v1/collections", params={
+            "limit":  limit,
+            "offset": offset,
+        })
+
+        if data is None:
+            _log.warning("[Albert] list_collections : appel API échoué à offset=%d", offset)
+            break
+
+        page = data.get("data", [])
+        if not page:
+            break  # dernière page
+
+        for item in page:
+            col_id = item.get("id")
+            if col_id is None or col_id in seen_ids:
+                continue
+            seen_ids.add(col_id)
+            result.append({
+                "id":          col_id,
+                "name":        item.get("name", f"collection#{col_id}"),
+                "description": item.get("description", "") or "",
+                "visibility":  item.get("visibility", "unknown"),
+            })
+
+        if len(page) < limit:
+            break  # dernière page reçue
+        offset += limit
+
+    _log.debug("[Albert] list_collections → %d collection(s)", len(result))
+    return result
+
+
+# ── Cache des IDs Albert — résolution automatique au premier appel ────────────
+#
+# RAG_ALBERT_COLLECTION_IDS dans .env reste supporté pour forcer une liste
+# précise. Si la variable est absente ou vide, on découvre automatiquement
+# toutes les collections accessibles (publiques + privées de l'utilisateur).
+#
+# Le cache est invalidé si la clé API change (redémarrage implicite),
+# ou explicitement via reset_albert_collections_cache().
+
+_albert_collections_cache: list[int] | None = None
+
+
+def reset_albert_collections_cache() -> None:
+    """Force la redécouverte des collections Albert au prochain appel."""
+    global _albert_collections_cache
+    _albert_collections_cache = None
+    _log.debug("[Albert] cache collections invalidé")
+
+
+def get_albert_collection_ids() -> list[int]:
+    """Retourne les IDs de collections Albert à interroger.
+
+    Priorité :
+      1. RAG_ALBERT_COLLECTION_IDS dans .env  — liste fixe, respectée telle quelle.
+      2. Auto-découverte via GET /v1/collections (public + private) — mise en cache.
+         Le cache est conservé pendant toute la durée de vie du processus ;
+         appeler reset_albert_collections_cache() pour forcer un rechargement.
+
+    Retourne [] si l'API Albert n'est pas configurée (OPENAI_API_BASE vide).
+    """
+    global _albert_collections_cache
+
+    # Priorité 1 : liste explicite dans .env
+    if Config.RAG_ALBERT_COLLECTION_IDS:
+        return Config.RAG_ALBERT_COLLECTION_IDS
+
+    # Priorité 2 : auto-découverte avec cache
+    if not _albert_base_url() and _get_openai_client() is None:
+        return []
+
+    if _albert_collections_cache is None:
+        cols = list_albert_collections()
+        _albert_collections_cache = [c["id"] for c in cols]
+        if _albert_collections_cache:
+            names = [f"{c['name']}(#{c['id']})" for c in cols]
+            _log.info(
+                "[Albert] %d collection(s) découverte(s) automatiquement : %s",
+                len(names), ", ".join(names),
+            )
+        else:
+            _log.warning("[Albert] aucune collection trouvée sur le serveur")
+
+    return _albert_collections_cache

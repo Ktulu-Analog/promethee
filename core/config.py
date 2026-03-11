@@ -28,8 +28,37 @@ if not _env_path.exists():
 load_dotenv(_env_path)
 
 
+def _safe_user_id() -> str:
+    """Retourne l'identifiant utilisateur normalisé (partagé par les deux fonctions de nommage).
+
+    Priorité :
+      1. RAG_USER_ID dans .env     → utilisé tel quel (normalisé)
+      2. Nom d'utilisateur système → getpass.getuser()
+      3. Nom de machine            → platform.node()
+      4. Fallback                  → "default"
+
+    Normalisé : minuscules, caractères non-alphanumériques → _, pas de _ en bord.
+    """
+    user_id = os.getenv("RAG_USER_ID", "").strip()
+    if not user_id:
+        try:
+            user_id = getpass.getuser()
+        except Exception:
+            user_id = platform.node()
+    return re.sub(r"[^a-z0-9]+", "_", user_id.lower()).strip("_") or "default"
+
+
+def get_safe_user_id() -> str:
+    """Retourne l'identifiant utilisateur normalisé — API publique de _safe_user_id().
+
+    À utiliser depuis les modules externes (rag_engine, etc.) pour éviter
+    de dupliquer la logique de résolution du user_id.
+    """
+    return _safe_user_id()
+
+
 def _qdrant_collection() -> str:
-    """Calcule le nom de collection Qdrant de l'utilisateur courant.
+    """Calcule le nom de la collection RAG documentaire de l'utilisateur courant.
 
     Priorité :
       1. QDRANT_COLLECTION dans .env  → respecté tel quel (rétro-compatibilité)
@@ -44,16 +73,28 @@ def _qdrant_collection() -> str:
     explicit = os.getenv("QDRANT_COLLECTION", "").strip()
     if explicit:
         return explicit
+    return f"promethee_{_safe_user_id()}"
 
-    user_id = os.getenv("RAG_USER_ID", "").strip()
-    if not user_id:
-        try:
-            user_id = getpass.getuser()
-        except Exception:
-            user_id = platform.node()
 
-    safe = re.sub(r"[^a-z0-9]+", "_", user_id.lower()).strip("_") or "default"
-    return f"promethee_{safe}"
+def _ltm_collection() -> str:
+    """Calcule le nom de la collection Qdrant dédiée à la mémoire long terme (LTM).
+
+    Séparée de la collection RAG documentaire pour éviter toute pollution
+    croisée entre souvenirs de conversations et documents ingérés manuellement.
+
+    Priorité :
+      1. LTM_COLLECTION dans .env     → respecté tel quel
+      2. RAG_USER_ID / getuser() / hostname → promethee_memory_<user_id>
+      3. Fallback                     → promethee_memory_default
+
+    Le suffixe "_memory" distingue clairement cette collection des collections
+    documentaires ("promethee_<user>") aux yeux d'un administrateur Qdrant
+    supervisant plusieurs instances.
+    """
+    explicit = os.getenv("LTM_COLLECTION", "").strip()
+    if explicit:
+        return explicit
+    return f"promethee_memory_{_safe_user_id()}"
 
 
 class Config:
@@ -81,6 +122,12 @@ class Config:
     # Rétro-compatible : tout accès à Config.QDRANT_COLLECTION continue de fonctionner.
     QDRANT_COLLECTION: str = _qdrant_collection()
 
+    # Nom de la collection Qdrant dédiée à la mémoire long terme (LTM).
+    # Séparée de QDRANT_COLLECTION pour éviter la pollution croisée entre
+    # souvenirs de conversations et documents ingérés manuellement.
+    # Format automatique : promethee_memory_<user_id> (même logique que QDRANT_COLLECTION).
+    LTM_COLLECTION: str = _ltm_collection()
+
     # Embeddings
     EMBEDDING_MODE: str = os.getenv("EMBEDDING_MODE", "")
     EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "")
@@ -99,9 +146,20 @@ class Config:
 
     # App
     APP_TITLE: str = os.getenv("APP_TITLE", "Prométhée AI")
+    APP_VERSION: str = os.getenv("APP_VERSION", "2.0")
     APP_USER: str = os.getenv("APP_USER", "Vous")
     HISTORY_DB: str = os.getenv("HISTORY_DB", "history.db")
     MAX_CONTEXT_TOKENS: int = int(os.getenv("MAX_CONTEXT_TOKENS", ""))
+
+    # Taille max d'un résultat d'outil avant troncature symétrique (caractères).
+    # Les résultats contenant du code source ou des exports bureautiques sont
+    # toujours conservés intégralement, quelle que soit cette limite.
+    TOOL_RESULT_MAX_CHARS: int = int(os.getenv("TOOL_RESULT_MAX_CHARS", "12000"))
+
+    # Nombre maximum d'itérations de la boucle agent (appels LLM + outils).
+    # Au-delà, une synthèse forcée est générée depuis les résultats disponibles.
+    # Augmenter cette valeur pour les tâches complexes multi-étapes.
+    AGENT_MAX_ITERATIONS: int = int(os.getenv("AGENT_MAX_ITERATIONS", "8"))
 
     # Chiffrement de la base SQLite (AES-256-GCM, cle derivee via Scrypt)
     # DB_ENCRYPTION=ON  -> colonnes sensibles chiffrees (title, content, system_prompt, metadata)
@@ -145,6 +203,99 @@ class Config:
     CONTEXT_CONSOLIDATION_PRESSURE_THRESHOLD: float = float(
         os.getenv("CONTEXT_CONSOLIDATION_PRESSURE_THRESHOLD", "0.70")
     )
+
+    # ── RAG — Recherche sémantique (rag_engine.py) ───────────────────────────
+    # Nombre de chunks candidats récupérés avant filtrage/reranking.
+    # En mode Albert : candidats passés au reranker BGE-Reranker-v2-M3.
+    # En mode Qdrant : résultats vectoriels bruts avant filtrage.
+    # Recommandé : 12–20. Défaut : 15.
+    RAG_TOP_K: int = int(os.getenv("RAG_TOP_K", "15"))
+    # Score minimal pour qu'un chunk soit retenu (mode Qdrant uniquement).
+    # En mode Albert, le reranker produit ses propres scores — utiliser RAG_RERANK_MIN_SCORE.
+    # Plage : 0.0–1.0. Recommandé : 0.55–0.70. Défaut : 0.60.
+    RAG_MIN_SCORE: float = float(os.getenv("RAG_MIN_SCORE", "0.60"))
+    # Nombre maximum de chunks retenus par source (document).
+    # Limite la sur-représentation d'un seul document dans le contexte injecté.
+    # Recommandé : 2–3. Défaut : 2.
+    RAG_MAX_CHUNKS_PER_SOURCE: int = int(os.getenv("RAG_MAX_CHUNKS_PER_SOURCE", "2"))
+    # Nombre maximum de chunks total injectés dans le prompt après filtrage/reranking.
+    # Doit être ≤ RAG_TOP_K. Recommandé : 6–10. Défaut : 8.
+    RAG_MAX_CHUNKS_TOTAL: int = int(os.getenv("RAG_MAX_CHUNKS_TOTAL", "8"))
+
+    # ── RAG — Recherche hybride Albert (albert_search dans rag_engine.py) ────
+    # Méthode de recherche Albert : "hybrid" (dense BGE-M3 + sparse BM25 via RRF),
+    # "semantic" (dense uniquement), "lexical" (BM25 uniquement).
+    # "hybrid" est recommandé pour les corpus métier avec termes rares/codes.
+    RAG_SEARCH_METHOD: str = os.getenv("RAG_SEARCH_METHOD", "hybrid")
+    # Constante k du Reciprocal Rank Fusion (RRF) en mode hybrid.
+    # Plage : 10–100. Une valeur basse favorise les tops résultats,
+    # une valeur haute lisse les scores. Défaut Albert : 60.
+    RAG_RFF_K: int = int(os.getenv("RAG_RFF_K", "60"))
+    # IDs des collections Albert à interroger (entiers, séparés par des virgules).
+    # Ex : RAG_ALBERT_COLLECTION_IDS=12,47
+    # Laisser vide pour n'utiliser que Qdrant.
+    RAG_ALBERT_COLLECTION_IDS: list[int] = [
+        int(x.strip())
+        for x in os.getenv("RAG_ALBERT_COLLECTION_IDS", "").split(",")
+        if x.strip().isdigit()
+    ]
+    # Modèle de reranking exposé par Albert.
+    # Doit correspondre à un modèle de type "text-classification" disponible sur /v1/models.
+    RAG_RERANK_MODEL: str = os.getenv("RAG_RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
+    # Score de pertinence minimal retourné par le reranker pour conserver un chunk.
+    # Le reranker BGE-Reranker-v2-M3 produit des scores logit (non bornés à [0,1]).
+    # Valeurs typiques : < 0 = non pertinent, > 0 = pertinent, > 5 = très pertinent.
+    # Défaut : -2.0 (filtre les chunks vraiment hors-sujet, garde le reste).
+    RAG_RERANK_MIN_SCORE: float = float(os.getenv("RAG_RERANK_MIN_SCORE", "-2.0"))
+    # Activer le reranking Albert. ON = actif si RAG_ALBERT_COLLECTION_IDS défini.
+    # Mettre OFF pour désactiver sans toucher aux autres paramètres Albert.
+    RAG_RERANK_ENABLED: bool = os.getenv("RAG_RERANK_ENABLED", "ON").strip().upper() == "ON"
+
+    # ── Mémoire long terme inter-conversations (long_term_memory.py) ─────────
+    # Indexe automatiquement les conversations fermées dans Qdrant (collection
+    # dédiée LTM_COLLECTION) pour un rappel sémantique dans les sessions futures.
+    # Nécessite que Qdrant et les embeddings soient configurés (RAG actif).
+    LTM_ENABLED: bool = os.getenv("LTM_ENABLED", "OFF").strip().upper() == "ON"
+    # Nombre d'échanges user/assistant regroupés dans un chunk Qdrant.
+    LTM_EXCHANGES_PER_CHUNK: int = int(os.getenv("LTM_EXCHANGES_PER_CHUNK", "6"))
+    # Troncature appliquée à chaque message individuel avant embedding (caractères).
+    LTM_MAX_CHARS_PER_MSG: int = int(os.getenv("LTM_MAX_CHARS_PER_MSG", "600"))
+    # Nombre de souvenirs remontés par recall().
+    LTM_TOP_K: int = int(os.getenv("LTM_TOP_K", "4"))
+    # Score de similarité cosinus minimum pour qu'un souvenir soit retenu.
+    LTM_MIN_SCORE: float = float(os.getenv("LTM_MIN_SCORE", "0.45"))
+    # Nombre minimal de messages (user+assistant) pour indexer une conversation.
+    LTM_MIN_MESSAGES: int = int(os.getenv("LTM_MIN_MESSAGES", "4"))
+    # Nombre de conversations récentes toujours injectées dans le contexte,
+    # indépendamment du score sémantique (0 = désactivé).
+    LTM_RECENT_K: int = int(os.getenv("LTM_RECENT_K", "2"))
+
+    # Modèle LLM dédié aux opérations LTM (résumés de conversation, consolidation
+    # thématique). Permet d'utiliser un modèle léger/rapide pour ces tâches de
+    # synthèse en arrière-plan, sans mobiliser le modèle principal.
+    # Si vide, Config.active_model() est utilisé (modèle principal).
+    # Exemple : LTM_MODEL=mistralai/Mistral-Small-3.2-24B-Instruct-2506
+    LTM_MODEL: str = os.getenv("LTM_MODEL", "").strip()
+
+    # ── Mémoire long terme — Résumés LLM et consolidation ────────────────────
+    # Générer un résumé LLM structuré de chaque conversation au lieu de stocker
+    # les échanges bruts. Réduit le bruit sémantique et améliore la qualité des
+    # vecteurs d'embedding. Nécessite que client et model soient passés à LongTermMemory().
+    # OFF = comportement historique (chunks bruts). Recommandé : ON si LLM disponible.
+    LTM_USE_SUMMARY: bool = os.getenv("LTM_USE_SUMMARY", "OFF").strip().upper() == "ON"
+    # Taille maximale du résumé LLM généré par conversation (caractères).
+    # Le dialogue brut envoyé au LLM est plafonné à LTM_SUMMARY_MAX_CHARS * 6.
+    # Recommandé : 800–1500. Défaut : 1200.
+    LTM_SUMMARY_MAX_CHARS: int = int(os.getenv("LTM_SUMMARY_MAX_CHARS", "1200"))
+    # Consolidation LTM : tous les N cycles d'indexation, regrouper les anciens
+    # souvenirs en résumés thématiques via un LLM secondaire.
+    # Réduit la croissance indéfinie de LTM_COLLECTION.
+    # 0 = désactivé. Recommandé : 15–30 (selon la fréquence de clôture de conversations).
+    LTM_CONSOLIDATION_EVERY: int = int(os.getenv("LTM_CONSOLIDATION_EVERY", "20"))
+    # Nombre de chunks anciens fusionnés lors d'un cycle de consolidation.
+    # Ces chunks sont remplacés par un unique chunk consolidé marqué _consolidated=True.
+    # Recommandé : 20–40. Défaut : 30.
+    LTM_CONSOLIDATION_MAX_CHUNKS: int = int(os.getenv("LTM_CONSOLIDATION_MAX_CHUNKS", "30"))
 
     # ── Interface ─────────────────────────────────────────────────────────────
     # Nombre maximum de conversations rouvertes au démarrage dans la sidebar.

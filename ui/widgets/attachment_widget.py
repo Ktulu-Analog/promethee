@@ -489,12 +489,23 @@ class AttachmentButton(QToolButton):
             }}
         """)
 
+    def _open_file_dialog(self, title: str, filters: str) -> list[str]:
+        """Ouvre un QFileDialog non-natif thémé (respecte le thème sombre/clair).
+        Le dialog natif de la plateforme ignore le QSS de l'application, ce qui
+        provoque des couleurs incorrectes dans la sidebar gauche en thème sombre.
+        """
+        dialog = QFileDialog(self, title, "", filters)
+        dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
+        dialog.setFileMode(QFileDialog.FileMode.ExistingFiles)
+        dialog.setStyleSheet(ThemeManager.file_dialog_style())
+        if dialog.exec():
+            return dialog.selectedFiles()
+        return []
+
     def _select_file(self):
         """Ouvre un dialogue pour sélectionner un ou plusieurs fichiers."""
-        paths, _ = QFileDialog.getOpenFileNames(
-            self,
+        paths = self._open_file_dialog(
             "Sélectionner des fichiers",
-            "",
             "Tous les fichiers (*.*);;"
             "Texte (*.txt *.md *.py *.js *.json *.xml *.yaml *.csv);;"
             "PDF (*.pdf);;"
@@ -505,10 +516,8 @@ class AttachmentButton(QToolButton):
 
     def _select_image(self):
         """Ouvre un dialogue pour sélectionner une ou plusieurs images."""
-        paths, _ = QFileDialog.getOpenFileNames(
-            self,
+        paths = self._open_file_dialog(
             "Sélectionner des images",
-            "",
             "Images (*.png *.jpg *.jpeg *.gif *.bmp *.webp)"
         )
         for path in paths:

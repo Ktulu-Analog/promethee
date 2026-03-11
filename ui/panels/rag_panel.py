@@ -74,21 +74,17 @@ class RagPanel(QWidget):
         self._div1 = self._make_divider()
         layout.addWidget(self._div1)
 
-        # ── Sélection de collection globale ──
-        layout.addWidget(SectionLabel("🌐 Base globale (Collections Qdrant)"))
+        # ── Sélection de collection ──
+        layout.addWidget(SectionLabel("🗂 Collections"))
 
         # Combo box pour sélectionner la collection
         collection_row = QHBoxLayout()
         collection_row.setSpacing(6)
 
-        collection_label = QLabel("Collection :")
-        collection_label.setStyleSheet(f"color: {ThemeManager.inline('model_badge_color')}; font-size: 12px;")
-        collection_row.addWidget(collection_label)
-
         self._collection_combo = QComboBox()
         self._collection_combo.setObjectName("tool_btn")
         self._collection_combo.setMinimumHeight(28)
-        self._collection_combo.currentTextChanged.connect(self._on_collection_changed)
+        self._collection_combo.currentIndexChanged.connect(self._on_collection_index_changed)
         collection_row.addWidget(self._collection_combo, stretch=1)
 
         self._refresh_btn = QPushButton("🔄")
@@ -203,57 +199,100 @@ class RagPanel(QWidget):
         self._info_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self._info_lbl)
 
-    # ── Collections Qdrant ────────────────────────────────────────────
+    # ── Collections (Qdrant + Albert fusionnées) ──────────────────────
 
     def _load_collections(self):
-        """Charge la liste des collections depuis Qdrant, filtrée pour l'utilisateur courant."""
-        all_collections = rag_engine.list_collections()
-
-        # Ne conserver que :
-        #  - la collection de l'utilisateur courant (promethee_<user_id>)
-        #  - les collections externes (sans préfixe promethee_), qui sont des
-        #    sources documentaires partagées intentionnellement
-        own = Config.QDRANT_COLLECTION
-        collections = [
-            c for c in all_collections
-            if c == own or not c.startswith("promethee_")
-        ]
-
+        """Charge et fusionne les collections Qdrant et Albert dans le combo."""
+        # Bloquer le signal pendant le remplissage pour éviter les faux déclenchements
+        self._collection_combo.blockSignals(True)
         self._collection_combo.clear()
 
-        if not collections:
-            self._collection_combo.addItem("Aucune collection disponible")
+        items: list[tuple[str, str]] = []  # (label affiché, valeur interne)
+
+        # ── Collections Qdrant ────────────────────────────────────────
+        all_qdrant = rag_engine.list_collections()
+        own = Config.QDRANT_COLLECTION
+        qdrant_cols = [
+            c for c in all_qdrant
+            if c == own or (
+                not c.startswith("promethee_")
+                and not c.startswith("promethee_memory_")
+            )
+        ]
+        for name in sorted(qdrant_cols):
+            label = f"💾 {name}"
+            items.append((label, name))  # valeur = nom Qdrant (str)
+
+        # ── Collections Albert ────────────────────────────────────────
+        try:
+            albert_cols = rag_engine.list_albert_collections()
+        except Exception:
+            albert_cols = []
+
+        for col in sorted(albert_cols, key=lambda c: c["name"]):
+            vis   = "🌐" if col.get("visibility") == "public" else "🔒"
+            label = f"⚡{vis} {col['name']}"
+            value = f"albert:{col['id']}"  # valeur = "albert:<ID>" pour le dispatch
+            items.append((label, value))
+
+        # ── Remplissage du combo ──────────────────────────────────────
+        if not items:
+            self._collection_combo.addItem("Aucune collection disponible", None)
             self._collection_combo.setEnabled(False)
-            self._collection_info.setText("Aucune collection disponible dans Qdrant")
+            self._collection_info.setText("Aucune collection disponible")
             self.selected_collection = None
         else:
             self._collection_combo.setEnabled(True)
-            self._collection_combo.addItem("-- Sélectionner une collection --")
-            for coll in sorted(collections):
-                self._collection_combo.addItem(coll)
+            self._collection_combo.addItem("-- Sélectionner --", None)
+            for label, value in items:
+                self._collection_combo.addItem(label, value)
 
-            # Sélectionner automatiquement la collection par défaut si elle existe
-            default_idx = self._collection_combo.findText(own)
-            if default_idx > 0:
-                self._collection_combo.setCurrentIndex(default_idx)
+            # Sélectionner automatiquement la collection Qdrant par défaut
+            for i in range(self._collection_combo.count()):
+                if self._collection_combo.itemData(i) == own:
+                    self._collection_combo.setCurrentIndex(i)
+                    break
 
-            self._collection_info.setText(f"{len(collections)} collection(s) disponible(s)")
+            n_q = len(qdrant_cols)
+            n_a = len(albert_cols)
+            parts = []
+            if n_q: parts.append(f"{n_q} Qdrant")
+            if n_a: parts.append(f"{n_a} Albert")
+            self._collection_info.setText(", ".join(parts) + " disponible(s)")
 
+        self._collection_combo.blockSignals(False)
+        # Déclencher manuellement pour initialiser selected_collection
+        self._on_collection_index_changed(self._collection_combo.currentIndex())
         self._refresh_doc_list()
 
-    def _on_collection_changed(self, collection_name: str):
-        """Appelé quand l'utilisateur change de collection."""
-        if collection_name == "-- Sélectionner une collection --" or \
-           collection_name == "Aucune collection disponible":
+    def _on_collection_index_changed(self, index: int):
+        """Appelé quand l'utilisateur change de collection dans le combo."""
+        value = self._collection_combo.itemData(index)  # str Qdrant | "albert:<ID>" | None
+
+        if not value:
             self.selected_collection = None
             self._collection_info.setText("Aucune collection sélectionnée")
-        else:
-            self.selected_collection = collection_name
-            self._collection_info.setText(f"Collection active : {collection_name}")
-            # Émettre le signal pour informer les autres composants
-            self.collection_changed.emit(collection_name)
+            return
 
+        self.selected_collection = value
+
+        if value.startswith("albert:"):
+            col_id   = value.split(":", 1)[1]
+            col_name = self._collection_combo.itemText(index).split(" ", 2)[-1]  # retire "⚡🌐 "
+            self._collection_info.setText(
+                f"⚡ Albert — {col_name}  (hybride BGE-M3 + reranking)"
+            )
+        else:
+            self._collection_info.setText(f"💾 Qdrant — {value}")
+
+        self.collection_changed.emit(value)
         self._refresh_doc_list()
+
+    # ── Méthodes supprimées (ancienne section Albert séparée) ──────────
+    # _refresh_albert_info et _refresh_albert_cache sont retirées :
+    # les collections Albert sont maintenant dans le combo principal.
+
+    # ── Collections Qdrant ────────────────────────────────────────────
 
     # ── Helpers UI ────────────────────────────────────────────────────
 

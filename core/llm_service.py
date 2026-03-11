@@ -27,8 +27,8 @@ from .config import Config
 from . import tools_engine
 from .session_memory import SessionMemory
 
-# Nombre de caractères max pour le résultat d'un outil (≈ 3× tokens)
-_TOOL_RESULT_MAX_CHARS = 12_000
+# Taille max d'un résultat d'outil — lue depuis Config pour être configurable via .env.
+_TOOL_RESULT_MAX_CHARS = Config.TOOL_RESULT_MAX_CHARS
 
 # ── Callback compression de contexte ─────────────────────────────────────
 _context_event_callback = None
@@ -559,7 +559,7 @@ def agent_loop(
     system_prompt: str = "",
     model: str = None,
     use_tools: bool = True,
-    max_iterations: int = 8,
+    max_iterations: int | None = None,
     disable_context_management: bool = False,
     on_tool_call: Callable[[str, str], None] = None,
     on_tool_result: Callable[[str, str], None] = None,
@@ -586,6 +586,9 @@ def agent_loop(
     """
     try:
         client = build_client()
+        # Résolution de max_iterations : valeur explicite ou Config (configurable via .env)
+        if max_iterations is None:
+            max_iterations = Config.AGENT_MAX_ITERATIONS
         msgs = []
         if system_prompt:
             msgs.append({"role": "system", "content": system_prompt})

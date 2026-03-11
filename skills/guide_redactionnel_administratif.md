@@ -241,13 +241,100 @@ Exemples corrects :
 
 ---
 
-## 9. Génération de documents avec export_docx / export_pdf
+## 9. Génération de documents Word / PDF
 
-Pour produire un document Word ou PDF :
+### 9.1 Choisir le bon outil
 
-- Utiliser `export_docx` pour un document Word éditable.
-- Utiliser `export_pdf` pour un document non modifiable (diffusion externe).
-- **Rédiger un contenu COMPLET** : utiliser le champ `paragraphs` (liste) pour plusieurs paragraphes par section.
+| Situation | Outil |
+|---|---|
+| Un gabarit `.docx` de l'organisation existe | `export_docx_template` ← **prioritaire** |
+| Pas de gabarit, document éditable | `export_docx` |
+| Diffusion externe non modifiable | `export_pdf` |
+
+---
+
+### 9.2 Protocole avec gabarit (export_docx_template)
+
+**TOUJOURS suivre ces 3 étapes dans cet ordre.**
+
+#### Étape 1 — Chercher un gabarit
+
+```
+list_files("~/Modèles")
+```
+
+Si un `.docx` correspondant au type de document existe, l'utiliser. Sinon, passer à `export_docx`.
+
+#### Étape 2 — Inspecter les styles du gabarit (OBLIGATOIRE)
+
+```
+list_docx_template_styles(template_path="~/Modèles/note.docx")
+```
+
+Retourne la liste des styles disponibles avec leur type (`paragraph`, `character`, `table`).  
+**Ne jamais inventer un nom de style.** Utiliser uniquement les noms retournés par cet outil.
+
+Correspondances fréquentes à repérer dans la liste :
+
+| Rôle | Noms courants dans les gabarits FR |
+|---|---|
+| Titre principal | `Titre`, `Titre du document`, `Title` |
+| Titre de section niv. 1 | `Titre 1`, `Heading 1` |
+| Titre de section niv. 2 | `Titre 2`, `Heading 2` |
+| Corps de texte | `Corps texte`, `Corps de texte`, `Body Text`, `Normal` |
+| Liste à puces | `Puce`, `Liste à puces`, `List Bullet` |
+| Liste numérotée | `Liste numérotée`, `List Number` |
+| Tableau | `Tableau grille`, `Table Grid` |
+
+#### Étape 3 — Générer le document
+
+Utiliser les noms de styles **exacts** obtenus à l'étape 2 dans les champs `style` et `bullet_style`.
+
+```json
+{
+  "template_path": "~/Modèles/note.docx",
+  "document": {
+    "title": "Note relative à...",
+    "bookmarks": {
+      "date": "12 juin 2026",
+      "ref": "RH-2026-042"
+    },
+    "sections": [
+      {
+        "heading": "Objet",
+        "style": "Titre 1",
+        "paragraphs": [
+          "La présente note a pour objet de...",
+          "Elle fait suite à..."
+        ]
+      },
+      {
+        "heading": "Contexte",
+        "style": "Titre 1",
+        "paragraphs": [
+          "Par décision du ..., il a été décidé de..."
+        ],
+        "bullets": ["Point 1", "Point 2"],
+        "bullet_style": "Puce"
+      }
+    ]
+  },
+  "clear_body": true
+}
+```
+
+**Règles impératives :**
+- `style` dans chaque section = style du **titre** de section (ex : `"Titre 1"`)
+- Les `paragraphs` héritent automatiquement du style `Corps texte` ou `Normal` du gabarit
+- `bullet_style` = nom exact du style de liste retourné par `list_docx_template_styles`
+- `bookmarks` = substitutions de zones fixes du gabarit (en-tête, référence, date) — utiliser uniquement si le gabarit contient des signets nommés
+- `clear_body: true` pour les gabarits avec contenu d'exemple ; `false` pour conserver un en-tête de courrier fixe
+
+---
+
+### 9.3 Sans gabarit (export_docx / export_pdf)
+
+- **Rédiger un contenu COMPLET** : utiliser `paragraphs` (liste) pour plusieurs paragraphes par section.
 - **Viser au minimum 15 sections** pour un rapport ou une note de fond.
 - Ne pas se limiter à un squelette de puces : rédiger de vrais paragraphes développés.
 - Un courrier ou un compte rendu court peut avoir 3-5 sections seulement.

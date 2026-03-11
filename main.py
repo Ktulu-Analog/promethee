@@ -32,6 +32,15 @@ logging.basicConfig(
 from tools import register_all
 register_all()
 
+# ── Diagnostic collections Qdrant ─────────────────────────────────────────
+from core.config import Config
+import logging as _logging
+_logging.getLogger("promethee.startup").info(
+    "[Config] QDRANT_COLLECTION=%s | LTM_COLLECTION=%s | LTM_ENABLED=%s | RAG_USER_ID=%r",
+    Config.QDRANT_COLLECTION, Config.LTM_COLLECTION, Config.LTM_ENABLED, Config.RAG_USER_ID,
+)
+# ──────────────────────────────────────────────────────────────────────────
+
 from ui import run
 
 if __name__ == "__main__":

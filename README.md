@@ -1,16 +1,17 @@
-# 🔥 Prométhée AI
+# 🔥 Prométhée AI v2.1
 
-**Assistant IA desktop souverain** — Interface PyQt6 connectée à un LLM (OpenAI-compatible, Albert API ou Ollama), avec outils intégrés, RAG, et support Légifrance/Judilibre.
+**Assistant IA desktop souverain** — Interface PyQt6 connectée à un LLM (OpenAI-compatible, Albert API ou Ollama), avec outils intégrés, RAG, mémoire long terme et support Légifrance/Judilibre.
 
 ---
 
 ## ✨ Fonctionnalités
 
 - 💬 **Chat en streaming** avec historique chiffré (AES-GCM)
-- 🔧 **Outils intégrés** : web, données, export (docx/pptx/pdf), analyse de données, Python, SQL, OCR, Légifrance, Judilibre, data.gouv.fr, Thunderbird
-- 📚 **RAG** (Retrieval-Augmented Generation) via Qdrant
+- 🧠 **Mémoire long terme (LTM)** : résumés vectorisés des conversations passées via Qdrant (première version, va évoluer)
+- 🔧 **Outils intégrés** : web, données, export (docx/pptx/pdf/xlsx), analyse de données, Python, SQL, OCR, Légifrance, Judilibre, data.gouv.fr, Thunderbird
+- 📚 **RAG** (Retrieval-Augmented Generation) via Qdrant et Albert API
 - 📊 **Outils collaboratifs** : intégration de l'API Grist
-- 🏛️ **Légifrance & Judilibre** via API PISTE
+- 🏛️ **APIs juridiques** : Légifrance et Judilibre via PISTE
 - 🖥️ **100% local possible** avec Ollama
 - 🔒 **Chiffrement optionnel** de la base de données SQLite
 - 🎨 **Thème clair/sombre**
@@ -58,10 +59,11 @@ cp .env.example .env
 nano .env
 ```
 
-Les paramètres clés à configurer dans `.env` :
+Les paramètres essentiels à configurer dans `.env` :
 
 | Variable | Description |
 |---|---|
+| `APP_VERSION` | Numéro de version affiché dans l'interface (ex : `2.0`) |
 | `OPENAI_API_KEY` | Clé API (Albert, OpenAI, etc.) |
 | `OPENAI_API_BASE` | URL du serveur LLM |
 | `OPENAI_MODEL` | Modèle à utiliser |
@@ -90,6 +92,14 @@ promethee/
 │   └── dialogs/        # Boîtes de dialogue
 ├── skills/             # Guides de compétences injectés en contexte
 ├── assets/             # Logo, KaTeX
+├── scripts/            # Scripts utilitaires (CLI)
+│   ├── ingest.py       # Indexation de documents dans Qdrant (mode interactif ou CLI)
+│   ├── logview.py      # Lecteur de logs coloré en terminal (filtres, stats, follow)
+│   └── download_katex.py  # Téléchargement des assets KaTeX (à exécuter une seule fois)
+├── documentation/      # Documentation développeur
+│   ├── doc_developpeur_tools.pdf   # Guide de référence pour créer des outils
+│   ├── modele_tools.py             # Fichier modèle annoté pour un nouvel outil
+│   └── logview_documentation.docx # Documentation complète de logview.py
 ├── tests/              # Tests unitaires (pytest)
 ├── main.py             # Point d'entrée
 ├── prompts.yml         # Prompts système
@@ -119,6 +129,16 @@ promethee/
 | `judilibre_tools` | API Judilibre (PISTE) |
 | `datagouv_tools` | API data.gouv.fr |
 | `thunderbird_tools` | Lecture des e-mails Thunderbird |
+
+---
+
+## 🛠️ Scripts utilitaires
+
+| Script | Description |
+|---|---|
+| `scripts/ingest.py` | Indexe un répertoire de documents dans Qdrant. Mode interactif ou passage direct des arguments (`--collection`, chemin). |
+| `scripts/logview.py` | Lecteur de logs coloré en terminal. Supporte le follow temps réel (`-f`), le filtrage par niveau (`-l`), par module (`-m`), les stats (`--stats`), etc. |
+| `scripts/download_katex.py` | Télécharge les assets KaTeX (JS, CSS, polices woff2) dans `assets/katex/`. À exécuter une seule fois après le clonage. |
 
 ---
 
@@ -156,6 +176,25 @@ Au premier lancement, une passphrase vous sera demandée.
 1. Lancer Qdrant : `docker run -p 6333:6333 qdrant/qdrant`
 2. Dans `.env` : `QDRANT_URL=http://localhost:6333`
 3. Utiliser le panneau RAG dans l'interface pour ingérer des documents
+
+### Mémoire long terme (LTM)
+
+La LTM stocke des résumés vectorisés des conversations passées dans Qdrant et les réinjecte automatiquement en contexte. Configuration dans `.env` :
+
+```env
+LTM_ENABLED=ON
+LTM_MODEL=mistralai/Mistral-Small-3.2-24B-Instruct-2506
+LTM_USE_SUMMARY=OFF     # ON = résumés LLM (meilleure qualité), OFF = chunks bruts
+LTM_RECENT_K=2          # Nombre de souvenirs récents réinjectés
+```
+
+### Gestion du contexte et de l'agent
+
+```env
+AGENT_MAX_ITERATIONS=12            # Nombre max d'itérations de la boucle agent
+CONTEXT_CONSOLIDATION_EVERY=8      # Résumé de session tous les N tours
+CONTEXT_CONSOLIDATION_PRESSURE_THRESHOLD=0.70  # Consolidation adaptative (% du contexte)
+```
 
 ---
 

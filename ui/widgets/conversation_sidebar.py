@@ -99,6 +99,12 @@ _TOOLS_SVG = """<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'>
         stroke='{c}' stroke-width='1.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/>
 </svg>"""
 
+_MONITORING_SVG = """<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'>
+  <rect x='1' y='2' width='14' height='10' rx='1.5' stroke='{c}' stroke-width='1.4' fill='none'/>
+  <path d='M4 14h8M8 12v2' stroke='{c}' stroke-width='1.4' stroke-linecap='round'/>
+  <polyline points='3,9 5,5 7,7 9,4 11,6 13,3' stroke='{c}' stroke-width='1.3' fill='none' stroke-linecap='round' stroke-linejoin='round'/>
+</svg>"""
+
 _SETTINGS_SVG = """<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'>
   <circle cx='8' cy='8' r='2.2' stroke='{c}' stroke-width='1.4' fill='none'/>
   <path d='M8 1v2M8 13v2M1 8h2M13 8h2M3.05 3.05l1.41 1.41M11.54 11.54l1.41 1.41M11.54 4.46l-1.41 1.41M4.46 11.54l-1.41 1.41'
@@ -147,6 +153,7 @@ class ConvSidePanel(QWidget):
     clear_requested     = pyqtSignal()
     rag_toggle          = pyqtSignal()
     tools_toggle        = pyqtSignal()
+    monitoring_toggle   = pyqtSignal()
     settings_requested  = pyqtSignal()
     theme_changed       = pyqtSignal()
 
@@ -194,20 +201,24 @@ class ConvSidePanel(QWidget):
             b.setIconSize(QSize(16, 16))
             return b
 
-        self._btn_clear    = _btn(_CLEAR_SVG,    "Effacer la conversation",  self.clear_requested)
-        self._btn_rag      = _btn(_RAG_SVG,      "Panneau RAG  (Ctrl+R)",    self.rag_toggle)
-        self._btn_tools    = _btn(_TOOLS_SVG,    "Panneau Outils  (Ctrl+T)", self.tools_toggle)
-        self._btn_settings = _btn(_SETTINGS_SVG, "Paramètres  (Ctrl+,)",     self.settings_requested)
+        self._btn_clear    = _btn(_CLEAR_SVG,      "Effacer la conversation",  self.clear_requested)
+        self._btn_rag      = _btn(_RAG_SVG,        "Panneau RAG  (Ctrl+R)",    self.rag_toggle)
+        self._btn_tools    = _btn(_TOOLS_SVG,      "Panneau Outils  (Ctrl+T)", self.tools_toggle)
+        self._btn_monitor  = _btn(_MONITORING_SVG, "Panneau Monitoring  (Ctrl+M)", self.monitoring_toggle)
         self._action_svgs  = {
-            self._btn_clear:    _CLEAR_SVG,
-            self._btn_rag:      _RAG_SVG,
-            self._btn_tools:    _TOOLS_SVG,
-            self._btn_settings: _SETTINGS_SVG,
+            self._btn_clear:   _CLEAR_SVG,
+            self._btn_rag:     _RAG_SVG,
+            self._btn_tools:   _TOOLS_SVG,
+            self._btn_monitor: _MONITORING_SVG,
         }
+
+        self._btn_settings = _btn(_SETTINGS_SVG, "Paramètres  (Ctrl+,)", self.settings_requested)
+        self._action_svgs[self._btn_settings] = _SETTINGS_SVG
 
         top_bar.addWidget(self._btn_clear)
         top_bar.addWidget(self._btn_rag)
         top_bar.addWidget(self._btn_tools)
+        top_bar.addWidget(self._btn_monitor)
         top_bar.addStretch()
 
         self._toggle_btn = QPushButton()

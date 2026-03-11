@@ -91,7 +91,7 @@ def run():
     """Lance l'application PyQt6."""
     app = QApplication(sys.argv)
     app.setApplicationName(Config.APP_TITLE)
-    app.setApplicationVersion("2.0")
+    app.setApplicationVersion(Config.APP_VERSION)
 
     font = QFont("Segoe UI", 10)
     font.setStyleHint(QFont.StyleHint.SansSerif)

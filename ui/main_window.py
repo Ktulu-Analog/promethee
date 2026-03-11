@@ -25,6 +25,7 @@ from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction
 
 from core import Config, HistoryDB
+from core.long_term_memory import LongTermMemory, is_enabled as ltm_enabled
 from .panels import ChatPanel, RagPanel, ToolsPanel, MonitoringPanel
 from .dialogs import SettingsDialog, AboutDialog
 from .widgets import ConvSidePanel
@@ -139,6 +140,7 @@ class MainWindow(QMainWindow):
         self._tabs.clear_requested.connect(self._clear_current)
         self._tabs.rag_toggle.connect(self._toggle_rag)
         self._tabs.tools_toggle.connect(self._toggle_tools)
+        self._tabs.monitoring_toggle.connect(self._toggle_monitoring)
         self._tabs.settings_requested.connect(self._open_settings)
         self._tabs.theme_changed.connect(self._propagate_theme)
         self._splitter.addWidget(self._tabs)
@@ -177,7 +179,7 @@ class MainWindow(QMainWindow):
         sb.addPermanentWidget(self._carbon_lbl)
         sb.addPermanentWidget(self._cost_lbl)
         sb.addPermanentWidget(self._token_lbl)
-        sb.addPermanentWidget(QLabel(f"{Config.APP_TITLE} · v2.0"))
+        sb.addPermanentWidget(QLabel(f"{Config.APP_TITLE} · v{Config.APP_VERSION}"))
 
         self._update_token_display(None)
 
@@ -253,11 +255,37 @@ class MainWindow(QMainWindow):
                 return
         self._new_tab(conv_id)
 
+    def closeEvent(self, event):
+        """Indexe toutes les conversations ouvertes dans la LTM avant de quitter."""
+        if ltm_enabled():
+            panels = list(self._chat_panels())
+            if panels:
+                self._set_status(f"Sauvegarde mémoire long terme ({len(panels)} conversation(s))…")
+                for _, panel in panels:
+                    try:
+                        LongTermMemory(self.db).index_conversation(panel.get_conv_id())
+                    except Exception as _e:
+                        import logging
+                        logging.getLogger(__name__).warning(
+                            "[LTM] Indexation à la fermeture échouée : %s", _e
+                        )
+        event.accept()
+
     def _on_tab_close(self, index: int):
         widget = self._tabs.widget(index)
         if widget:
             if hasattr(widget, 'cleanup'):
                 widget.cleanup()
+
+            # ── Mémoire long terme : indexer la conversation fermée ───────
+            if ltm_enabled() and hasattr(widget, 'get_conv_id'):
+                try:
+                    LongTermMemory(self.db).index_conversation(widget.get_conv_id())
+                except Exception as _e:
+                    import logging
+                    logging.getLogger(__name__).warning("[LTM] Indexation échouée : %s", _e)
+            # ─────────────────────────────────────────────────────────────
+
             self._tabs.removeTab(index)
             widget.deleteLater()
         if self._tabs.count() == 0:
@@ -285,6 +313,15 @@ class MainWindow(QMainWindow):
             self.db.delete_conversation(conv_id)
         except AttributeError:
             self.db.clear_messages(conv_id)
+
+        # ── Mémoire long terme : oublier cette conversation ───────────────
+        if ltm_enabled():
+            try:
+                LongTermMemory(self.db).forget_conversation(conv_id)
+            except Exception as _e:
+                import logging
+                logging.getLogger(__name__).warning("[LTM] Oubli échoué : %s", _e)
+        # ─────────────────────────────────────────────────────────────────
 
         self._set_status("Conversation supprimée")
         if self._tabs.count() == 0:

@@ -186,6 +186,13 @@ PALETTE: dict[str, tuple[str, str]] = {
     "char_count_color":   ("#8a8a98", "#646058"),
     "dot_inactive":       ("#3a3a40", "#c8c4bc"),
     "dot_active":         ("#d4813d", "#8e4e18"),
+
+    # ── Flèches expand/collapse du QTreeWidget sidebar ───────────────
+    # Valeurs = URL SVG base64 complètes, substituées directement dans
+    # base.qss.tpl via __branch_arrow_closed__ / __branch_arrow_open__.
+    # Triangles ▶ (fermé) et ▼ (ouvert), couleur = text_muted du thème.
+    "branch_arrow_closed": ("url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAxNiAxNic+PHBvbHlnb24gcG9pbnRzPSc1LDMgMTEsOCA1LDEzJyBmaWxsPScjOGE4YTk4Jy8+PC9zdmc+')", "url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAxNiAxNic+PHBvbHlnb24gcG9pbnRzPSc1LDMgMTEsOCA1LDEzJyBmaWxsPScjNjQ2MDU4Jy8+PC9zdmc+')"),
+    "branch_arrow_open":   ("url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAxNiAxNic+PHBvbHlnb24gcG9pbnRzPSczLDUgMTMsNSA4LDExJyBmaWxsPScjOGE4YTk4Jy8+PC9zdmc+')", "url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAxNiAxNic+PHBvbHlnb24gcG9pbnRzPSczLDUgMTMsNSA4LDExJyBmaWxsPScjNjQ2MDU4Jy8+PC9zdmc+')"),
 }
 
 

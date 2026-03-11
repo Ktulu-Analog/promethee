@@ -206,6 +206,179 @@ class ThemeManager:
         """
 
     @classmethod
+    def file_dialog_style(cls) -> str:
+        """QSS complet pour QFileDialog non-natif (DontUseNativeDialog).
+        Couvre tous les sous-widgets internes, y compris la sidebar gauche (QListView)
+        qui ignore le QSS global de l'application quand le dialog natif est désactivé.
+        """
+        bg       = cls.inline('surface_bg')
+        bg_alt   = cls.inline('base_bg')
+        elevated = cls.inline('elevated_bg')
+        text     = cls.inline('text_primary')
+        text_sec = cls.inline('text_secondary')
+        border   = cls.inline('border')
+        accent   = cls.inline('accent')
+        sel_bg   = cls.inline('elevated_bg')
+        input_bg = cls.inline('input_bg')
+        btn_bg   = cls.inline('input_bg')
+        btn_brd  = cls.inline('input_border')
+        return f"""
+            QFileDialog {{
+                background-color: {bg};
+                color: {text};
+            }}
+            /* Sidebar gauche (répertoires favoris) */
+            QFileDialog QListView,
+            QFileDialog QListView::item {{
+                background-color: {bg_alt};
+                color: {text};
+                border: none;
+                outline: none;
+            }}
+            QFileDialog QListView::item:hover {{
+                background-color: {elevated};
+                color: {text};
+            }}
+            QFileDialog QListView::item:selected,
+            QFileDialog QListView::item:selected:active {{
+                background-color: {sel_bg};
+                color: {text};
+                border-left: 2px solid {accent};
+            }}
+            /* Panneau central (arborescence de fichiers) */
+            QFileDialog QTreeView,
+            QFileDialog QTreeView::item {{
+                background-color: {bg};
+                color: {text};
+                border: none;
+                outline: none;
+            }}
+            QFileDialog QTreeView::item:alternate {{
+                background-color: {bg_alt};
+            }}
+            QFileDialog QTreeView::item:hover {{
+                background-color: {elevated};
+            }}
+            QFileDialog QTreeView::item:selected,
+            QFileDialog QTreeView::item:selected:active {{
+                background-color: {sel_bg};
+                color: {text};
+            }}
+            QFileDialog QTreeView QHeaderView::section {{
+                background-color: {bg_alt};
+                color: {text_sec};
+                border: none;
+                border-bottom: 1px solid {border};
+                padding: 4px 8px;
+                font-size: 11px;
+            }}
+            /* Barre d'adresse (chemin courant) */
+            QFileDialog QLineEdit {{
+                background-color: {input_bg};
+                color: {text};
+                border: 1px solid {border};
+                border-radius: 4px;
+                padding: 4px 8px;
+                selection-background-color: {sel_bg};
+            }}
+            QFileDialog QLineEdit:focus {{
+                border-color: {accent};
+            }}
+            /* Combobox (filtre de type) */
+            QFileDialog QComboBox {{
+                background-color: {input_bg};
+                color: {text};
+                border: 1px solid {border};
+                border-radius: 4px;
+                padding: 4px 8px;
+                min-height: 22px;
+            }}
+            QFileDialog QComboBox::drop-down {{
+                border: none;
+                width: 20px;
+            }}
+            QFileDialog QComboBox QAbstractItemView {{
+                background-color: {elevated};
+                color: {text};
+                border: 1px solid {border};
+                selection-background-color: {sel_bg};
+            }}
+            /* Boutons */
+            QFileDialog QPushButton {{
+                background-color: {btn_bg};
+                color: {text};
+                border: 1px solid {btn_brd};
+                border-radius: 5px;
+                padding: 5px 14px;
+                min-width: 70px;
+            }}
+            QFileDialog QPushButton:hover {{
+                background-color: {elevated};
+                border-color: {accent};
+            }}
+            QFileDialog QPushButton:pressed {{
+                background-color: {bg_alt};
+            }}
+            /* Barre d'outils (boutons navigation) */
+            QFileDialog QToolButton {{
+                background-color: transparent;
+                color: {text};
+                border: 1px solid transparent;
+                border-radius: 4px;
+                padding: 3px;
+            }}
+            QFileDialog QToolButton:hover {{
+                background-color: {elevated};
+                border-color: {border};
+            }}
+            /* Labels */
+            QFileDialog QLabel {{
+                color: {text_sec};
+                background-color: transparent;
+            }}
+            /* Splitter entre sidebar et panneau central */
+            QFileDialog QSplitter::handle {{
+                background-color: {border};
+                width: 1px;
+            }}
+            /* Scrollbars */
+            QFileDialog QScrollBar:vertical {{
+                background: {bg};
+                width: 8px;
+                border: none;
+            }}
+            QFileDialog QScrollBar::handle:vertical {{
+                background: {border};
+                border-radius: 4px;
+                min-height: 20px;
+            }}
+            QFileDialog QScrollBar::handle:vertical:hover {{
+                background: {text_sec};
+            }}
+            QFileDialog QScrollBar::add-line:vertical,
+            QFileDialog QScrollBar::sub-line:vertical {{
+                height: 0px;
+            }}
+            QFileDialog QScrollBar:horizontal {{
+                background: {bg};
+                height: 8px;
+                border: none;
+            }}
+            QFileDialog QScrollBar::handle:horizontal {{
+                background: {border};
+                border-radius: 4px;
+                min-width: 20px;
+            }}
+            QFileDialog QScrollBar::handle:horizontal:hover {{
+                background: {text_sec};
+            }}
+            QFileDialog QScrollBar::add-line:horizontal,
+            QFileDialog QScrollBar::sub-line:horizontal {{
+                width: 0px;
+            }}
+        """
+
+    @classmethod
     def small_label_style(cls, token: str, bold: bool = False) -> str:
         extra = " font-weight: 600;" if bold else ""
         return f"color: {cls.inline(token)}; font-size: 11px;{extra}"
@@ -220,6 +393,10 @@ class ThemeManager:
                 border: 1px solid {cls.inline('checkbox_indicator_border')};
                 border-radius: 3px;
                 background-color: {cls.inline('checkbox_indicator_bg')};
+            }}
+            QCheckBox::indicator:unchecked {{
+                background-color: {cls.inline('checkbox_indicator_bg')};
+                border-color: {cls.inline('checkbox_indicator_border')};
             }}
             QCheckBox::indicator:checked {{
                 background-color: {cls.inline('checkbox_checked_color')};

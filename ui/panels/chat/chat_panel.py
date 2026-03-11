@@ -30,6 +30,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QSize
 
 from core import rag_engine, tools_engine
+from core.long_term_memory import LongTermMemory, is_enabled as ltm_enabled
 from core.database import HistoryDB
 from ui.widgets import MessageWidget
 from ui.workers import StreamWorker, AgentWorker
@@ -83,6 +84,8 @@ class ChatPanel(QWidget):
         self._max_iterations = 8  # valeur par défaut
         self._disable_context_management = False
         self._profile_manager = get_profile_manager()
+        # Flag LTM : recall déclenché une seule fois par session (par onglet ouvert)
+        self._ltm_recalled = False
         self.setObjectName("chat_area")
 
         # Créer ou récupérer la conversation
@@ -380,6 +383,8 @@ class ChatPanel(QWidget):
     def _apply_agent_check_style(self):
         """Applique le style à la checkbox agent."""
         self._agent_check.setStyleSheet(ThemeManager.checkbox_style())
+        if hasattr(self, '_no_compress_check'):
+            self._no_compress_check.setStyleSheet(ThemeManager.checkbox_style())
 
     def _update_rag_badge(self):
         """Met à jour le badge RAG."""
@@ -615,6 +620,22 @@ class ChatPanel(QWidget):
             ctx = rag_engine.build_rag_context(text, self.conv_id, self._rag_collection)
             if ctx:
                 sys_prompt = f"{sys_prompt}\n\n{ctx}".strip()
+
+        # ── Mémoire long terme : souvenirs de conversations passées ────────
+        # Le recall n'est déclenché qu'une seule fois par session (premier message
+        # de l'onglet courant), qu'il s'agisse d'une conversation neuve ou rouverte.
+        if ltm_enabled() and not self._ltm_recalled:
+            try:
+                memory_ctx = LongTermMemory(self.db).recall(text, exclude_conv_id=self.conv_id)
+                if memory_ctx:
+                    sys_prompt = f"{memory_ctx}\n\n{sys_prompt}".strip()
+                self._ltm_recalled = True
+            except Exception as _e:
+                import logging
+                logging.getLogger("promethee.chat_panel").warning(
+                    "[LTM] Recall échoué : %s", _e
+                )
+        # ─────────────────────────────────────────────────────────────────
 
         return sys_prompt
 

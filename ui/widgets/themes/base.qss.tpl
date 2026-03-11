@@ -69,12 +69,16 @@ QTreeWidget#conv_tree::item:selected { background-color: __border__; color: __te
 QTreeWidget#conv_tree::branch,
 QTreeWidget#conv_tree::branch:hover,
 QTreeWidget#conv_tree::branch:selected,
-QTreeWidget#conv_tree::branch:active,
+QTreeWidget#conv_tree::branch:active {
+    background-color: transparent; image: none; border: none;
+}
 QTreeWidget#conv_tree::branch:has-children:!has-siblings:closed,
-QTreeWidget#conv_tree::branch:closed:has-children:has-siblings,
+QTreeWidget#conv_tree::branch:closed:has-children:has-siblings {
+    image: __branch_arrow_closed__;
+}
 QTreeWidget#conv_tree::branch:open:has-children:!has-siblings,
 QTreeWidget#conv_tree::branch:open:has-children:has-siblings {
-    background-color: transparent; image: none; border: none;
+    image: __branch_arrow_open__;
 }
 
 /* ── Barre de recherche ── */
