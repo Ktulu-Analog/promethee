@@ -26,7 +26,7 @@ from PyQt6.QtGui import QAction
 
 from core import Config, HistoryDB
 from core.long_term_memory import LongTermMemory, is_enabled as ltm_enabled
-from .panels import ChatPanel, RagPanel, ToolsPanel, MonitoringPanel
+from .panels import ChatPanel, RagPanel, ToolsPanel, MonitoringPanel, ModelUsagePanel
 from .dialogs import SettingsDialog, AboutDialog
 from .widgets import ConvSidePanel
 from .widgets.styles import ThemeManager
@@ -45,6 +45,7 @@ class MainWindow(QMainWindow):
         self._rag_visible        = True
         self._tools_visible      = False
         self._monitoring_visible = False
+        self._model_usage_visible = False
 
         self.setWindowTitle(Config.APP_TITLE)
         self.resize(1380, 860)
@@ -101,6 +102,7 @@ class MainWindow(QMainWindow):
         a3 = QAction("Panneau RAG",        self); a3.setShortcut("Ctrl+R"); a3.triggered.connect(self._toggle_rag);        vm.addAction(a3)
         a4 = QAction("Panneau Outils",     self); a4.setShortcut("Ctrl+T"); a4.triggered.connect(self._toggle_tools);      vm.addAction(a4)
         a_mon = QAction("Panneau Monitoring", self); a_mon.setShortcut("Ctrl+M"); a_mon.triggered.connect(self._toggle_monitoring); vm.addAction(a_mon)
+        a_usage = QAction("Consommation par modèle", self); a_usage.setShortcut("Ctrl+U"); a_usage.triggered.connect(self._toggle_model_usage); vm.addAction(a_usage)
         vm.addSeparator()
         a_theme = QAction("Basculer thème clair / sombre", self)
         a_theme.setShortcut("Ctrl+Shift+T")
@@ -141,6 +143,7 @@ class MainWindow(QMainWindow):
         self._tabs.rag_toggle.connect(self._toggle_rag)
         self._tabs.tools_toggle.connect(self._toggle_tools)
         self._tabs.monitoring_toggle.connect(self._toggle_monitoring)
+        self._tabs.model_usage_toggle.connect(self._toggle_model_usage)
         self._tabs.settings_requested.connect(self._open_settings)
         self._tabs.theme_changed.connect(self._propagate_theme)
         self._splitter.addWidget(self._tabs)
@@ -162,7 +165,11 @@ class MainWindow(QMainWindow):
         self._monitoring_panel.setVisible(False)
         self._splitter.addWidget(self._monitoring_panel)
 
-        self._splitter.setSizes([1000, 300, 0, 0])
+        self._model_usage_panel = ModelUsagePanel()
+        self._model_usage_panel.setVisible(False)
+        self._splitter.addWidget(self._model_usage_panel)
+
+        self._splitter.setSizes([1000, 300, 0, 0, 0])
         vbox.addWidget(self._splitter, stretch=1)
 
     def _setup_status_bar(self):
@@ -198,6 +205,7 @@ class MainWindow(QMainWindow):
         self._rag_panel.refresh_theme()
         self._tools_panel.refresh_theme()
         self._monitoring_panel.refresh_theme()
+        self._model_usage_panel.refresh_theme()
         for _, panel in self._chat_panels():
             panel.refresh_theme()
         label = "sombre" if ThemeManager.is_dark() else "clair"
@@ -226,6 +234,10 @@ class MainWindow(QMainWindow):
         panel.token_usage_updated.connect(self._update_token_display)
         panel.token_usage_updated.connect(self._monitoring_panel.on_usage_updated)
         panel.compression_stats_updated.connect(self._monitoring_panel.on_compression_stats)
+        panel.family_routing_changed.connect(self._tabs.update_family_routing)
+        panel.token_usage_updated.connect(self._model_usage_panel.on_usage_updated)
+        panel.family_routing_changed.connect(self._model_usage_panel.on_family_routing)
+        panel.model_usage_updated.connect(self._model_usage_panel.on_model_usage)
 
         selected_collection = self._rag_panel.get_selected_collection()
         if selected_collection:
@@ -391,6 +403,9 @@ class MainWindow(QMainWindow):
 
     def _toggle_monitoring(self):
         self._toggle_panel(self._monitoring_panel, "_monitoring_visible", 3, 280)
+
+    def _toggle_model_usage(self):
+        self._toggle_panel(self._model_usage_panel, "_model_usage_visible", 4, 260)
 
     def _open_settings(self):
         """Ouvre le dialogue de paramètres."""

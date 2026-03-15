@@ -83,6 +83,73 @@ def _memory_event(msg: str) -> None:
         _memory_event_callback(msg)
 
 
+# ── Callback routing de famille ───────────────────────────────────────────────
+# Émis quand agent_loop bascule sur un modèle de famille pour la réponse finale.
+# Payload : dict { "family": str, "label": str, "model": str, "backend": str }
+# family == "" signifie retour au modèle principal (fin de tour ou conflit).
+_family_routing_callback = None
+
+def set_family_routing_callback(fn) -> None:
+    """
+    Installe un callback appelé quand agent_loop résout un modèle de famille
+    pour la réponse finale d'un tour.
+
+    Le callback reçoit un dict :
+        { "family": str,   # ex: "imap_tools" — vide si modèle principal
+          "label":  str,   # ex: "Messagerie" — vide si modèle principal
+          "model":  str,   # ex: "mistral-small:7b"
+          "backend": str } # "ollama" | "openai"
+    """
+    global _family_routing_callback
+    _family_routing_callback = fn
+
+def _family_routing_event(family: str, label: str, model: str, backend: str) -> None:
+    """Émet un événement de routing vers l'UI et log en console."""
+    if family:
+        print(f"[family_routing] {family} ({label}) → {backend}:{model}")
+    if _family_routing_callback is not None:
+        _family_routing_callback({
+            "family":  family,
+            "label":   label,
+            "model":   model,
+            "backend": backend,
+        })
+
+
+# ── Callback consommation par modèle ─────────────────────────────────────────
+# Émis à chaque appel LLM avec le modèle exact et les tokens consommés.
+# Payload : dict { "model": str, "prompt": int, "completion": int,
+#                  "role": "decision"|"final"|"stream" }
+#   decision : appel de l'étape 1 (modèle principal lit le contexte + décide)
+#   final    : réponse finale non-streamée (cas A)
+#   stream   : réponse finale streamée (cas B)
+# Le panneau ModelUsagePanel utilise ce callback directement — pas besoin
+# de croiser family_routing et token_usage pour déduire le modèle.
+_model_usage_callback = None
+
+def set_model_usage_callback(fn) -> None:
+    """
+    Installe un callback appelé à chaque appel LLM dans agent_loop.
+    Le callback reçoit un dict :
+        { "model": str,       # nom exact du modèle utilisé
+          "prompt": int,      # tokens prompt de cet appel
+          "completion": int,  # tokens completion de cet appel
+          "role": str }       # "decision" | "final" | "stream"
+    """
+    global _model_usage_callback
+    _model_usage_callback = fn
+
+def _model_usage_event(model: str, prompt: int, completion: int, role: str) -> None:
+    """Émet un événement de consommation par modèle."""
+    if _model_usage_callback is not None:
+        _model_usage_callback({
+            "model":      model,
+            "prompt":     prompt,
+            "completion": completion,
+            "role":       role,
+        })
+
+
 # ── Répertoire de logs de l'application ───────────────────────────────────
 # Les logs sont stockés dans ~/.promethee/logs/ au lieu de la racine ~
 _LOG_DIR = Path.home() / ".promethee" / "logs"
@@ -387,6 +454,90 @@ def build_client(local: bool = None) -> OpenAI:
     )
 
 
+def build_specialist_client(task: str) -> tuple["OpenAI", str]:
+    """
+    Construit un client et résout le modèle pour une tâche spécialisée.
+
+    .. deprecated::
+        Préférer build_family_client(family) qui utilise le registre dynamique
+        géré par l'interface graphique (onglet "Outils" des paramètres).
+        build_specialist_client reste disponible pour rétrocompatibilité.
+
+    Consulte Config.specialist_config(task). Si aucun modèle n'est configuré,
+    retourne le client et le modèle principaux.
+    """
+    spec = Config.specialist_config(task)
+
+    if spec is None:
+        return build_client(), Config.active_model()
+
+    backend  = spec["backend"]
+    model    = spec["model"]
+    base_url = spec["base_url"]
+
+    if backend == "ollama":
+        url = (base_url or Config.OLLAMA_BASE_URL).rstrip("/") + "/v1"
+        client = OpenAI(base_url=url, api_key="ollama")
+    else:
+        client = OpenAI(
+            base_url=base_url or Config.OPENAI_API_BASE,
+            api_key=Config.OPENAI_API_KEY or "none",
+        )
+
+    return client, model
+
+
+def build_family_client(family: str) -> tuple["OpenAI", str]:
+    """
+    Construit un client et résout le modèle assigné à une famille d'outils.
+
+    Consulte le registre dynamique tools_engine._FAMILY_MODELS, géré par
+    l'interface graphique (onglet "Outils" des paramètres, colonne "Modèle").
+    Si aucun modèle n'est assigné à cette famille, retourne le client et le
+    modèle principaux — comportement identique à build_client() + active_model().
+
+    C'est la fonction à utiliser dans tout outil qui effectue des appels LLM
+    internes, en remplacement de build_client() + Config.active_model().
+    Elle permet à l'utilisateur de changer le modèle depuis l'UI sans toucher
+    au code.
+
+    Paramètre :
+        family : nom exact de la famille tel que déclaré dans set_current_family()
+                 (ex: "tool_creator_tools", "imap_tools", "rag_tools"…).
+
+    Retourne :
+        (client OpenAI, nom_du_modèle)
+
+    Exemple dans un outil :
+        from core.llm_service import build_family_client
+
+        client, model = build_family_client("tool_creator_tools")
+        resp = client.chat.completions.create(model=model, messages=[...])
+    """
+    import core.tools_engine as _te
+
+    assigned = _te.get_family_model(family)
+
+    if assigned is None:
+        # Aucune assignation → modèle principal, comportement transparent
+        return build_client(), Config.active_model()
+
+    backend  = assigned["backend"]
+    model    = assigned["model"]
+    base_url = assigned.get("base_url", "")
+
+    if backend == "ollama":
+        url = (base_url or Config.OLLAMA_BASE_URL).rstrip("/") + "/v1"
+        client = OpenAI(base_url=url, api_key="ollama")
+    else:
+        client = OpenAI(
+            base_url=base_url or Config.OPENAI_API_BASE,
+            api_key=Config.OPENAI_API_KEY or "none",
+        )
+
+    return client, model
+
+
 # Extensions de fichiers bureautiques dont le résultat ne doit jamais être tronqué.
 # Les outils d'export retournent un JSON {"path": "...", "status": "ok", ...} ;
 # tronquer ce JSON corromprait le chemin ou les métadonnées transmises au LLM.
@@ -607,6 +758,61 @@ def agent_loop(
             model_max_tokens=Config.CONTEXT_MODEL_MAX_TOKENS,
         )
 
+        # ── Résolution du client/modèle pour la réponse finale ──────────────
+        # Mis à jour après chaque tour avec tool_calls.
+        # Logique :
+        #   - Si tous les outils appelés appartiennent à la même famille ET que
+        #     cette famille a un modèle assigné → on utilise ce modèle pour la
+        #     réponse finale (économie de tokens sur le gros modèle).
+        #   - Si plusieurs familles différentes sont impliquées → fallback sur
+        #     le modèle principal (conflit, comportement prévisible).
+        #   - Si aucun outil appelé ou aucune assignation → modèle principal.
+        # Le modèle principal reste toujours utilisé pour la décision (étape 1).
+        _final_client = client
+        _final_model  = model or Config.active_model()
+
+        def _resolve_final_client(called_tool_names: list[str]) -> tuple:
+            """
+            Résout le client et le modèle pour la réponse finale selon les
+            familles des outils effectivement appelés dans ce tour.
+            Retourne (client, model_name).
+            """
+            if not called_tool_names:
+                return client, model or Config.active_model()
+
+            # Collecter les familles distinctes avec un modèle assigné
+            families_seen: set[str] = set()
+            for tool_name in called_tool_names:
+                fam = tools_engine._TOOL_FAMILY.get(tool_name)
+                if fam and tools_engine.get_family_model(fam):
+                    families_seen.add(fam)
+
+            # Conflit (plusieurs familles avec modèles différents) → principal
+            if len(families_seen) != 1:
+                if families_seen:
+                    # Conflit explicite : log et fallback
+                    print(
+                        f"[family_routing] conflit {sorted(families_seen)} "
+                        f"→ modèle principal"
+                    )
+                _family_routing_event("", "", Config.active_model(), "")
+                return client, model or Config.active_model()
+
+            dominant_family = next(iter(families_seen))
+            fam_client, fam_model = build_family_client(dominant_family)
+
+            # Récupérer le label et le backend pour le log/UI
+            assigned      = tools_engine.get_family_model(dominant_family) or {}
+            fam_label     = next(
+                (f["label"] for f in tools_engine.list_families()
+                 if f["family"] == dominant_family),
+                dominant_family,
+            )
+            fam_backend   = assigned.get("backend", "")
+            _family_routing_event(dominant_family, fam_label, fam_model, fam_backend)
+
+            return fam_client, fam_model
+
         # Fenêtre glissante : écrêter l'historique si trop long.
         # Au 1er appel, known_prompt_tokens=0 → fallback sur les caractères.
         # Désactivée si disable_context_management=True.
@@ -689,6 +895,13 @@ def agent_loop(
                 usage.add(resp.usage)
                 if on_usage:
                     on_usage(usage)
+                # Émettre la consommation du modèle principal (décision)
+                _model_usage_event(
+                    model=model or Config.active_model(),
+                    prompt=getattr(resp.usage, "prompt_tokens", 0) or 0,
+                    completion=getattr(resp.usage, "completion_tokens", 0) or 0,
+                    role="decision",
+                )
 
             choice = resp.choices[0]
             msg = choice.message
@@ -718,8 +931,13 @@ def agent_loop(
                     assistant_msg["content"] = msg.content
                 msgs.append(assistant_msg)
 
+                # Collecte des noms d'outils appelés ce tour pour résoudre
+                # le modèle de réponse finale (option 1bis — famille dominante).
+                _called_this_turn: list[str] = []
+
                 for tc in msg.tool_calls:
                     name = tc.function.name
+                    _called_this_turn.append(name)
                     try:
                         args = json.loads(tc.function.arguments)
                     except Exception:
@@ -789,6 +1007,11 @@ def agent_loop(
                         turn=iteration,
                     )
 
+                # Résoudre le client/modèle pour la réponse finale de ce tour.
+                # Si une seule famille avec modèle assigné → on bascule.
+                # Si conflit ou aucune assignation → modèle principal.
+                _final_client, _final_model = _resolve_final_client(_called_this_turn)
+
             # Étape 3: réponse finale
             else:
                 # Cas A : le modèle a déjà fourni du contenu texte dans cette réponse
@@ -797,12 +1020,23 @@ def agent_loop(
                     final_text = msg.content
                     if on_token:
                         on_token(final_text)
+                    # L'usage a déjà été émis par l'étape 1 ci-dessus avec role="decision".
+                    # On réémet avec role="final" pour que le panneau puisse distinguer
+                    # les tours avec et sans tool_calls.
+                    if hasattr(resp, "usage") and resp.usage:
+                        _model_usage_event(
+                            model=_final_model,
+                            prompt=0,
+                            completion=getattr(resp.usage, "completion_tokens", 0) or 0,
+                            role="final",
+                        )
                     return final_text
 
                 # Cas B : pas de contenu texte → on relance en streaming pour obtenir
-                # la synthèse finale (comportement original)
-                stream_resp = client.chat.completions.create(
-                    model=model or Config.active_model(),
+                # la synthèse finale. Utilise _final_client/_final_model si une famille
+                # dominante a été détectée au tour précédent, sinon le modèle principal.
+                stream_resp = _final_client.chat.completions.create(
+                    model=_final_model,
                     messages=memory.strip_internal_markers(msgs),
                     temperature=0.7,
                     stream=True,
@@ -810,9 +1044,13 @@ def agent_loop(
                     stream_options={"include_usage": True},
                 )
 
+                _stream_prompt     = 0
+                _stream_completion = 0
                 for chunk in stream_resp:
                     if hasattr(chunk, "usage") and chunk.usage:
                         usage.add(chunk.usage, streaming=True)
+                        _stream_prompt     = getattr(chunk.usage, "prompt_tokens",     0) or 0
+                        _stream_completion = getattr(chunk.usage, "completion_tokens", 0) or 0
                     if not chunk.choices:
                         continue
                     delta = chunk.choices[0].delta
@@ -824,6 +1062,15 @@ def agent_loop(
                 usage.log("agent_loop/final_stream")
                 if on_usage:
                     on_usage(usage)
+                # Émettre la consommation du modèle de famille (réponse finale)
+                _model_usage_event(
+                    model=_final_model,
+                    prompt=_stream_prompt,
+                    completion=_stream_completion,
+                    role="stream",
+                )
+                # Réinitialiser l'indicateur de famille après la réponse finale
+                _family_routing_event("", "", Config.active_model(), "")
                 return final_text
 
         # Max itérations atteint : on force une synthèse plutôt que le message d'erreur
@@ -833,8 +1080,8 @@ def agent_loop(
                     "role": "user",
                     "content": "Résume les résultats obtenus et réponds à la question initiale.",
                 })
-                stream_resp = client.chat.completions.create(
-                    model=model or Config.active_model(),
+                stream_resp = _final_client.chat.completions.create(
+                    model=_final_model,
                     messages=memory.strip_internal_markers(msgs),
                     temperature=0.7,
                     stream=True,

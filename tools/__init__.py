@@ -61,7 +61,10 @@ def register_all() -> None:
     from tools import legifrance_tools
     from tools import judilibre_tools
     from tools import datagouv_tools
-    from tools import thunderbird_tools
+    from tools import imap_tools
     from tools import skill_tools
     from tools import grist_tools
+    from tools import tool_creator_tools
+    from tools import meteo_tools
+
 

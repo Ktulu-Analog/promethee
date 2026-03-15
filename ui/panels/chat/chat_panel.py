@@ -66,6 +66,8 @@ class ChatPanel(QWidget):
     profile_tools_changed = pyqtSignal()  # émis quand les familles changent suite à un profil
     token_usage_updated = pyqtSignal(object)  # émet un TokenUsage vers main_window
     compression_stats_updated = pyqtSignal(object)  # émet un dict de stats de compression
+    family_routing_changed = pyqtSignal(object)  # émet un dict {family,label,model,backend}
+    model_usage_updated    = pyqtSignal(object)  # émet un dict {model,prompt,completion,role}
 
     def __init__(
         self,
@@ -697,6 +699,8 @@ class ChatPanel(QWidget):
             self._worker.context_event.connect(self.status_message.emit)
             self._worker.memory_event.connect(self._streaming_handler.on_memory_event)
             self._worker.compression_stats.connect(self.compression_stats_updated)
+            self._worker.family_routing.connect(self._on_family_routing)
+            self._worker.model_usage.connect(self.model_usage_updated)
         else:
             self._worker = StreamWorker(history, system_prompt=sys_prompt)
 
@@ -718,6 +722,13 @@ class ChatPanel(QWidget):
         self._streaming_handler.on_finished(full_text)
         self._worker = None
         self._set_streaming(False)
+
+    def _on_family_routing(self, info: dict):
+        """
+        Relaie l'événement de routing de famille vers main_window, qui
+        le transmettra à la sidebar pour mise à jour du label de modèle.
+        """
+        self.family_routing_changed.emit(info)
 
     # ── Contrôle du streaming ─────────────────────────────────────────────
 
@@ -790,6 +801,8 @@ class ChatPanel(QWidget):
                         self._worker.context_event.disconnect()
                         self._worker.memory_event.disconnect()
                         self._worker.compression_stats.disconnect()
+                        self._worker.family_routing.disconnect()
+                        self._worker.model_usage.disconnect()
                 except (TypeError, RuntimeError):
                     pass  # Déjà déconnectés ou objet partiellement détruit
             self._worker = None

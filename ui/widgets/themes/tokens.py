@@ -47,6 +47,21 @@ Palettes :
 Conformité — tous les couples texte/fond ≥ 4.5:1 (WCAG AA)
 """
 
+# ── Police d'interface ────────────────────────────────────────────────────
+# Valeur par défaut : stack multi-plateforme sans Segoe UI en tête.
+# Surchargée dynamiquement par ThemeManager.set_font_family() depuis les préférences.
+_FONT_FAMILY: str = "\"SF Pro Display\", \"Helvetica Neue\", \"Segoe UI\", sans-serif"
+
+
+def get_font_family() -> str:
+    return _FONT_FAMILY
+
+
+def set_font_family(family: str) -> None:
+    global _FONT_FAMILY
+    _FONT_FAMILY = family
+
+
 PALETTE: dict[str, tuple[str, str]] = {
     # ── Fonds principaux ─────────────────────────────────────────────
     "base_bg":              ("#141416", "#f2f0eb"),

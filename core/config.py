@@ -137,6 +137,77 @@ class Config:
     # Audio / Whisper
     AUDIO_MODEL: str = os.getenv("AUDIO_MODEL", "")
 
+    # ── Modèles spécialisés par tâche ────────────────────────────────────────
+    # Permettent de router certaines tâches vers un modèle dédié (code, résumé…)
+    # sans changer le modèle principal de conversation.
+    #
+    # Format de chaque variable :
+    #   SPECIALIST_<TACHE>_BACKEND  : "openai" | "ollama" | "" (hérite du mode principal)
+    #   SPECIALIST_<TACHE>_MODEL    : nom du modèle (ex: qwen2.5-coder:14b)
+    #   SPECIALIST_<TACHE>_BASE_URL : endpoint si différent de OPENAI_API_BASE / OLLAMA_BASE_URL
+    #
+    # Tâches disponibles :
+    #   CODE     → génération / analyse de code (create_tool, python_tools…)
+    #   SUMMARY  → résumés, synthèses (aliasé sur LTM_MODEL si absent)
+    #
+    # Si SPECIALIST_<TACHE>_MODEL est vide, active_model() est utilisé (pas de routing).
+    #
+    # Exemple Ollama local pour le code :
+    #   SPECIALIST_CODE_BACKEND=ollama
+    #   SPECIALIST_CODE_MODEL=qwen2.5-coder:14b
+    #   SPECIALIST_CODE_BASE_URL=      ← vide = hérite de OLLAMA_BASE_URL
+    #
+    # Exemple même endpoint Albert mais modèle différent :
+    #   SPECIALIST_CODE_BACKEND=openai
+    #   SPECIALIST_CODE_MODEL=mistralai/Devstral-Small-2505
+    #   SPECIALIST_CODE_BASE_URL=      ← vide = hérite de OPENAI_API_BASE
+
+    SPECIALIST_CODE_BACKEND:  str = os.getenv("SPECIALIST_CODE_BACKEND",  "").strip().lower()
+    SPECIALIST_CODE_MODEL:    str = os.getenv("SPECIALIST_CODE_MODEL",    "").strip()
+    SPECIALIST_CODE_BASE_URL: str = os.getenv("SPECIALIST_CODE_BASE_URL", "").strip()
+
+    SPECIALIST_SUMMARY_BACKEND:  str = os.getenv("SPECIALIST_SUMMARY_BACKEND",  "").strip().lower()
+    SPECIALIST_SUMMARY_MODEL:    str = os.getenv("SPECIALIST_SUMMARY_MODEL",    "").strip()
+    SPECIALIST_SUMMARY_BASE_URL: str = os.getenv("SPECIALIST_SUMMARY_BASE_URL", "").strip()
+
+    @classmethod
+    def specialist_config(cls, task: str) -> dict | None:
+        """
+        Retourne la configuration du modèle spécialisé pour une tâche donnée.
+
+        Paramètre :
+            task : identifiant de tâche en majuscules ("CODE", "SUMMARY"…)
+
+        Retourne un dict avec les clés :
+            backend  : "openai" | "ollama"
+            model    : nom du modèle
+            base_url : endpoint (peut hériter de la config principale)
+
+        Retourne None si aucun modèle spécialisé n'est configuré pour cette tâche
+        (l'appelant doit alors utiliser build_client() + active_model() normalement).
+        """
+        t = task.upper()
+        model    = getattr(cls, f"SPECIALIST_{t}_MODEL",    "")
+        backend  = getattr(cls, f"SPECIALIST_{t}_BACKEND",  "")
+        base_url = getattr(cls, f"SPECIALIST_{t}_BASE_URL", "")
+
+        if not model:
+            return None  # Pas de modèle spécialisé configuré pour cette tâche
+
+        # Résolution du backend
+        if not backend:
+            backend = "ollama" if cls.LOCAL else "openai"
+
+        # Résolution de l'URL de base
+        if not base_url:
+            base_url = cls.OLLAMA_BASE_URL if backend == "ollama" else cls.OPENAI_API_BASE
+
+        return {
+            "backend":  backend,
+            "model":    model,
+            "base_url": base_url,
+        }
+
     # Grist
     GRIST_API_KEY: str = os.getenv("GRIST_API_KEY", "")
     GRIST_BASE_URL: str = os.getenv("GRIST_BASE_URL", "https://docs.getgrist.com")
@@ -146,7 +217,7 @@ class Config:
 
     # App
     APP_TITLE: str = os.getenv("APP_TITLE", "Prométhée AI")
-    APP_VERSION: str = os.getenv("APP_VERSION", "2.0")
+    APP_VERSION: str = os.getenv("APP_VERSION")
     APP_USER: str = os.getenv("APP_USER", "Vous")
     HISTORY_DB: str = os.getenv("HISTORY_DB", "history.db")
     MAX_CONTEXT_TOKENS: int = int(os.getenv("MAX_CONTEXT_TOKENS", ""))
@@ -250,6 +321,49 @@ class Config:
     # Activer le reranking Albert. ON = actif si RAG_ALBERT_COLLECTION_IDS défini.
     # Mettre OFF pour désactiver sans toucher aux autres paramètres Albert.
     RAG_RERANK_ENABLED: bool = os.getenv("RAG_RERANK_ENABLED", "ON").strip().upper() == "ON"
+
+    # ── RAG — Reformulation HyDE (Hypothetical Document Embedding) ───────────
+    # Génère un document hypothétique à partir de la requête avant l'embedding,
+    # pour mieux aligner l'espace sémantique query ↔ chunks indexés.
+    # ON = actif (1 appel LLM supplémentaire par requête RAG).
+    # OFF = comportement historique (embedding de la requête brute).
+    RAG_HYDE_ENABLED: bool = os.getenv("RAG_HYDE_ENABLED", "OFF").strip().upper() == "ON"
+    # Nombre maximum de tokens alloués au document hypothétique HyDE.
+    # Recommandé : 150–300. Défaut : 200.
+    RAG_HYDE_MAX_TOKENS: int = int(os.getenv("RAG_HYDE_MAX_TOKENS", "200"))
+
+    # ── RAG — Chunking contextuel (Anthropic Contextual Retrieval) ───────────
+    # Enrichit chaque chunk avec un préfixe contextuel généré par LLM décrivant
+    # sa position dans le document parent. Améliore fortement la précision pour
+    # les chunks hors-contexte (tableaux, listes, sous-sections).
+    # ON = actif lors de l'ingestion (réingestion des docs existants requise).
+    # OFF = comportement historique.
+    RAG_CONTEXTUAL_CHUNKING: bool = os.getenv("RAG_CONTEXTUAL_CHUNKING", "OFF").strip().upper() == "ON"
+    # Nombre maximum de tokens pour le préfixe contextuel généré.
+    # Recommandé : 80–150. Défaut : 100.
+    RAG_CONTEXTUAL_PREFIX_MAX_TOKENS: int = int(os.getenv("RAG_CONTEXTUAL_PREFIX_MAX_TOKENS", "100"))
+    # Nombre maximum de caractères du document parent envoyés au LLM pour la
+    # génération du contexte. Tronquer évite de dépasser la fenêtre de contexte.
+    # Recommandé : 8000–16000. Défaut : 10000.
+    RAG_CONTEXTUAL_DOC_MAX_CHARS: int = int(os.getenv("RAG_CONTEXTUAL_DOC_MAX_CHARS", "10000"))
+    # Modèle LLM dédié au chunking contextuel (génération des préfixes à l'ingestion).
+    # Permet d'utiliser un modèle léger/rapide pour cette tâche répétitive et simple,
+    # sans mobiliser le modèle principal (OPENAI_MODEL) à chaque chunk.
+    # Si vide, OPENAI_MODEL est utilisé (modèle principal).
+    # Exemple : RAG_INGESTION_MODEL=mistralai/Mistral-Small-3.2-24B-Instruct-2506
+    RAG_INGESTION_MODEL: str = os.getenv("RAG_INGESTION_MODEL", "").strip()
+
+    # ── RAG — Seuil de score adaptatif (mode Qdrant) ─────────────────────────
+    # Calcule dynamiquement le seuil minimum à partir de la distribution des
+    # scores retournés, au lieu d'utiliser un seuil fixe (RAG_MIN_SCORE).
+    # ON  = seuil = max(RAG_MIN_SCORE, mean - RAG_ADAPTIVE_SIGMA * std).
+    # OFF = comportement historique (seuil fixe RAG_MIN_SCORE).
+    RAG_ADAPTIVE_THRESHOLD: bool = os.getenv("RAG_ADAPTIVE_THRESHOLD", "ON").strip().upper() == "ON"
+    # Facteur σ contrôlant l'agressivité du filtre adaptatif.
+    # 0.5 → filtre large (garde plus de chunks)
+    # 1.0 → filtre moyen (recommandé)
+    # 1.5 → filtre strict (ne garde que les meilleurs)
+    RAG_ADAPTIVE_SIGMA: float = float(os.getenv("RAG_ADAPTIVE_SIGMA", "1.0"))
 
     # ── Mémoire long terme inter-conversations (long_term_memory.py) ─────────
     # Indexe automatiquement les conversations fermées dans Qdrant (collection

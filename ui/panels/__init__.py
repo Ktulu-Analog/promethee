@@ -24,9 +24,13 @@ from .tools_panel import ToolsPanel
 # Panneau de monitoring tokens / coût / carbone
 from .monitoring_panel import MonitoringPanel
 
+# Panneau de consommation par modèle LLM
+from .model_usage_panel import ModelUsagePanel
+
 __all__ = [
     "ChatPanel",
     "RagPanel",
     "ToolsPanel",
     "MonitoringPanel",
+    "ModelUsagePanel",
 ]

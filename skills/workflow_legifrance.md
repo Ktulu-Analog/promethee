@@ -1,8 +1,8 @@
 ---
 name: Workflow Légifrance
 description: Protocole de recherche juridique avec les outils Légifrance — ordre des appels, identifiants, cas d'usage, erreurs fréquentes
-tags: [légifrance, juridique, droit, recherche, protocole]
-version: 2.0
+tags: [légifrance, judilibre, juridique, droit, recherche, protocole, jurisprudence, fonction-publique, CGFP]
+version: 4.0
 ---
 
 # Workflow Légifrance
@@ -217,10 +217,94 @@ legifrance_cnil(deliberation_id)
 - **En cas d'identifiant inconnu** : commencer par `legifrance_suggerer` ou `legifrance_rechercher`, puis extraire l'identifiant de la réponse.
 - **Fond LODA ≠ Fond CODE** : les lois standalone sont dans LODA, les articles codifiés sont dans CODE. Une même loi peut apparaître dans les deux.
 - **Pour les conventions collectives** : toujours utiliser l'IDCC (numéro à 4 chiffres) quand connu — plus fiable que la recherche textuelle.
+- **Ne jamais construire d'URL Légifrance manuellement** : utiliser exclusivement le champ `legifrance_url` retourné par les outils. Les URLs générées manuellement sont souvent fausses.
 
 ---
 
-## 6. Erreurs fréquentes à éviter
+## 5bis. Droit public — règle critique
+
+**Les fonctionnaires, ouvriers d'État et contractuels de droit public relèvent du Code général de la fonction publique (CGFP), pas du Code du travail.**
+
+| Population | Code applicable |
+|---|---|
+| Fonctionnaires (titulaires) | Code général de la fonction publique |
+| Contractuels de droit public | Code général de la fonction publique |
+| Ouvriers d'État | Code général de la fonction publique |
+| Salariés de droit privé | Code du travail |
+| Agents contractuels de droit privé (EPA, certains EPIC) | Code du travail selon statut |
+
+Le Code du travail ne s'applique à un agent public que si un texte spécifique y renvoie expressément (ex : certaines dispositions sur la formation, le harcèlement…). En cas de doute, chercher dans le CGFP en premier.
+
+**Pour chercher dans le CGFP :**
+```
+legifrance_lister_codes()
+→ repérer le LEGITEXT du Code général de la fonction publique
+
+legifrance_article_par_numero(code_id="LEGITEXT...", num="L1xx-xx")
+```
+
+---
+
+## 5ter. Lecture des décisions du Conseil d'État
+
+Les décisions du Conseil d'État suivent une structure immuable :
+
+```
+1. Visas       → textes et pièces examinés (commence par "Vu...")
+2. Considérants → raisonnement juridique (commence par "Considérant que...")
+3. Dispositif  → LA DÉCISION EFFECTIVE (dernière partie, après "DÉCIDE :" ou "Article 1er")
+```
+
+**Toujours lire le dispositif en fin de décision** pour connaître l'issue réelle :
+- **Rejet** : le recours est rejeté, l'acte attaqué est maintenu
+- **Annulation** : l'acte attaqué est annulé
+- **Renvoi** : l'affaire est renvoyée devant une autre juridiction
+- **Sursis à exécution** : l'acte est suspendu temporairement
+
+Ne pas conclure à partir des seuls considérants — le dispositif peut conclure différemment du raisonnement apparent.
+
+---
+
+## 6. Judilibre — jurisprudence de la Cour de cassation
+
+Judilibre est distinct de Légifrance. Il expose la jurisprudence judiciaire de la Cour de cassation via ses propres outils `judilibre_*`.
+
+**Point critique :** `www.judilibre.com` n'existe pas. Le site de référence est `www.courdecassation.fr`.
+
+### Outils disponibles
+
+```
+judilibre_rechercher(query, ...) → liste de décisions avec identifiants
+judilibre_decision(id)           → texte complet d'une décision
+judilibre_scan(...)              → parcourir les décisions par lot
+judilibre_taxonomie()            → récupérer les classifications thématiques
+judilibre_stats()                → statistiques de la base
+judilibre_historique(id)         → historique d'une décision
+```
+
+### Workflow type
+
+```
+1. judilibre_rechercher(query="responsabilité délictuelle préjudice")
+   → liste de décisions avec leur identifiant
+
+2. judilibre_decision(id="...")
+   → texte intégral de la décision retenue
+```
+
+### Quand utiliser Judilibre vs Légifrance pour la jurisprudence
+
+| Besoin | Outil |
+|--------|-------|
+| Jurisprudence judiciaire (Cour de cassation) | `judilibre_*` |
+| Jurisprudence judiciaire (index Légifrance) | `legifrance_rechercher(fond="JURI")` |
+| Jurisprudence administrative (Conseil d'État) | `legifrance_rechercher(fond="CETAT")` |
+| Jurisprudence CAA | `legifrance_rechercher(fond="JADE")` |
+| Décisions du Conseil constitutionnel | `legifrance_rechercher(fond="CONSTIT")` |
+
+---
+
+## 7. Erreurs fréquentes à éviter
 
 | Erreur | Correction |
 |--------|------------|
@@ -228,4 +312,5 @@ legifrance_cnil(deliberation_id)
 | Utiliser un LEGIARTI dans `legifrance_loi_decret` | legifrance_loi_decret attend un JORFTEXT |
 | Omettre le paramètre `date` | Sans `date`, on obtient la version actuelle — préciser la date si besoin historique |
 | Confondre NOR et LEGIARTI | Le NOR est un code alphanumérique court (ex: EQUA2400123A), le LEGIARTI est long |
-| Appeler Judilibre via Légifrance | Judilibre a ses propres outils (`judilibre_*`) distincts des outils Légifrance |
+| Utiliser `judilibre_*` pour le Conseil d'État | Le CE est dans Légifrance fond `CETAT`, pas dans Judilibre |
+| Accéder à Judilibre via www.judilibre.com | Ce site n'existe pas — utiliser les outils `judilibre_*` directement |

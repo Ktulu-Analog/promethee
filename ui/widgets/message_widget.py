@@ -41,11 +41,14 @@ Invariants
   (_dirty=True), puis déclenche un re-render au prochain attach().
 """
 import html
+import logging
 import re
 from pathlib import Path
+
+_log = logging.getLogger("promethee.message_widget")
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QPushButton, QSizePolicy,
+    QLabel, QPushButton, QSizePolicy, QFileDialog,
 )
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import QWebEngineSettings, QWebEnginePage
@@ -59,6 +62,13 @@ from .latex_renderer import (
     katex_css_extras,
     protect_latex,
     restore_latex,
+)
+from .mermaid_renderer import (
+    is_available as mermaid_available,
+    mermaid_html_tags,
+    mermaid_css,
+    protect_mermaid,
+    restore_mermaid,
 )
 
 try:
@@ -121,6 +131,7 @@ def _build_html_css() -> str:
               if _HAS_PYGMENTS else ""
 
     latex_css = katex_css_extras() if latex_available() else ""
+    mermaid_extra_css = mermaid_css() if mermaid_available() else ""
 
     css = f"""
 * {{ box-sizing: border-box; }}
@@ -185,6 +196,8 @@ hr {{ border:none; border-top:1px solid {hr_color}; margin:10px 0; }}
 {pyg_css}
 
 {latex_css}
+
+{mermaid_extra_css}
 """
     _html_css_cache[dark] = css
     return css
@@ -213,29 +226,42 @@ def _highlight_code_blocks(text: str) -> str:
 # ── HTML complet ──────────────────────────────────────────────────────────────
 
 def _md_to_html(text: str) -> str:
-    # 1. Extraire les blocs LaTeX AVANT que Markdown ne les abîme
+    # 1. Extraire les blocs Mermaid AVANT tout (protect_mermaid doit passer
+    #    avant protect_latex et avant Markdown pour éviter toute altération)
+    if mermaid_available():
+        text, mermaid_cache = protect_mermaid(text)
+    else:
+        mermaid_cache = {}
+
+    # 2. Extraire les blocs LaTeX AVANT que Markdown ne les abîme
     protected, latex_cache = protect_latex(text)
 
-    # 2. Coloration syntaxique des blocs de code
+    # 3. Coloration syntaxique des blocs de code
     if _HAS_PYGMENTS:
         protected = _highlight_code_blocks(protected)
 
-    # 3. Rendu Markdown
+    # 4. Rendu Markdown
     if _HAS_MD:
         body = md_lib.markdown(protected, extensions=["tables", "nl2br", "sane_lists"])
     else:
         body = html.escape(protected).replace("\n", "<br>")
 
-    # 4. Réinjecter les blocs LaTeX dans le HTML
+    # 5. Réinjecter les blocs LaTeX dans le HTML
     body = restore_latex(body, latex_cache)
+
+    # 6. Réinjecter les blocs Mermaid dans le HTML
+    if mermaid_cache:
+        body = restore_mermaid(body, mermaid_cache)
 
     css      = _build_html_css()
     katex    = katex_html_tags() if latex_available() else ""
+    mermaid  = mermaid_html_tags() if mermaid_available() else ""
 
     return f"""<!DOCTYPE html><html><head>
 <meta charset="utf-8">
 <style>{css}</style>
 {katex}
+{mermaid}
 <script>
 function getContentHeight() {{
     return document.body ? document.body.scrollHeight : 0;
@@ -614,7 +640,7 @@ class MessageWidget(QWidget):
 
         try:
             self._view.page().runJavaScript(
-                f"document.body.insertAdjacentText('beforeend', `{escaped}`);"
+                f"if (document.body) document.body.insertAdjacentText('beforeend', `{escaped}`);"
             )
             self._query_height()
         except (RuntimeError, AttributeError):
@@ -648,7 +674,7 @@ class MessageWidget(QWidget):
             return
         try:
             self._view.page().runJavaScript(
-                "getContentHeight();",
+                "typeof getContentHeight === 'function' ? getContentHeight() : 0;",
                 self._apply_height,
             )
         except (RuntimeError, AttributeError):
@@ -658,18 +684,22 @@ class MessageWidget(QWidget):
         """
         Interroge la hauteur dès que la page est chargée.
 
-        Deux passes sont effectuées :
-        - Immédiate (0 ms)  : capture la hauteur du texte/HTML.
-        - Différée  (350 ms): capture la hauteur réelle après décodage
+        Trois passes sont effectuées :
+        - Immédiate (0 ms)   : capture la hauteur du texte/HTML.
+        - Différée  (350 ms) : capture la hauteur réelle après décodage
           des images base64 (matplotlib, etc.) dont la taille n'est pas
           connue du renderer au moment du premier loadFinished.
+        - Différée  (700 ms) : capture la hauteur après rendu SVG Mermaid.
+          Mermaid diffère son rendu de 250ms puis le SVG prend ~400ms
+          supplémentaires — sans cette troisième passe la bulle reste
+          trop courte et le diagramme est coupé au re-scroll.
         """
         if ok:
             self._query_height()
-            # Les images data-URI sont décodées de façon asynchrone après
-            # loadFinished. Sans ce second appel, _cached_height ne reflète
-            # pas la hauteur finale et le layout saute au re-scroll.
             QTimer.singleShot(350, self._query_height)
+            QTimer.singleShot(700, self._query_height)
+            if mermaid_available():
+                self._start_svg_polling()
 
     def _apply_height(self, h):
         if not self._view or not self._attached:
@@ -700,11 +730,93 @@ class MessageWidget(QWidget):
         self._copy_btn.setText("✓")
         QTimer.singleShot(1500, lambda: self._copy_btn.setText("⎘"))
 
+    # ── Téléchargement SVG Mermaid ────────────────────────────────────
+
+    def _start_svg_polling(self):
+        """
+        Démarre un QTimer qui interroge window._mermaidSvgPending toutes les
+        200 ms via runJavaScript. Dès qu'une valeur non-nulle est détectée,
+        ouvre un QFileDialog et écrit le fichier SVG.
+        Interroge aussi window._mermaidErrors pour logger les erreurs de rendu.
+        """
+        if not hasattr(self, '_svg_poll_timer'):
+            self._svg_poll_timer = QTimer(self)
+            self._svg_poll_timer.setInterval(200)
+            self._svg_poll_timer.timeout.connect(self._poll_svg_pending)
+            self._svg_poll_timer.timeout.connect(self._poll_mermaid_errors)
+        self._svg_poll_timer.start()
+
+    def _poll_mermaid_errors(self):
+        """Récupère et logue les erreurs de rendu Mermaid remontées par JS."""
+        if not self._view or not self._attached:
+            return
+        try:
+            self._view.page().runJavaScript(
+                "(function(){"
+                "  var e = window._mermaidErrors;"
+                "  if (e && e.length) { window._mermaidErrors = []; return JSON.stringify(e); }"
+                "  return null;"
+                "})();",
+                self._handle_mermaid_errors,
+            )
+        except (RuntimeError, AttributeError):
+            pass
+
+    def _handle_mermaid_errors(self, errors_json):
+        """Logue les erreurs Mermaid reçues depuis JS (tableau JSON)."""
+        if not errors_json:
+            return
+        import json
+        try:
+            errors = json.loads(errors_json)
+        except (ValueError, TypeError):
+            errors = [str(errors_json)]
+        for msg in errors:
+            msg = str(msg).strip()
+            if msg:
+                _log.warning("[Mermaid] Erreur de rendu JS : %s", msg)
+
+    def _poll_svg_pending(self):
+        """Interroge JS et récupère le SVG si le bouton a été cliqué."""
+        if not self._view or not self._attached:
+            return
+        try:
+            self._view.page().runJavaScript(
+                "window._mermaidSvgPending || null;",
+                self._handle_svg_data,
+            )
+        except (RuntimeError, AttributeError):
+            pass
+
+    def _handle_svg_data(self, svg_data):
+        """Callback runJavaScript : reçoit le SVG et ouvre QFileDialog."""
+        if not svg_data:
+            return
+        # Effacer immédiatement côté JS pour éviter un double déclenchement
+        try:
+            self._view.page().runJavaScript("window._mermaidSvgPending = null;")
+        except (RuntimeError, AttributeError):
+            pass
+
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Enregistrer le diagramme SVG",
+            "diagramme.svg",
+            "Images SVG (*.svg);;Tous les fichiers (*)",
+        )
+        if path:
+            try:
+                Path(path).write_text(svg_data, encoding="utf-8")
+            except OSError as e:
+                _log.error("Impossible d\'écrire le SVG : %s", e)
+
     # ── Nettoyage ─────────────────────────────────────────────────────
 
     def cleanup(self):
         """Nettoie proprement le QWebEngineView avant destruction."""
         self._stream_timer.stop()
+        if hasattr(self, '_svg_poll_timer'):
+            self._svg_poll_timer.stop()
         self._pending_tokens = ""
         self._streaming = False
         self._attached  = False

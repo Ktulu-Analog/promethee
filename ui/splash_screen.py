@@ -103,7 +103,7 @@ class SplashScreen(QSplashScreen):
             painter.drawPixmap(0, 0, img)
         else:
             # Nom de l'application centré
-            font = QFont("Segoe UI", 28, QFont.Weight.Bold)
+            font = QFont("Helvetica Neue", 28, QFont.Weight.Bold)
             painter.setFont(font)
             painter.setPen(QColor("#e4e2ec"))
             painter.drawText(
@@ -121,7 +121,7 @@ class SplashScreen(QSplashScreen):
 
         # Version (dans le bandeau bas, au-dessus de la barre accent)
         if self.VERSION:
-            font_v = QFont("Segoe UI", 10)
+            font_v = QFont("Helvetica Neue", 10)
             painter.setFont(font_v)
             painter.setPen(QColor(self.ACCENT))
             painter.drawText(

@@ -76,6 +76,78 @@ def _save_disabled_families() -> None:
 _load_disabled_families()
 
 
+# ── Registre des modèles assignés par famille ──────────────────────────────
+#
+# Persistance dans ~/.promethee_family_models.json
+# Format : { "imap_tools": { "backend": "ollama", "model": "mistral-small:7b",
+#                             "base_url": "" }, ... }
+#
+# Les familles absentes du fichier héritent du modèle principal (build_client).
+
+_FAMILY_MODELS: dict[str, dict] = {}
+_FAMILY_MODELS_FILE = Path.home() / ".promethee_family_models.json"
+
+
+def _load_family_models() -> None:
+    global _FAMILY_MODELS
+    try:
+        if _FAMILY_MODELS_FILE.exists():
+            data = json.loads(_FAMILY_MODELS_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                _FAMILY_MODELS = data
+    except Exception:
+        _FAMILY_MODELS = {}
+
+
+def _save_family_models() -> None:
+    try:
+        _FAMILY_MODELS_FILE.write_text(
+            json.dumps(_FAMILY_MODELS, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+
+def get_family_model(family: str) -> dict | None:
+    """
+    Retourne la configuration du modèle assigné à une famille, ou None si
+    aucun modèle n'est configuré (l'appelant doit utiliser le modèle principal).
+
+    Retourne un dict :
+        { "backend": "openai"|"ollama", "model": str, "base_url": str }
+    """
+    entry = _FAMILY_MODELS.get(family)
+    if not entry or not entry.get("model", "").strip():
+        return None
+    return entry
+
+
+def set_family_model(family: str, backend: str, model: str, base_url: str = "") -> None:
+    """
+    Assigne un modèle à une famille. Passer model="" pour supprimer l'assignation
+    et revenir au modèle principal.
+    """
+    if not model.strip():
+        _FAMILY_MODELS.pop(family, None)
+    else:
+        _FAMILY_MODELS[family] = {
+            "backend":  backend.strip().lower(),
+            "model":    model.strip(),
+            "base_url": base_url.strip(),
+        }
+    _save_family_models()
+
+
+def clear_family_model(family: str) -> None:
+    """Supprime l'assignation de modèle pour une famille (retour au modèle principal)."""
+    _FAMILY_MODELS.pop(family, None)
+    _save_family_models()
+
+
+_load_family_models()
+
+
 # ── Famille courante (positionnée par chaque module avant ses @tool) ───────
 
 _current_family: str = "Inconnu"
@@ -194,19 +266,29 @@ def is_family_disabled(family: str) -> bool:
 
 def list_families() -> list[dict]:
     """
-    Retourne la liste des familles connues avec leur état activé/désactivé.
-    Chaque entrée : {family, label, icon, enabled, tool_count}
+    Retourne la liste des familles connues avec leur état activé/désactivé
+    et le modèle éventuellement assigné.
+
+    Chaque entrée :
+        { family, label, icon, enabled, tool_count,
+          model_backend, model_name, model_base_url }
+
+    model_name == "" signifie "modèle principal" (aucune assignation).
     """
     families: dict[str, dict] = {}
     for name, t in _TOOLS.items():
         fam = t.get("family", "unknown")
         if fam not in families:
+            assigned = _FAMILY_MODELS.get(fam, {})
             families[fam] = {
-                "family": fam,
-                "label": t.get("family_label", fam),
-                "icon": t.get("family_icon", "🔧"),
-                "enabled": fam not in _DISABLED_FAMILIES,
-                "tool_count": 0,
+                "family":         fam,
+                "label":          t.get("family_label", fam),
+                "icon":           t.get("family_icon", "🔧"),
+                "enabled":        fam not in _DISABLED_FAMILIES,
+                "tool_count":     0,
+                "model_backend":  assigned.get("backend",  ""),
+                "model_name":     assigned.get("model",    ""),
+                "model_base_url": assigned.get("base_url", ""),
             }
         families[fam]["tool_count"] += 1
     return list(families.values())

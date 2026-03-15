@@ -1,6 +1,7 @@
 # 🔥 Prométhée AI v2.1
 
-**Assistant IA desktop souverain** — Interface PyQt6 connectée à un LLM (OpenAI-compatible, Albert API ou Ollama), avec outils intégrés, RAG, mémoire long terme et support Légifrance/Judilibre.
+**Assistant IA desktop** — Interface PyQt6 connectée à un LLM (OpenAI-compatible, Albert API ou Ollama), avec outils intégrés, RAG, mémoire long terme et support Légifrance/Judilibre.
+**conçu principalement pour fonctionner avec l'API Albert de la DiNum**
 
 ---
 
@@ -8,7 +9,7 @@
 
 - 💬 **Chat en streaming** avec historique chiffré (AES-GCM)
 - 🧠 **Mémoire long terme (LTM)** : résumés vectorisés des conversations passées via Qdrant (première version, va évoluer)
-- 🔧 **Outils intégrés** : web, données, export (docx/pptx/pdf/xlsx), analyse de données, Python, SQL, OCR, Légifrance, Judilibre, data.gouv.fr, Thunderbird
+- 🔧 **Outils intégrés** : web, données, export (docx/pptx/pdf/xlsx), analyse de données, Python, SQL, OCR, météo, messagerie IMAP/SMTP, Légifrance, Judilibre, data.gouv.fr, génération automatique d'outils
 - 📚 **RAG** (Retrieval-Augmented Generation) via Qdrant et Albert API
 - 📊 **Outils collaboratifs** : intégration de l'API Grist
 - 🏛️ **APIs juridiques** : Légifrance et Judilibre via PISTE
@@ -63,7 +64,7 @@ Les paramètres essentiels à configurer dans `.env` :
 
 | Variable | Description |
 |---|---|
-| `APP_VERSION` | Numéro de version affiché dans l'interface (ex : `2.0`) |
+| `APP_VERSION` | Numéro de version affiché dans l'interface (ex : `2.1`) |
 | `OPENAI_API_KEY` | Clé API (Albert, OpenAI, etc.) |
 | `OPENAI_API_BASE` | URL du serveur LLM |
 | `OPENAI_MODEL` | Modèle à utiliser |
@@ -71,6 +72,12 @@ Les paramètres essentiels à configurer dans `.env` :
 | `QDRANT_URL` | URL Qdrant pour le RAG |
 | `GRIST_API_KEY` | Clé API Grist |
 | `GRIST_BASE_URL` | URL de l'instance Grist (défaut : `https://docs.getgrist.com`) |
+| `IMAP_HOST` | Serveur IMAP pour la messagerie |
+| `IMAP_PORT` | Port IMAP (défaut : 993) |
+| `IMAP_USER` | Adresse e-mail |
+| `IMAP_PASSWORD` | Mot de passe IMAP |
+| `SMTP_HOST` | Serveur SMTP pour l'envoi *(optionnel)* |
+| `SMTP_PORT` | Port SMTP *(optionnel)* |
 
 ### Lancement
 
@@ -110,6 +117,80 @@ promethee/
 
 ---
 
+## 🎨 Rendu riche : LaTeX et diagrammes Mermaid
+
+Prométhée intègre un moteur de rendu LaTeX et Mermaid dans le chat, fonctionnant entièrement en local grâce à des assets embarqués.
+
+### Formules LaTeX — KaTeX
+
+Les formules mathématiques sont rendues via **KaTeX** (assets locaux, aucune connexion requise).
+
+| Syntaxe | Mode | Exemple |
+|---|---|---|
+| `$ ... $` ou `\( ... \)` | Inline (dans le texte) | `$E = mc^2$` |
+| `$$ ... $$` ou `\[ ... \]` | Display (bloc centré) | `$$\int_0^\infty e^{-x}\,dx$$` |
+
+> **Note :** les dollars monétaires (`$42`, `USD$`) sont automatiquement ignorés grâce à une heuristique anti-faux-positifs.
+
+Pour télécharger les assets KaTeX (à exécuter une seule fois après le clonage) :
+```bash
+python scripts/download_katex.py
+```
+
+### Diagrammes Mermaid (version préliminaire)
+
+Les blocs ` ```mermaid ` sont rendus en SVG via **Mermaid.js** (v11.4.1, bundle local).
+
+Tous les types de diagrammes sont supportés : flowchart, séquence, Gantt, état, classe, entité-relation, Sankey, etc.
+**Il reste des erreurs dans le moteur de rendu, notamment sur les accents. Ceci est en cours de correction pour une prochaine version**
+
+Voici un exemple de rendu par Prométhée avec Mermaid :
+*(prompt : à partir de ce rapport, génère un diagramme de flux pour présenter le système d'horaires souples*)
+
+```mermaid
+flowchart TD
+    %% Etape 1 : Pointage d'entrée
+    debut(["Debut (badge)"]) --> heure["Heure d'arrivee"]
+    
+    %% Etape 2 : Vérification de l'amplitude horaire
+    heure -->|Avant 07h| hors["Hors amplitude - pas de credit"]
+    heure -->|Entre 07h-19h| controle["Verification presence >=4h"]
+    
+    %% Etape 3 : Présence suffisante (>= 4h) ?
+    controle -->|Oui| zone1["Zone vacation 1 (7h-11h15)"]
+    controle -->|Oui| zone2["Zone vacation 2 (13h45-19h)"]
+    controle -->|Non| absenceInit["Absence - zone d'absence (ZA)"]
+    
+    %% Etape 4 : Comptage du temps présent dans chaque zone
+    zone1 --> presence1["Presence zone 1"]
+    zone2 --> presence2["Presence zone 2"]
+    presence1 -->|Oui| presenceTot["Presence totale >=4h"]
+    presence2 -->|Oui| presenceTot
+    
+    %% Etape 5 : Attribution du crédit ou du débit
+    presenceTot -->|Oui| creditJour["Credit journee (valeur theorique)"]
+    presenceTot -->|Non| absenceFinal["Absence - credit nul"]
+    
+    creditJour --> debitCred["Debit/Credit (max +12h, max -7h36)"]
+    debitCred --> fin["Fin du traitement"]
+    
+    %% Gestion des zones d'absence (max 2 par semaine)
+    absenceInit --> za1["Zone d'absence 1"]
+    absenceInit --> za2["Zone d'absence 2"]
+    za1 --> fin
+    za2 --> fin
+```
+
+Pour télécharger l'asset Mermaid (à exécuter une seule fois après le clonage) :
+```bash
+python scripts/download_mermaid.py
+```
+
+---
+
+
+
+
 ## 🛠️ Outils disponibles
 
 | Outil | Description |
@@ -124,11 +205,13 @@ promethee/
 | `python_tools` | Exécution de code Python sandboxé (venv isolé) |
 | `system_tools` | Opérations système (fichiers, dossiers, diff) |
 | `skill_tools` | Consultation dynamique des guides de bonnes pratiques (skills) |
+| `meteo_tools` | Météo actuelle et prévisions 7 jours via Open-Meteo (sans clé API) |
+| `imap_tools` | Lecture, recherche, envoi et gestion d'e-mails via IMAP/SMTP |
+| `tool_creator_tools` | Génération automatique d'un nouvel outil Prométhée par le LLM |
 | `grist_tools` | API Grist : lecture et écriture dans des tableurs collaboratifs |
 | `legifrance_tools` | API Légifrance (PISTE) |
 | `judilibre_tools` | API Judilibre (PISTE) |
 | `datagouv_tools` | API data.gouv.fr |
-| `thunderbird_tools` | Lecture des e-mails Thunderbird |
 
 ---
 
@@ -195,6 +278,23 @@ AGENT_MAX_ITERATIONS=12            # Nombre max d'itérations de la boucle agent
 CONTEXT_CONSOLIDATION_EVERY=8      # Résumé de session tous les N tours
 CONTEXT_CONSOLIDATION_PRESSURE_THRESHOLD=0.70  # Consolidation adaptative (% du contexte)
 ```
+
+### Messagerie IMAP/SMTP
+
+L'outil `imap_tools` remplace l'ancien `thunderbird_tools` et offre une compatibilité universelle avec tout serveur IMAP/SMTP (Gmail, Outlook, Proton Mail, serveurs auto-hébergés…).
+
+```env
+IMAP_HOST=imap.example.com
+IMAP_PORT=993
+IMAP_USER=vous@example.com
+IMAP_PASSWORD=votre_mot_de_passe
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587
+```
+
+### Génération automatique d'outils
+
+L'outil `tool_creator_tools` permet au LLM de générer un nouvel outil Prométhée à partir d'une description en langage naturel. Le code généré est validé syntaxiquement avant d'être écrit dans `tools/`.
 
 ---
 

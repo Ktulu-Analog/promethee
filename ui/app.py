@@ -33,6 +33,7 @@ Flux :
 import sys
 from PyQt6.QtWidgets import QApplication, QDialog, QMessageBox
 from PyQt6.QtGui import QFont
+from PyQt6.QtCore import QSettings
 
 from core import Config, HistoryDB
 from core.database import WrongPassphraseError
@@ -93,9 +94,16 @@ def run():
     app.setApplicationName(Config.APP_TITLE)
     app.setApplicationVersion(Config.APP_VERSION)
 
-    font = QFont("Segoe UI", 10)
-    font.setStyleHint(QFont.StyleHint.SansSerif)
-    app.setFont(font)
+    # -- Chargement des préférences utilisateur (police, thème…) ----------------
+    _prefs = QSettings("Promethee", "App")
+    _saved_font_label = _prefs.value("ui/font_family", "Système (défaut)", type=str)
+    ThemeManager.set_font_family(_saved_font_label)
+    # Mise à jour de la QFont système selon le choix
+    _stack = ThemeManager.get_font_family_stack()
+    _first_font = _stack.split(",")[0].strip().strip('"')
+    _app_font = QFont(_first_font, 10)
+    _app_font.setStyleHint(QFont.StyleHint.SansSerif)
+    app.setFont(_app_font)
 
     # -- Splash screen -------------------------------------------------------
     # Pour utiliser une image : SplashScreen.IMAGE_PATH = Path("assets/splash.png")

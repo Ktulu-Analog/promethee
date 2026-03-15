@@ -8,7 +8,7 @@
 QMainWindow, QWidget#central {
     background-color: __base_bg__;
     color: __text_primary__;
-    font-family: "Segoe UI", "SF Pro Display", "Helvetica Neue", sans-serif;
+    font-family: __font_family__;
     font-size: 14px;
 }
 

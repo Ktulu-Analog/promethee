@@ -70,6 +70,9 @@ class AgentWorker(QThread):
     context_event  = pyqtSignal(str)     # émet un message quand la compression se déclenche
     memory_event   = pyqtSignal(str)     # émet un message de mémoire de session (consolidation, pinning)
     compression_stats = pyqtSignal(object)  # émet un dict {type, before, after, saved, pct}
+    family_routing = pyqtSignal(object)  # émet un dict {family, label, model, backend}
+                                         # family=="" → retour au modèle principal
+    model_usage    = pyqtSignal(object)  # émet un dict {model, prompt, completion, role}
 
     def __init__(
         self,
@@ -109,6 +112,12 @@ class AgentWorker(QThread):
         llm_service.set_compression_stats_callback(
             lambda stats: self.compression_stats.emit(stats) if not self._cancelled else None
         )
+        llm_service.set_family_routing_callback(
+            lambda info: self.family_routing.emit(info) if not self._cancelled else None
+        )
+        llm_service.set_model_usage_callback(
+            lambda info: self.model_usage.emit(info) if not self._cancelled else None
+        )
 
         try:
             self._final_text = llm_service.agent_loop(
@@ -144,6 +153,8 @@ class AgentWorker(QThread):
             llm_service.set_context_event_callback(None)
             llm_service.set_memory_event_callback(None)
             llm_service.set_compression_stats_callback(None)
+            llm_service.set_family_routing_callback(None)
+            llm_service.set_model_usage_callback(None)
 
 
 class IngestWorker(QThread):

@@ -368,9 +368,15 @@ def _albert_search_and_rerank(query: str, force_collection_ids: list[int] | None
     if not collection_ids:
         return []
 
+    # ── HyDE : reformulation de la requête avant recherche ────────────
+    # Le document hypothétique est utilisé pour la recherche vectorielle dense.
+    # Le reranker cross-encoder reçoit toujours la requête originale (plus précis
+    # pour scorer la pertinence réelle vis-à-vis de l'intention de l'utilisateur).
+    search_query = _hyde_expand_query(query)
+
     # ── Étape 1 : recherche hybride ────────────────────────────────────
     candidates = _albert_search(
-        query=query,
+        query=search_query,
         collection_ids=collection_ids,
         limit=Config.RAG_TOP_K,
         method=Config.RAG_SEARCH_METHOD,
@@ -475,6 +481,157 @@ def _get_embeddings(texts: list[str]) -> list[list[float]]:
 
 # Initialiser l'embedder au chargement du module
 _init_embedder()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  HyDE — Hypothetical Document Embedding
+# ══════════════════════════════════════════════════════════════════════════════
+#
+#  Principe : au lieu d'embedder la requête brute de l'utilisateur (courte,
+#  conversationnelle), on demande au LLM de rédiger un court document
+#  hypothétique qui *répondrait* à cette requête.
+#  Ce document synthétique est sémantiquement plus proche des chunks indexés
+#  (qui sont des extraits de documents) → meilleure précision de retrieval.
+#
+#  Référence : Gao et al., 2022 — "Precise Zero-Shot Dense Retrieval without
+#  Relevance Labels" (HyDE). Implémentation adaptée au contexte Prométhée :
+#  on utilise le LLM déjà configuré (OpenAI-compatible ou Ollama).
+#
+#  Activation : RAG_HYDE_ENABLED=ON dans .env
+#  Coût       : 1 appel LLM supplémentaire par requête RAG (latence +0.3–1s)
+
+
+def _hyde_generate(query: str) -> str:
+    """Génère un document hypothétique pour la requête via le LLM configuré.
+
+    Retourne le texte généré, ou la requête originale en cas d'échec
+    (dégradation gracieuse : le RAG continue de fonctionner normalement).
+
+    Utilise le modèle assigné à la famille 'rag_tools' depuis l'onglet Outils
+    des paramètres. Si aucun modèle n'est assigné, utilise le modèle principal.
+    """
+    prompt = (
+        "Rédige un court extrait de document (3 à 5 phrases) qui répondrait "
+        "directement à la question suivante. Ne donne que le contenu du document, "
+        "sans introduction ni formule de politesse.\n\n"
+        f"Question : {query}"
+    )
+
+    try:
+        from core.llm_service import build_family_client
+        client, model = build_family_client("rag_tools")
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=Config.RAG_HYDE_MAX_TOKENS,
+            temperature=0.3,
+        )
+        doc = resp.choices[0].message.content.strip()
+        if doc:
+            _log.debug("[HyDE] document hypothétique généré (%d chars) via %s", len(doc), model)
+            return doc
+    except Exception as e:
+        _log.warning("[HyDE] Échec LLM : %s — fallback requête brute", e)
+
+    # Dégradation gracieuse
+    _log.debug("[HyDE] aucun LLM disponible — utilisation de la requête brute")
+    return query
+
+
+def _hyde_expand_query(query: str) -> str:
+    """Retourne le texte à embedder selon que HyDE est activé ou non.
+
+    Point d'entrée unique utilisé par search() et _albert_search_and_rerank().
+    Si RAG_HYDE_ENABLED=OFF, retourne la requête brute sans appel LLM.
+    """
+    if not Config.RAG_HYDE_ENABLED:
+        return query
+    return _hyde_generate(query)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Chunking contextuel — Anthropic Contextual Retrieval
+# ══════════════════════════════════════════════════════════════════════════════
+#
+#  Principe : avant d'embedder chaque chunk, le LLM génère un court préfixe
+#  contextuel qui replace ce chunk dans son document parent.
+#  Exemple : "Ce passage décrit la procédure de résiliation d'un contrat
+#  d'assurance vie dans la section 4.2 des conditions générales."
+#
+#  Ce préfixe est concaténé au début du chunk avant l'embedding ET stocké
+#  dans le payload Qdrant (champ "context_prefix") pour traçabilité.
+#
+#  Référence : Anthropic, "Contextual Retrieval" (2024).
+#  https://www.anthropic.com/news/contextual-retrieval
+#
+#  Activation : RAG_CONTEXTUAL_CHUNKING=ON dans .env
+#  Coût       : 1 appel LLM par chunk à l'ingestion (batch possible)
+#  Important  : nécessite une réingestion des documents existants.
+
+
+def _contextual_prefix_batch(
+    document: str,
+    chunks: list[str],
+) -> list[str]:
+    """Génère un préfixe contextuel pour chaque chunk via le LLM.
+
+    Envoie un seul appel LLM par chunk (pas de vrai batching côté API,
+    mais la boucle est courte pour les corpus documentaires typiques).
+
+    Retourne une liste de préfixes de même longueur que `chunks`.
+    En cas d'échec pour un chunk individuel, retourne une chaîne vide
+    pour ce chunk (le texte brut est toujours embedé).
+    """
+    doc_excerpt = document[: Config.RAG_CONTEXTUAL_DOC_MAX_CHARS]
+    prefixes: list[str] = []
+
+    for i, chunk in enumerate(chunks):
+        system_prompt = (
+            "Tu es un assistant qui aide à contextualiser des extraits de documents. "
+            "Réponds uniquement avec le contexte demandé, sans introduction."
+        )
+        user_prompt = (
+            "<document>\n"
+            f"{doc_excerpt}\n"
+            "</document>\n\n"
+            "Voici l'extrait à contextualiser :\n"
+            "<chunk>\n"
+            f"{chunk}\n"
+            "</chunk>\n\n"
+            "Génère une courte phrase (max 2 phrases) qui situe cet extrait dans "
+            "le document : de quoi parle-t-il globalement, dans quel contexte "
+            "apparaît-il ? Ne répète pas le contenu de l'extrait."
+        )
+
+        prefix = ""
+
+        # Résoudre le client et le modèle via le registre de familles.
+        # Utilise le modèle assigné à 'rag_tools' depuis l'onglet Outils,
+        # ou RAG_INGESTION_MODEL, ou le modèle principal en dernier recours.
+        try:
+            from core.llm_service import build_family_client
+            client, model = build_family_client("rag_tools")
+            # Surcharge par RAG_INGESTION_MODEL si explicitement défini
+            if Config.RAG_INGESTION_MODEL:
+                model = Config.RAG_INGESTION_MODEL
+            resp = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user",   "content": user_prompt},
+                ],
+                max_tokens=Config.RAG_CONTEXTUAL_PREFIX_MAX_TOKENS,
+                temperature=0.1,
+            )
+            prefix = resp.choices[0].message.content.strip()
+        except Exception as e:
+            _log.warning("[CTX] chunk %d/%d — échec LLM : %s", i + 1, len(chunks), e)
+
+        prefixes.append(prefix)
+
+    success = sum(1 for p in prefixes if p)
+    _log.debug("[CTX] %d/%d préfixes contextuels générés", success, len(chunks))
+    return prefixes
 
 
 def _client() -> "QdrantClient":
@@ -761,7 +918,24 @@ def ingest_text(text: str, source: str = "manuel", conversation_id: str = None,
     if not chunks:
         return 0
 
-    embeddings = _get_embeddings(chunks)
+    # ── Chunking contextuel (Anthropic Contextual Retrieval) ──────────────
+    # Si activé, enrichit chaque chunk avec un préfixe contextuel LLM avant
+    # l'embedding. Le texte embedé = "préfixe\n\nchunk" mais on stocke les
+    # deux séparément dans le payload pour traçabilité et débogage.
+    context_prefixes: list[str] = []
+    if Config.RAG_CONTEXTUAL_CHUNKING:
+        _log.info("[CTX] génération des préfixes contextuels pour %d chunks (source=%r)…", len(chunks), source)
+        context_prefixes = _contextual_prefix_batch(text, chunks)
+    else:
+        context_prefixes = [""] * len(chunks)
+
+    # Textes à embedder : "préfixe\n\nchunk" si préfixe disponible, sinon chunk brut
+    texts_to_embed = [
+        f"{prefix}\n\n{chunk}" if prefix else chunk
+        for prefix, chunk in zip(context_prefixes, chunks)
+    ]
+
+    embeddings = _get_embeddings(texts_to_embed)
     if not embeddings:
         return 0
 
@@ -774,10 +948,12 @@ def ingest_text(text: str, source: str = "manuel", conversation_id: str = None,
                 "text":            chunk,
                 "source":          source,
                 "conversation_id": conversation_id or "global",
+                # Préfixe contextuel stocké pour traçabilité (vide si CTX désactivé)
+                **({"context_prefix": prefix} if prefix else {}),
                 **(extra_payload or {}),
             }
         )
-        for chunk, emb in zip(chunks, embeddings)
+        for chunk, emb, prefix in zip(chunks, embeddings, context_prefixes)
     ]
     qc.upsert(collection_name=target, points=points)
     return len(chunks)
@@ -880,7 +1056,7 @@ def search(query: str, top_k: int = 5, conversation_id: str = None, collection_n
         _log.error(f"[RAG] Erreur lors de la vérification de la collection : {e}")
         return []
 
-    embeddings = _get_embeddings([query])
+    embeddings = _get_embeddings([_hyde_expand_query(query)])
     if not embeddings:
         _log.warning("[RAG] _get_embeddings() a retourné une liste vide")
         return []
@@ -1136,11 +1312,43 @@ def _build_rag_context_qdrant(
         _log.warning("[RAG/Qdrant] aucun résultat pour : %r", query[:80])
         return ""
 
+    # ── Seuil de score adaptatif ───────────────────────────────────────
+    # Calcule un seuil dynamique à partir de la distribution des scores
+    # retournés, ce qui évite d'utiliser un seuil fixe inadapté à la
+    # densité du corpus ou à la difficulté de la requête.
+    #
+    # Formule : threshold = max(RAG_MIN_SCORE, mean(scores) - σ × std(scores))
+    #
+    #   σ faible (0.5) → filtre permissif, garde plus de chunks
+    #   σ moyen  (1.0) → équilibre précision/rappel (recommandé)
+    #   σ élevé  (1.5) → filtre strict, garde seulement les meilleurs
+    #
+    # Le seuil calculé ne peut jamais descendre sous RAG_MIN_SCORE, ce qui
+    # garantit un niveau de qualité minimal même si le corpus est bruité.
+    effective_min_score = min_score
+    if Config.RAG_ADAPTIVE_THRESHOLD and len(candidates) >= 2:
+        scores = [h["score"] for h in candidates]
+        mean_s = sum(scores) / len(scores)
+        variance = sum((s - mean_s) ** 2 for s in scores) / len(scores)
+        std_s = variance ** 0.5
+        adaptive = mean_s - Config.RAG_ADAPTIVE_SIGMA * std_s
+        effective_min_score = max(min_score, adaptive)
+        _log.debug(
+            "[RAG/Qdrant] seuil adaptatif : mean=%.3f std=%.3f σ=%.1f "
+            "→ adaptive=%.3f effective=%.3f (RAG_MIN_SCORE=%.3f)",
+            mean_s, std_s, Config.RAG_ADAPTIVE_SIGMA,
+            adaptive, effective_min_score, min_score,
+        )
+
     # ── Filtre par score minimum ───────────────────────────────────────
-    above_threshold = [h for h in candidates if h["score"] >= min_score]
+    above_threshold = [h for h in candidates if h["score"] >= effective_min_score]
     n_dropped = len(candidates) - len(above_threshold)
     if n_dropped:
-        _log.debug("[RAG/Qdrant] %d chunk(s) écarté(s) sous min_score=%.2f", n_dropped, min_score)
+        _log.debug(
+            "[RAG/Qdrant] %d chunk(s) écarté(s) sous seuil=%.3f%s",
+            n_dropped, effective_min_score,
+            " (adaptatif)" if Config.RAG_ADAPTIVE_THRESHOLD else " (fixe)",
+        )
 
     # ── Diversification par source ─────────────────────────────────────
     chunks_per_source: dict[str, int] = {}
@@ -1162,8 +1370,10 @@ def _build_rag_context_qdrant(
 
     if not selected:
         _log.warning(
-            "[RAG/Qdrant] aucun chunk retenu après filtrage (min_score=%.2f, top_k=%d)",
-            min_score, top_k,
+            "[RAG/Qdrant] aucun chunk retenu après filtrage (seuil=%.3f%s, top_k=%d)",
+            effective_min_score,
+            " adaptatif" if Config.RAG_ADAPTIVE_THRESHOLD else " fixe",
+            top_k,
         )
         return ""
 

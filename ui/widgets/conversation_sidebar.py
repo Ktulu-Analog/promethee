@@ -106,6 +106,13 @@ _MONITORING_SVG = """<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'
   <polyline points='3,9 5,5 7,7 9,4 11,6 13,3' stroke='{c}' stroke-width='1.3' fill='none' stroke-linecap='round' stroke-linejoin='round'/>
 </svg>"""
 
+_MODEL_USAGE_SVG = """<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'>
+  <rect x='1' y='10' width='3' height='5' rx='0.8' stroke='{c}' stroke-width='1.3' fill='none'/>
+  <rect x='5' y='7'  width='3' height='8' rx='0.8' stroke='{c}' stroke-width='1.3' fill='none'/>
+  <rect x='9' y='4'  width='3' height='11' rx='0.8' stroke='{c}' stroke-width='1.3' fill='none'/>
+  <rect x='13' y='1' width='2' height='14' rx='0.8' stroke='{c}' stroke-width='1.3' fill='none'/>
+</svg>"""
+
 _SETTINGS_SVG = """<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'>
   <circle cx='8' cy='8' r='2.2' stroke='{c}' stroke-width='1.4' fill='none'/>
   <path d='M8 1v2M8 13v2M1 8h2M13 8h2M3.05 3.05l1.41 1.41M11.54 11.54l1.41 1.41M11.54 4.46l-1.41 1.41M4.46 11.54l-1.41 1.41'
@@ -194,6 +201,7 @@ class ConvSidePanel(QWidget):
     rag_toggle          = pyqtSignal()
     tools_toggle        = pyqtSignal()
     monitoring_toggle   = pyqtSignal()
+    model_usage_toggle  = pyqtSignal()
     settings_requested  = pyqtSignal()
     theme_changed       = pyqtSignal()
 
@@ -242,14 +250,16 @@ class ConvSidePanel(QWidget):
             return b
 
         self._btn_clear    = _btn(_CLEAR_SVG,      "Effacer la conversation",  self.clear_requested)
-        self._btn_rag      = _btn(_RAG_SVG,        "Panneau RAG  (Ctrl+R)",    self.rag_toggle)
-        self._btn_tools    = _btn(_TOOLS_SVG,      "Panneau Outils  (Ctrl+T)", self.tools_toggle)
-        self._btn_monitor  = _btn(_MONITORING_SVG, "Panneau Monitoring  (Ctrl+M)", self.monitoring_toggle)
+        self._btn_rag      = _btn(_RAG_SVG,         "Panneau RAG  (Ctrl+R)",          self.rag_toggle)
+        self._btn_tools    = _btn(_TOOLS_SVG,        "Panneau Outils  (Ctrl+T)",        self.tools_toggle)
+        self._btn_monitor  = _btn(_MONITORING_SVG,   "Panneau Monitoring  (Ctrl+M)",    self.monitoring_toggle)
+        self._btn_usage    = _btn(_MODEL_USAGE_SVG,  "Consommation par modèle  (Ctrl+U)", self.model_usage_toggle)
         self._action_svgs  = {
             self._btn_clear:   _CLEAR_SVG,
             self._btn_rag:     _RAG_SVG,
             self._btn_tools:   _TOOLS_SVG,
             self._btn_monitor: _MONITORING_SVG,
+            self._btn_usage:   _MODEL_USAGE_SVG,
         }
 
         self._btn_settings = _btn(_SETTINGS_SVG, "Paramètres  (Ctrl+,)", self.settings_requested)
@@ -259,6 +269,7 @@ class ConvSidePanel(QWidget):
         top_bar.addWidget(self._btn_rag)
         top_bar.addWidget(self._btn_tools)
         top_bar.addWidget(self._btn_monitor)
+        top_bar.addWidget(self._btn_usage)
         top_bar.addStretch()
 
         self._toggle_btn = QPushButton()
@@ -757,6 +768,36 @@ class ConvSidePanel(QWidget):
     def update_model(self):
         self._model_lbl.setText(Config.mode_label())
         self._apply_model_style()
+
+    def update_family_routing(self, info: dict) -> None:
+        """
+        Met à jour le label de modèle pour refléter le routing de famille actif.
+
+        Appelé par main_window quand agent_loop bascule sur un modèle de famille
+        pour formuler la réponse finale. Revient au label principal quand
+        info["family"] est vide (fin de tour ou modèle principal utilisé).
+        """
+        family = info.get("family", "")
+        if family:
+            try:
+                from core import tools_engine
+                icon = next(
+                    (f["icon"] for f in tools_engine.list_families()
+                     if f["family"] == family),
+                    "🔧",
+                )
+            except Exception:
+                icon = "🔧"
+            model = info.get("model", "")
+            label = info.get("label", family)
+            self._model_lbl.setText(f"{icon} {label} · {model}")
+            self._model_lbl.setStyleSheet(
+                f"color: {ThemeManager.inline('logo_color')}; "
+                "font-size: 10px; font-style: italic; "
+                "padding: 4px 0 0 0; border: none; background: transparent;"
+            )
+        else:
+            self.update_model()
 
     def refresh_theme(self):
         self._apply_tree_palette()

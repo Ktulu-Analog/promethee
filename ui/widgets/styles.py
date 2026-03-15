@@ -41,7 +41,12 @@ API publique (inchangée) :
 from __future__ import annotations
 from pathlib import Path
 
-from .themes.tokens import get as _tok, resolve as _resolve
+from .themes.tokens import (
+    get as _tok,
+    resolve as _resolve,
+    get_font_family as _get_font_family,
+    set_font_family as _set_font_family,
+)
 
 # ── Chemins des templates ─────────────────────────────────────────────────────
 _THEMES_DIR = Path(__file__).parent / "themes"
@@ -54,6 +59,7 @@ def _render(tpl_path: Path, dark: bool) -> str:
     tpl = tpl_path.read_text(encoding="utf-8")
     for key, value in _resolve(dark).items():
         tpl = tpl.replace(f"__{key}__", value)
+    tpl = tpl.replace("__font_family__", _get_font_family())
     return tpl
 
 
@@ -83,6 +89,43 @@ class ThemeManager:
     """
 
     _current: str = "dark"
+
+    # ── Police d'interface ────────────────────────────────────────────
+
+    # Polices proposées dans les préférences (label → stack CSS)
+    FONT_OPTIONS: dict[str, str] = {
+        "Système (défaut)": "\"SF Pro Display\", \"Helvetica Neue\", \"Segoe UI\", sans-serif",
+        "Segoe UI (Windows)": "\"Segoe UI\", sans-serif",
+        "SF Pro (macOS)":     "\"SF Pro Display\", \"SF Pro Text\", sans-serif",
+        "Ubuntu (Linux)":     "\"Ubuntu\", sans-serif",
+        "DejaVu Sans (Linux)":"\"DejaVu Sans\", sans-serif",
+    }
+
+    @classmethod
+    def set_font_family(cls, label_or_stack: str) -> None:
+        """Définit la police à partir d'un label (FONT_OPTIONS) ou d'un stack CSS brut."""
+        stack = cls.FONT_OPTIONS.get(label_or_stack, label_or_stack)
+        _set_font_family(stack)
+        _invalidate_cache()
+        try:
+            from ui.widgets.message_widget import invalidate_html_css_cache
+            invalidate_html_css_cache()
+        except ImportError:
+            pass
+
+    @classmethod
+    def get_font_family_stack(cls) -> str:
+        """Retourne le stack CSS actif."""
+        return _get_font_family()
+
+    @classmethod
+    def get_font_family_label(cls) -> str:
+        """Retourne le label lisible correspondant au stack actif, ou le stack brut."""
+        current = _get_font_family()
+        for label, stack in cls.FONT_OPTIONS.items():
+            if stack == current:
+                return label
+        return current
 
     # ── État ─────────────────────────────────────────────────────────
 

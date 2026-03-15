@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
 """
-ingest_directory.py — Script CLI interactif pour indexer un répertoire dans Qdrant
+ingest3.py — Script CLI interactif pour indexer un répertoire dans Qdrant
 
 Usage:
-    python ingest_directory.py                    # Mode interactif
-    python ingest_directory.py /path --collection my_collection  # Mode direct
+    python ingest3.py                                            # Mode interactif
+    python ingest3.py /path --collection ma_collection          # Mode direct
+    python ingest3.py /path --collection ma_collection --no-ctx # Désactiver le chunking contextuel
+
+Améliorations RAG intégrées :
+    • Chunking hybride sémantique (réutilise rag_engine._chunk_text)
+    • Chunking contextuel LLM (Anthropic Contextual Retrieval) si RAG_CONTEXTUAL_CHUNKING=ON
+      → enrichit chaque chunk d'un préfixe contextuel avant l'embedding
+      → activable/désactivable via --ctx / --no-ctx en ligne de commande
 
 Dépendances OCR (optionnelles) :
     pip install pytesseract pdf2image
@@ -20,8 +27,17 @@ from pathlib import Path
 from typing import List, Optional
 from dotenv import load_dotenv
 
-# Charger les variables d'environnement
-load_dotenv()
+# Chercher le .env à la racine du projet (dossier parent de scripts/)
+_env_candidates = [
+    Path(__file__).parent.parent / ".env",  # …/promethee/.env
+    Path(".env"),
+]
+for _ep in _env_candidates:
+    if _ep.exists():
+        load_dotenv(_ep)
+        break
+else:
+    load_dotenv()
 
 # Import des fonctions nécessaires
 try:
@@ -40,6 +56,16 @@ except ImportError:
     print("❌ Erreur : openai non installé")
     print("   Installez avec : pip install openai")
     sys.exit(1)
+
+# Import du chunker hybride et du générateur de contexte depuis rag_engine.
+# On ajoute le dossier parent (racine du projet) au path pour permettre
+# l'import même quand le script est lancé directement depuis scripts/.
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+try:
+    from promethee.core.rag_engine import _chunk_text, _contextual_prefix_batch
+    RAG_ENGINE_OK = True
+except ImportError:
+    RAG_ENGINE_OK = False  # Fallback sur le chunker local si rag_engine indisponible
 
 import uuid
 import re
@@ -68,24 +94,37 @@ except ImportError:
 #  Configuration depuis les variables d'environnement
 # ══════════════════════════════════════════════════════════════════════
 
-QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
+QDRANT_URL         = os.getenv("QDRANT_URL", "http://localhost:6333")
 EMBEDDING_API_BASE = os.getenv("EMBEDDING_API_BASE", "https://api.openai.com/v1")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-ada-002")
+OPENAI_API_KEY     = os.getenv("OPENAI_API_KEY", "")
+EMBEDDING_MODEL    = os.getenv("EMBEDDING_MODEL", "text-embedding-ada-002")
 EMBEDDING_DIMENSION = int(os.getenv("EMBEDDING_DIMENSION", "1536"))
 
+# LLM pour le chunking contextuel (même modèle que le moteur principal)
+OPENAI_API_BASE    = os.getenv("OPENAI_API_BASE", "")
+OPENAI_MODEL       = os.getenv("OPENAI_MODEL", "")
+LOCAL              = os.getenv("LOCAL", "OFF").strip().upper() == "ON"
+OLLAMA_BASE_URL    = os.getenv("OLLAMA_BASE_URL", "")
+OLLAMA_MODEL       = os.getenv("OLLAMA_MODEL", "")
+
+# Modèle dédié au chunking contextuel (ingestion).
+# Si vide, utilise OPENAI_MODEL. Recommandé : modèle léger (ex: Mistral-Small-3.2-24B)
+RAG_INGESTION_MODEL = os.getenv("RAG_INGESTION_MODEL", "").strip()
+
+# Chunking contextuel (Anthropic Contextual Retrieval)
+RAG_CONTEXTUAL_CHUNKING          = os.getenv("RAG_CONTEXTUAL_CHUNKING", "OFF").strip().upper() == "ON"
+RAG_CONTEXTUAL_PREFIX_MAX_TOKENS = int(os.getenv("RAG_CONTEXTUAL_PREFIX_MAX_TOKENS", "100"))
+RAG_CONTEXTUAL_DOC_MAX_CHARS     = int(os.getenv("RAG_CONTEXTUAL_DOC_MAX_CHARS", "10000"))
+
 # Configuration pour l'insertion dans Qdrant
-QDRANT_BATCH_SIZE = int(os.getenv("QDRANT_BATCH_SIZE", "100"))  # Taille des batches pour l'upsert
-QDRANT_MAX_RETRIES = int(os.getenv("QDRANT_MAX_RETRIES", "3"))  # Nombre de tentatives en cas d'erreur
-QDRANT_TIMEOUT = int(os.getenv("QDRANT_TIMEOUT", "60"))  # Timeout en secondes
+QDRANT_BATCH_SIZE  = int(os.getenv("QDRANT_BATCH_SIZE", "100"))
+QDRANT_MAX_RETRIES = int(os.getenv("QDRANT_MAX_RETRIES", "3"))
+QDRANT_TIMEOUT     = int(os.getenv("QDRANT_TIMEOUT", "60"))
 
 # Configuration OCR
-# Seuil de caractères en dessous duquel le PDF est considéré comme scanné/image
 OCR_TEXT_THRESHOLD = int(os.getenv("OCR_TEXT_THRESHOLD", "100"))
-# Langue(s) Tesseract : "fra" pour français, "eng" pour anglais, "fra+eng" pour les deux
-OCR_LANG = os.getenv("OCR_LANG", "fra+eng")
-# DPI pour la conversion PDF → image (plus élevé = meilleure qualité OCR mais plus lent)
-OCR_DPI = int(os.getenv("OCR_DPI", "300"))
+OCR_LANG           = os.getenv("OCR_LANG", "fra+eng")
+OCR_DPI            = int(os.getenv("OCR_DPI", "300"))
 
 # Extensions de fichiers supportées
 SUPPORTED_EXTENSIONS = {
@@ -219,11 +258,30 @@ def show_config():
     print_section("Configuration actuelle")
     print(f"  • Qdrant URL       : {Colors.CYAN}{QDRANT_URL}{Colors.END}")
     print(f"  • API Embeddings   : {Colors.CYAN}{EMBEDDING_API_BASE}{Colors.END}")
-    print(f"  • Modèle           : {Colors.CYAN}{EMBEDDING_MODEL}{Colors.END}")
+    print(f"  • Modèle embedding : {Colors.CYAN}{EMBEDDING_MODEL}{Colors.END}")
     print(f"  • Dimension        : {Colors.CYAN}{EMBEDDING_DIMENSION}{Colors.END}")
     print(f"  • API Key définie  : {Colors.GREEN if OPENAI_API_KEY else Colors.RED}{'Oui' if OPENAI_API_KEY else 'Non'}{Colors.END}")
 
-    # Affichage du statut OCR
+    # Chunker hybride
+    chunker_label = "rag_engine._chunk_text (hybride sémantique)" if RAG_ENGINE_OK else "chunk_text local (fallback)"
+    chunker_color = Colors.GREEN if RAG_ENGINE_OK else Colors.YELLOW
+    print(f"  • Chunker          : {chunker_color}{chunker_label}{Colors.END}")
+
+    # Chunking contextuel
+    ctx_active = RAG_CONTEXTUAL_CHUNKING
+    ctx_color  = Colors.GREEN if ctx_active else Colors.YELLOW
+    ctx_label  = f"Activé (préfixe ≤{RAG_CONTEXTUAL_PREFIX_MAX_TOKENS} tokens, doc ≤{RAG_CONTEXTUAL_DOC_MAX_CHARS} chars)" if ctx_active else "Désactivé (RAG_CONTEXTUAL_CHUNKING=OFF)"
+    print(f"  • Chunking contextuel : {ctx_color}{ctx_label}{Colors.END}")
+    if ctx_active:
+        effective_model = RAG_INGESTION_MODEL or (OLLAMA_MODEL if LOCAL else OPENAI_MODEL) or "(non défini)"
+        llm_label = f"{'Ollama' if LOCAL else 'OpenAI-compat'} · {effective_model}"
+        if RAG_INGESTION_MODEL:
+            llm_label += f"  {Colors.CYAN}(RAG_INGESTION_MODEL){Colors.END}"
+        else:
+            llm_label += f"  {Colors.YELLOW}(modèle principal — pensez à définir RAG_INGESTION_MODEL){Colors.END}"
+        print(f"    └ LLM contexte : {Colors.CYAN}{llm_label}")
+
+    # OCR
     ocr_available = PYTESSERACT_OK and PDF2IMAGE_OK
     ocr_status = Colors.GREEN if ocr_available else Colors.YELLOW
     ocr_label = "Disponible" if ocr_available else "Non disponible"
@@ -303,7 +361,20 @@ def ocr_pdf(file_path: Path, lang: str = None, dpi: int = None) -> str:
 # ══════════════════════════════════════════════════════════════════════
 
 def chunk_text(text: str, chunk_size: int = 500, overlap: int = 80) -> List[str]:
-    """Découpe le texte en chunks avec chevauchement."""
+    """Découpe le texte en chunks.
+
+    Délègue au chunker hybride sémantique de rag_engine (_chunk_text) si disponible.
+    Ce chunker gère correctement texte courant, code, tableaux et listes,
+    avec une mesure de la taille en tokens plutôt qu'en caractères.
+
+    Fallback : découpage basique par phrases si rag_engine n'est pas importable
+    (ex : script lancé hors du projet Prométhée).
+    """
+    if RAG_ENGINE_OK:
+        # max_tokens=256 ≈ ~900 chars — cohérent avec ingest_text() de rag_engine
+        return _chunk_text(text, max_tokens=256, overlap_tokens=32, hard_max_tokens=512)
+
+    # ── Fallback : découpage basique par phrases ──────────────────────
     sentences = re.split(r'(?<=[.!?])\s+', text.strip())
     chunks, current, length = [], [], 0
     for s in sentences:
@@ -594,14 +665,108 @@ def upsert_with_retry(
     return True
 
 
+def _contextual_prefix_batch_local(document: str, chunks: List[str]) -> List[str]:
+    """Fallback autonome pour le chunking contextuel quand rag_engine n'est pas importable.
+
+    Reproduit la logique de rag_engine._contextual_prefix_batch() sans dépendance
+    à l'objet Config — lit directement les variables d'environnement du module.
+
+    Utilisé uniquement si l'import de rag_engine échoue (script lancé en dehors
+    du projet Prométhée). Dans le cas normal, c'est _contextual_prefix_batch()
+    de rag_engine qui est appelé.
+    """
+    doc_excerpt = document[:RAG_CONTEXTUAL_DOC_MAX_CHARS]
+    prefixes: List[str] = []
+
+    system_prompt = (
+        "Tu es un assistant qui aide à contextualiser des extraits de documents. "
+        "Réponds uniquement avec le contexte demandé, sans introduction."
+    )
+
+    for i, chunk in enumerate(chunks):
+        user_prompt = (
+            "<document>\n"
+            f"{doc_excerpt}\n"
+            "</document>\n\n"
+            "Voici l'extrait à contextualiser :\n"
+            "<chunk>\n"
+            f"{chunk}\n"
+            "</chunk>\n\n"
+            "Génère une courte phrase (max 2 phrases) qui situe cet extrait dans "
+            "le document : de quoi parle-t-il globalement, dans quel contexte "
+            "apparaît-il ? Ne répète pas le contenu de l'extrait."
+        )
+
+        prefix = ""
+
+        # Modèle à utiliser : RAG_INGESTION_MODEL si défini, sinon modèle principal.
+        ingestion_model = RAG_INGESTION_MODEL or OPENAI_MODEL
+
+        # ── API OpenAI-compatible ────────────────────────────────────────
+        if not LOCAL and OPENAI_API_BASE and OPENAI_API_KEY and ingestion_model:
+            try:
+                llm = OpenAI(base_url=OPENAI_API_BASE, api_key=OPENAI_API_KEY)
+                resp = llm.chat.completions.create(
+                    model=ingestion_model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user",   "content": user_prompt},
+                    ],
+                    max_tokens=RAG_CONTEXTUAL_PREFIX_MAX_TOKENS,
+                    temperature=0.1,
+                )
+                prefix = resp.choices[0].message.content.strip()
+            except Exception as e:
+                print_warning(f"  [CTX] chunk {i + 1}/{len(chunks)} — échec API : {e}")
+
+        # ── Ollama ───────────────────────────────────────────────────────
+        elif LOCAL and OLLAMA_BASE_URL and OLLAMA_MODEL:
+            try:
+                import urllib.request as _ur
+                import json as _j
+                payload = _j.dumps({
+                    "model": OLLAMA_MODEL,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user",   "content": user_prompt},
+                    ],
+                    "stream": False,
+                    "options": {
+                        "num_predict": RAG_CONTEXTUAL_PREFIX_MAX_TOKENS,
+                        "temperature": 0.1,
+                    },
+                }).encode()
+                req = _ur.Request(
+                    f"{OLLAMA_BASE_URL.rstrip('/')}/api/chat",
+                    data=payload,
+                    headers={"Content-Type": "application/json"},
+                )
+                with _ur.urlopen(req, timeout=20) as r:
+                    prefix = _j.loads(r.read())["message"]["content"].strip()
+            except Exception as e:
+                print_warning(f"  [CTX] chunk {i + 1}/{len(chunks)} — échec Ollama : {e}")
+
+        prefixes.append(prefix)
+
+    return prefixes
+
+
 def ingest_file(
     file_path: Path,
     collection_name: str,
     qclient: QdrantClient,
     embedding_client: OpenAI,
     embedding_model: str,
+    use_contextual_chunking: bool = None,
 ) -> int:
-    """Ingère un fichier dans Qdrant. Retourne le nombre de chunks indexés."""
+    """Ingère un fichier dans Qdrant. Retourne le nombre de chunks indexés.
+
+    Parameters
+    ----------
+    use_contextual_chunking : bool, optional
+        Active/désactive le chunking contextuel pour ce fichier.
+        None → utilise la valeur de RAG_CONTEXTUAL_CHUNKING (.env).
+    """
     text = extract_text_from_file(file_path)
     if not text or len(text.strip()) < 50:
         return 0
@@ -610,7 +775,40 @@ def ingest_file(
     if not chunks:
         return 0
 
-    embeddings = get_embeddings(chunks, embedding_client, embedding_model)
+    # ── Chunking contextuel (Anthropic Contextual Retrieval) ─────────────
+    # Génère un préfixe contextuel LLM pour chaque chunk afin d'enrichir
+    # l'embedding et améliorer la précision du retrieval.
+    #
+    # Deux chemins possibles :
+    #   1. RAG_ENGINE_OK → délègue à _contextual_prefix_batch() de rag_engine
+    #      (même logique que lors d'une ingestion via l'interface)
+    #   2. Fallback local → implémentation minimale autonome sans import rag_engine
+    #
+    # Si le chunking contextuel est désactivé, context_prefixes reste une liste
+    # de chaînes vides et les chunks sont embedés tels quels (comportement historique).
+    ctx_enabled = RAG_CONTEXTUAL_CHUNKING if use_contextual_chunking is None else use_contextual_chunking
+
+    context_prefixes: List[str] = [""] * len(chunks)
+
+    if ctx_enabled:
+        print_info(f"  Génération des préfixes contextuels ({len(chunks)} chunks)…")
+        if RAG_ENGINE_OK:
+            # Délégation au générateur de rag_engine (cohérence garantie)
+            context_prefixes = _contextual_prefix_batch(text, chunks)
+        else:
+            # Fallback autonome : même logique mais sans dépendance à rag_engine
+            context_prefixes = _contextual_prefix_batch_local(text, chunks)
+
+        n_ok = sum(1 for p in context_prefixes if p)
+        print_info(f"  → {n_ok}/{len(chunks)} préfixes générés")
+
+    # Textes à embedder : "préfixe\n\nchunk" si préfixe disponible, sinon chunk brut
+    texts_to_embed = [
+        f"{prefix}\n\n{chunk}" if prefix else chunk
+        for prefix, chunk in zip(context_prefixes, chunks)
+    ]
+
+    embeddings = get_embeddings(texts_to_embed, embedding_client, embedding_model)
     if not embeddings or len(embeddings) != len(chunks):
         return 0
 
@@ -619,21 +817,19 @@ def ingest_file(
             id=str(uuid.uuid4()),
             vector=emb,
             payload={
-                "text": chunk,
-                "source": file_path.name,
-                "file_path": str(file_path),
+                "text":            chunk,
+                "source":          file_path.name,
+                "file_path":       str(file_path),
                 "conversation_id": "global",
+                # Préfixe contextuel stocké pour traçabilité (omis si vide)
+                **({"context_prefix": prefix} if prefix else {}),
             }
         )
-        for chunk, emb in zip(chunks, embeddings)
+        for chunk, emb, prefix in zip(chunks, embeddings, context_prefixes)
     ]
 
     success = upsert_with_retry(qclient, collection_name, points)
-
-    if success:
-        return len(chunks)
-    else:
-        return 0
+    return len(chunks) if success else 0
 
 
 def scan_directory(
@@ -761,6 +957,34 @@ def interactive_mode():
 
     print_success(f"Collection sélectionnée : {collection_name}")
 
+    # Chunking contextuel — proposition interactive
+    print_section("Chunking contextuel (Anthropic Contextual Retrieval)")
+    if not (OPENAI_MODEL or OLLAMA_MODEL):
+        print_warning("Aucun modèle LLM configuré (OPENAI_MODEL / OLLAMA_MODEL) — chunking contextuel indisponible")
+        use_ctx = False
+    else:
+        if RAG_CONTEXTUAL_CHUNKING:
+            print_info("RAG_CONTEXTUAL_CHUNKING=ON détecté dans .env")
+            use_ctx = prompt_yes_no(
+                "Activer le chunking contextuel (enrichit chaque chunk d'un préfixe LLM — plus lent) ?",
+                default=True,
+            )
+        else:
+            print_info("RAG_CONTEXTUAL_CHUNKING=OFF dans .env (désactivé par défaut)")
+            use_ctx = prompt_yes_no(
+                "Activer le chunking contextuel quand même pour cette session ?",
+                default=False,
+            )
+        if use_ctx:
+            effective_model = RAG_INGESTION_MODEL or (OLLAMA_MODEL if LOCAL else OPENAI_MODEL)
+            llm_label = f"{'Ollama' if LOCAL else 'OpenAI-compat'} · {effective_model}"
+            if RAG_INGESTION_MODEL:
+                llm_label += " (RAG_INGESTION_MODEL)"
+            print_success(f"Chunking contextuel activé — LLM : {llm_label}")
+            print_warning(f"Attention : {len(files)} fichier(s) × ~N chunks = N appels LLM supplémentaires")
+        else:
+            print_info("Chunking contextuel désactivé")
+
     # Récapitulatif
     print_header("Récapitulatif")
     print(f"  • Répertoire      : {Colors.CYAN}{directory}{Colors.END}")
@@ -768,7 +992,9 @@ def interactive_mode():
     print(f"  • Extensions      : {Colors.CYAN}{', '.join(sorted(extensions))}{Colors.END}")
     print(f"  • Fichiers        : {Colors.CYAN}{len(files)}{Colors.END}")
     print(f"  • Collection      : {Colors.CYAN}{collection_name}{Colors.END}")
-    print(f"  • Modèle          : {Colors.CYAN}{EMBEDDING_MODEL}{Colors.END}")
+    print(f"  • Modèle embed.   : {Colors.CYAN}{EMBEDDING_MODEL}{Colors.END}")
+    ctx_color = Colors.GREEN if use_ctx else Colors.YELLOW
+    print(f"  • Chunking ctx    : {ctx_color}{'Activé' if use_ctx else 'Désactivé'}{Colors.END}")
     ocr_available = PYTESSERACT_OK and PDF2IMAGE_OK
     print(f"  • OCR Tesseract   : {Colors.GREEN if ocr_available else Colors.YELLOW}{'Activé' if ocr_available else 'Désactivé'}{Colors.END}")
     print()
@@ -816,6 +1042,7 @@ def interactive_mode():
                 qclient,
                 embedding_client,
                 EMBEDDING_MODEL,
+                use_contextual_chunking=use_ctx,
             )
 
             if chunks > 0:
@@ -842,6 +1069,8 @@ def interactive_mode():
     print(f"  • Erreurs/Ignorés  : {Colors.YELLOW}{error_count}{Colors.END}")
     print(f"  • Total chunks     : {Colors.CYAN}{total_chunks}{Colors.END}")
     print(f"  • Collection       : {Colors.CYAN}{collection_name}{Colors.END}")
+    ctx_color = Colors.GREEN if use_ctx else Colors.YELLOW
+    print(f"  • Chunking ctx     : {ctx_color}{'Activé' if use_ctx else 'Désactivé'}{Colors.END}")
     print()
 
 
@@ -914,7 +1143,29 @@ def main():
         help="Désactiver l'OCR même si Tesseract est disponible"
     )
 
+    ctx_group = parser.add_mutually_exclusive_group()
+    ctx_group.add_argument(
+        '--ctx',
+        action='store_true',
+        default=None,
+        help="Forcer l'activation du chunking contextuel LLM (override RAG_CONTEXTUAL_CHUNKING)"
+    )
+    ctx_group.add_argument(
+        '--no-ctx',
+        action='store_true',
+        help="Forcer la désactivation du chunking contextuel LLM (override RAG_CONTEXTUAL_CHUNKING)"
+    )
+
     args = parser.parse_args()
+
+    # Résoudre la valeur effective du chunking contextuel
+    # Priorité : --ctx/--no-ctx > RAG_CONTEXTUAL_CHUNKING (.env)
+    if args.ctx:
+        use_ctx = True
+    elif args.no_ctx:
+        use_ctx = False
+    else:
+        use_ctx = RAG_CONTEXTUAL_CHUNKING
 
     # Appliquer les overrides OCR depuis la ligne de commande
     if args.ocr_lang:
@@ -959,6 +1210,8 @@ def main():
     # Statut OCR
     ocr_available = PYTESSERACT_OK and PDF2IMAGE_OK
     print_info(f"OCR Tesseract : {'activé (lang={}, dpi={})'.format(OCR_LANG, OCR_DPI) if ocr_available else 'désactivé'}")
+    ctx_color = Colors.GREEN if use_ctx else Colors.YELLOW
+    print(f"  Chunking contextuel : {ctx_color}{'activé' if use_ctx else 'désactivé'}{Colors.END}")
 
     # Scanner
     print_info(f"Scan du répertoire : {directory}")
@@ -1014,7 +1267,14 @@ def main():
         if TQDM_OK:
             progress.set_description(f"{rel_path.name[:40]}")
 
-        chunks = ingest_file(file_path, args.collection, qclient, embedding_client, EMBEDDING_MODEL)
+        chunks = ingest_file(
+            file_path,
+            args.collection,
+            qclient,
+            embedding_client,
+            EMBEDDING_MODEL,
+            use_contextual_chunking=use_ctx,
+        )
         if chunks > 0:
             total_chunks += chunks
             success_count += 1
@@ -1027,6 +1287,8 @@ def main():
             progress.set_postfix(chunks=total_chunks, ok=success_count, err=error_count)
 
     print_success(f"Terminé : {success_count}/{len(files)} fichiers, {total_chunks} chunks")
+    ctx_label = "avec" if use_ctx else "sans"
+    print_info(f"Chunking contextuel : {ctx_label} préfixe LLM")
 
 
 if __name__ == "__main__":
