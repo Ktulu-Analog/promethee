@@ -11,7 +11,7 @@ import urllib.request
 import sys
 from pathlib import Path
 
-MERMAID_VERSION = "11.4.1"
+MERMAID_VERSION = "11.13.0"
 BASE_URL = f"https://cdn.jsdelivr.net/npm/mermaid@{MERMAID_VERSION}/dist"
 
 # Répertoire de destination (relatif à la racine du projet)
