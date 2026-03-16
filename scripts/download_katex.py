@@ -3,7 +3,7 @@
 download_katex.py — Télécharge KaTeX dans assets/katex/
 À exécuter une seule fois : python download_katex.py
 
-KaTeX version 0.16.9 (~1.2 Mo au total)
+KaTeX version 0.16.33
 Fichiers nécessaires :
   - katex.min.js
   - katex.min.css
@@ -14,12 +14,12 @@ import os
 import sys
 from pathlib import Path
 
-KATEX_VERSION = "0.16.9"
+KATEX_VERSION = "0.16.33"
 BASE_URL = f"https://cdn.jsdelivr.net/npm/katex@{KATEX_VERSION}/dist"
 
-# Répertoire de destination (relatif au script)
+# Répertoire de destination (relatif à la racine du projet)
 SCRIPT_DIR = Path(__file__).parent
-KATEX_DIR  = SCRIPT_DIR / "assets" / "katex"
+KATEX_DIR  = SCRIPT_DIR.parent / "assets" / "katex"
 FONTS_DIR  = KATEX_DIR  / "fonts"
 
 # Polices woff2 nécessaires (subset minimal pour les maths)

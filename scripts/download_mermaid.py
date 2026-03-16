@@ -3,7 +3,7 @@
 download_mermaid.py — Télécharge Mermaid dans assets/mermaid/
 À exécuter une seule fois : python scripts/download_mermaid.py
 
-Mermaid version 11.4.1 (~2.5 Mo)
+Mermaid version 11.13.0
 Fichier nécessaire :
   - mermaid.min.js  (bundle autonome, pas de dépendances)
 """
