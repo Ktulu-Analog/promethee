@@ -78,6 +78,20 @@ def _invalidate_cache() -> None:
     _style_cache.clear()
 
 
+def _invalidate_all() -> None:
+    """Invalide le cache QSS et le cache CSS HTML de message_widget.
+
+    Factorise le bloc try/import répété dans set_theme(), toggle() et
+    set_font_family() — seule source de vérité pour l'invalidation complète.
+    """
+    _invalidate_cache()
+    try:
+        from ui.widgets.message_widget import invalidate_html_css_cache
+        invalidate_html_css_cache()
+    except ImportError:
+        pass
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  ThemeManager
 # ══════════════════════════════════════════════════════════════════════════════
@@ -106,12 +120,7 @@ class ThemeManager:
         """Définit la police à partir d'un label (FONT_OPTIONS) ou d'un stack CSS brut."""
         stack = cls.FONT_OPTIONS.get(label_or_stack, label_or_stack)
         _set_font_family(stack)
-        _invalidate_cache()
-        try:
-            from ui.widgets.message_widget import invalidate_html_css_cache
-            invalidate_html_css_cache()
-        except ImportError:
-            pass
+        _invalidate_all()
 
     @classmethod
     def get_font_family_stack(cls) -> str:
@@ -141,22 +150,12 @@ class ThemeManager:
     def set_theme(cls, theme: str) -> None:
         assert theme in ("dark", "light")
         cls._current = theme
-        _invalidate_cache()
-        try:
-            from ui.widgets.message_widget import invalidate_html_css_cache
-            invalidate_html_css_cache()
-        except ImportError:
-            pass
+        _invalidate_all()
 
     @classmethod
     def toggle(cls) -> None:
         cls._current = "light" if cls._current == "dark" else "dark"
-        _invalidate_cache()
-        try:
-            from ui.widgets.message_widget import invalidate_html_css_cache
-            invalidate_html_css_cache()
-        except ImportError:
-            pass
+        _invalidate_all()
 
     # ── CSS principal ─────────────────────────────────────────────────
 

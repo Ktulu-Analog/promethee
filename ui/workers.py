@@ -16,15 +16,16 @@ workers.py — Workers PyQt6 pour threading
 Couche Qt qui utilise les services du core.
 """
 from PyQt6.QtCore import QThread, pyqtSignal
-from core import llm_service, tools_engine, rag_engine
+from core import llm_service, tools_engine, rag_engine, llm_events
 
 
 class StreamWorker(QThread):
     """Worker pour le streaming simple."""
-    token_received = pyqtSignal(str)
-    finished_signal = pyqtSignal(str)
-    error_signal = pyqtSignal(str)
-    token_usage = pyqtSignal(object)   # émet un TokenUsage
+    token_received   = pyqtSignal(str)
+    finished_signal  = pyqtSignal(str)
+    cancelled_signal = pyqtSignal(str)  # émis si l'utilisateur a cliqué Stop
+    error_signal     = pyqtSignal(str)
+    token_usage      = pyqtSignal(object)   # émet un TokenUsage
 
     def __init__(self, messages, system_prompt="", model=None, parent=None):
         super().__init__(parent)
@@ -38,6 +39,7 @@ class StreamWorker(QThread):
         self._cancelled = True
 
     def run(self):
+        llm_events.set_cancel_callback(lambda: self._cancelled)
         try:
             self._full = llm_service.stream_chat(
                 messages=self.messages,
@@ -50,17 +52,22 @@ class StreamWorker(QThread):
                     self.token_usage.emit(u) if not self._cancelled else None
                 ),
             )
-            if not self._cancelled:
+            if self._cancelled:
+                self.cancelled_signal.emit(self._full)
+            else:
                 self.finished_signal.emit(self._full)
         except Exception as e:
             if not self._cancelled:
                 self.error_signal.emit(str(e))
+        finally:
+            llm_events.set_cancel_callback(None)
 
 
 class AgentWorker(QThread):
     """Worker pour la boucle agent avec tool-use."""
-    token_received = pyqtSignal(str)
-    tool_called = pyqtSignal(str, str)   # (tool_name, args_json)
+    token_received   = pyqtSignal(str)
+    cancelled_signal = pyqtSignal(str)   # émis si l'utilisateur a cliqué Stop
+    tool_called      = pyqtSignal(str, str)   # (tool_name, args_json)
     tool_result = pyqtSignal(str, str)   # (tool_name, result)
     tool_image  = pyqtSignal(str, str)   # (mime_type, base64_data)
     tool_progress = pyqtSignal(str)      # message de progression intermédiaire
@@ -99,6 +106,7 @@ class AgentWorker(QThread):
 
     def run(self):
         # Installer le callback de progression pour les outils
+        llm_events.set_cancel_callback(lambda: self._cancelled)
         tools_engine.set_tool_progress_callback(
             lambda msg: self.tool_progress.emit(msg) if not self._cancelled else None
         )
@@ -143,12 +151,15 @@ class AgentWorker(QThread):
                     self.token_usage.emit(u) if not self._cancelled else None
                 ),
             )
-            if not self._cancelled:
+            if self._cancelled:
+                self.cancelled_signal.emit(self._final_text)
+            else:
                 self.finished_signal.emit(self._final_text)
         except Exception as e:
             if not self._cancelled:
                 self.error_signal.emit(str(e))
         finally:
+            llm_events.set_cancel_callback(None)
             tools_engine.set_tool_progress_callback(None)
             llm_service.set_context_event_callback(None)
             llm_service.set_memory_event_callback(None)

@@ -349,6 +349,50 @@ def _albert_rerank(
     return reranked
 
 
+
+def _diversify_chunks(
+    candidates: list[dict],
+    max_per_source: int,
+    max_total: int,
+    strip_keys: frozenset = frozenset(),
+) -> list[dict]:
+    """
+    Diversification par source + plafond total.
+
+    Sélectionne les chunks en limitant la représentation de chaque source
+    à max_per_source entrées et le total à max_total entrées.
+
+    Parameters
+    ----------
+    candidates : list[dict]
+        Chunks candidats au format interne {text, source, scope, score, …}.
+    max_per_source : int
+        Nombre maximal de chunks conservés pour une même source.
+    max_total : int
+        Nombre total maximal de chunks retournés.
+    strip_keys : frozenset
+        Clés internes à retirer de chaque chunk avant de le servir
+        (ex : {"_reranked"} pour le backend Albert).
+
+    Returns
+    -------
+    list[dict]
+        Chunks sélectionnés, sans les clés internes demandées.
+    """
+    per_source: dict[str, int] = {}
+    selected: list[dict] = []
+    for chunk in candidates:
+        src   = chunk["source"]
+        count = per_source.get(src, 0)
+        if count < max_per_source:
+            clean = {k: v for k, v in chunk.items() if k not in strip_keys}
+            selected.append(clean)
+            per_source[src] = count + 1
+        if len(selected) >= max_total:
+            break
+    return selected
+
+
 def _albert_search_and_rerank(query: str, force_collection_ids: list[int] | None = None) -> list[dict]:
     """
     Pipeline complet Albert pour une requête :
@@ -396,23 +440,15 @@ def _albert_search_and_rerank(query: str, force_collection_ids: list[int] | None
         )
 
     # ── Étape 3 : diversification par source + plafond total ──────────
-    chunks_per_source: dict[str, int] = {}
-    selected: list[dict] = []
-    for chunk in candidates:
-        src   = chunk["source"]
-        count = chunks_per_source.get(src, 0)
-        if count < Config.RAG_MAX_CHUNKS_PER_SOURCE:
-            # Retirer le marqueur interne avant de servir le chunk
-            clean = {k: v for k, v in chunk.items() if k != "_reranked"}
-            selected.append(clean)
-            chunks_per_source[src] = count + 1
-        if len(selected) >= Config.RAG_MAX_CHUNKS_TOTAL:
-            break
-
-    n_src = len(chunks_per_source)
+    selected = _diversify_chunks(
+        candidates,
+        max_per_source=Config.RAG_MAX_CHUNKS_PER_SOURCE,
+        max_total=Config.RAG_MAX_CHUNKS_TOTAL,
+        strip_keys=frozenset({"_reranked"}),
+    )
     _log.debug(
         "[Albert] pipeline complet → %d chunk(s) retenus, %d source(s) distincte(s)",
-        len(selected), n_src,
+        len(selected), len({c["source"] for c in selected}),
     )
     return selected
 
@@ -431,7 +467,7 @@ def _init_embedder():
             )
             _embedder_type = "api"
             EMBED_OK = True
-            _log.info(f"[RAG] Embeddings API initialisé : {Config.EMBEDDING_MODEL}")
+            _log.info("[RAG] Embeddings API initialisé : %s", Config.EMBEDDING_MODEL)
         except ImportError:
             _log.error("[RAG] OpenAI non disponible pour embeddings API")
             EMBED_OK = False
@@ -442,7 +478,7 @@ def _init_embedder():
             _embedder = SentenceTransformer(Config.EMBEDDING_MODEL)
             _embedder_type = "local"
             EMBED_OK = True
-            _log.info(f"[RAG] Embeddings local initialisé : {Config.EMBEDDING_MODEL}")
+            _log.info("[RAG] Embeddings local initialisé : %s", Config.EMBEDDING_MODEL)
         except ImportError:
             _log.error("[RAG] sentence-transformers non disponible")
             EMBED_OK = False
@@ -467,7 +503,7 @@ def _get_embeddings(texts: list[str]) -> list[list[float]]:
                 all_embeddings.extend(item.embedding for item in response.data)
             return all_embeddings
         except Exception as e:
-            _log.error(f"[RAG] Erreur embeddings API : {e}")
+            _log.error("[RAG] Erreur embeddings API : %s", e)
             return []
     else:
         # Embeddings local avec sentence-transformers
@@ -475,7 +511,7 @@ def _get_embeddings(texts: list[str]) -> list[list[float]]:
             embeddings = _embedder.encode(texts, show_progress_bar=False)
             return embeddings.tolist()
         except Exception as e:
-            _log.error(f"[RAG] Erreur embeddings local : {e}")
+            _log.error("[RAG] Erreur embeddings local : %s", e)
             return []
 
 
@@ -518,7 +554,7 @@ def _hyde_generate(query: str) -> str:
     )
 
     try:
-        from core.llm_service import build_family_client
+        from core.llm_clients import build_family_client
         client, model = build_family_client("rag_tools")
         resp = client.chat.completions.create(
             model=model,
@@ -609,7 +645,7 @@ def _contextual_prefix_batch(
         # Utilise le modèle assigné à 'rag_tools' depuis l'onglet Outils,
         # ou RAG_INGESTION_MODEL, ou le modèle principal en dernier recours.
         try:
-            from core.llm_service import build_family_client
+            from core.llm_clients import build_family_client
             client, model = build_family_client("rag_tools")
             # Surcharge par RAG_INGESTION_MODEL si explicitement défini
             if Config.RAG_INGESTION_MODEL:
@@ -646,7 +682,7 @@ def _client() -> "QdrantClient":
     if _qdrant_client is None or _qdrant_url != current_url:
         _qdrant_client = QdrantClient(url=current_url)
         _qdrant_url = current_url
-        _log.info(f"[RAG] QdrantClient initialisé → {current_url}")
+        _log.info("[RAG] QdrantClient initialisé → %s", current_url)
     return _qdrant_client
 
 
@@ -690,7 +726,7 @@ def ensure_collection(collection_name: str = None):
                         distance=Distance.COSINE,
                     ),
                 )
-                _log.info(f"[RAG] Collection '{target}' recréée avec dim={Config.EMBEDDING_DIMENSION}")
+                _log.info("[RAG] Collection '%s' recréée avec dim=%s", target, Config.EMBEDDING_DIMENSION)
         else:
             qc.create_collection(
                 collection_name=target,
@@ -699,11 +735,11 @@ def ensure_collection(collection_name: str = None):
                     distance=Distance.COSINE,
                 ),
             )
-            _log.info(f"[RAG] Collection '{target}' créée avec dim={Config.EMBEDDING_DIMENSION}")
+            _log.info("[RAG] Collection '%s' créée avec dim=%s", target, Config.EMBEDDING_DIMENSION)
 
         return True
     except Exception as e:
-        _log.warning(f"[RAG] Qdrant non disponible : {e}")
+        _log.warning("[RAG] Qdrant non disponible : %s", e)
         return False
 
 
@@ -1025,35 +1061,35 @@ def search(query: str, top_k: int = 5, conversation_id: str = None, collection_n
 
     Utilise query_points() (qdrant-client >= 1.7).
     """
-    _log.debug(f"[RAG] search() — QDRANT_OK={QDRANT_OK} EMBED_OK={EMBED_OK} collection={collection_name!r} query={query[:80]!r}")
+    _log.debug("[RAG] search() — QDRANT_OK=%s EMBED_OK=%s collection=%r query=%r", QDRANT_OK, EMBED_OK, collection_name, query[:80])
 
     if not QDRANT_OK or not EMBED_OK:
-        _log.warning(f"[RAG] search() abandonnée — QDRANT_OK={QDRANT_OK} EMBED_OK={EMBED_OK}")
+        _log.warning("[RAG] search() abandonnée — QDRANT_OK=%s EMBED_OK=%s", QDRANT_OK, EMBED_OK)
         return []
 
     # Utiliser la collection spécifiée ou celle par défaut
     if collection_name is None:
         collection_name = Config.QDRANT_COLLECTION
-        _log.debug(f"[RAG] collection par défaut : {collection_name!r}")
+        _log.debug("[RAG] collection par défaut : %r", collection_name)
 
     # Vérifier que la collection appartient à l'utilisateur courant.
     # Les collections internes d'autres utilisateurs sont refusées en lecture.
     # Les collections externes (sans préfixe promethee_) sont autorisées en lecture seule
     # car elles peuvent être des sources documentaires partagées intentionnellement.
     if collection_name.startswith("promethee_") and not _is_own_collection(collection_name):
-        _log.warning(f"[RAG] search refusé : collection '{collection_name}' appartient à un autre utilisateur")
+        _log.warning("[RAG] search refusé : collection '%s' appartient à un autre utilisateur", collection_name)
         return []
 
     # Vérifier que la collection existe
     try:
         qc = _client()
         collections = {c.name for c in qc.get_collections().collections}
-        _log.debug(f"[RAG] collections disponibles : {sorted(collections)}")
+        _log.debug("[RAG] collections disponibles : %s", sorted(collections))
         if collection_name not in collections:
-            _log.warning(f"[RAG] Collection '{collection_name}' n'existe pas")
+            _log.warning("[RAG] Collection '%s' n'existe pas", collection_name)
             return []
     except Exception as e:
-        _log.error(f"[RAG] Erreur lors de la vérification de la collection : {e}")
+        _log.error("[RAG] Erreur lors de la vérification de la collection : %s", e)
         return []
 
     embeddings = _get_embeddings([_hyde_expand_query(query)])
@@ -1061,7 +1097,7 @@ def search(query: str, top_k: int = 5, conversation_id: str = None, collection_n
         _log.warning("[RAG] _get_embeddings() a retourné une liste vide")
         return []
 
-    _log.debug(f"[RAG] embedding obtenu (dim={len(embeddings[0])}), lancement query_points")
+    _log.debug("[RAG] embedding obtenu (dim=%s), lancement query_points", len(embeddings[0]))
 
     # Détecter si la collection utilise des vecteurs nommés (format multi-vecteur).
     # Dans ce cas, query_points() exige le paramètre `using=<nom>`.
@@ -1074,7 +1110,7 @@ def search(query: str, top_k: int = 5, conversation_id: str = None, collection_n
     try:
         info = qc.get_collection(collection_name)
         vc = info.config.params.vectors
-        _log.debug(f"[RAG] type(vectors)={type(vc).__name__!r} valeur={vc!r}")
+        _log.debug("[RAG] type(vectors)=%r valeur=%r", type(vc).__name__, vc)
         # Certaines versions du SDK exposent un objet qui se comporte comme un dict
         # (ex: qdrant_client.models.VectorsConfig) — on tente items() dans tous les cas.
         try:
@@ -1083,7 +1119,7 @@ def search(query: str, top_k: int = 5, conversation_id: str = None, collection_n
             matching = [n for n, p in items if getattr(p, "size", None) == dim]
             if matching:
                 vector_name = matching[0]
-                _log.debug(f"[RAG] vecteurs nommés — using={vector_name!r}")
+                _log.debug("[RAG] vecteurs nommés — using=%r", vector_name)
             else:
                 _log.warning(
                     f"[RAG] Aucun vecteur de dim={dim} dans {collection_name!r} "
@@ -1092,9 +1128,9 @@ def search(query: str, top_k: int = 5, conversation_id: str = None, collection_n
                 return []
         except AttributeError:
             # Vecteur unique anonyme — pas de `using` nécessaire
-            _log.debug(f"[RAG] vecteur unique anonyme dans {collection_name!r}")
+            _log.debug("[RAG] vecteur unique anonyme dans %r", collection_name)
     except Exception as e:
-        _log.warning(f"[RAG] Impossible d'inspecter {collection_name!r} : {e}")
+        _log.warning("[RAG] Impossible d'inspecter %r : %s", collection_name, e)
 
     try:
         kwargs = dict(
@@ -1118,7 +1154,7 @@ def search(query: str, top_k: int = 5, conversation_id: str = None, collection_n
         if is_internal:
             kwargs["query_filter"] = _make_scope_filter(conversation_id)
         else:
-            _log.debug(f"[RAG] collection externe {collection_name!r} — pas de filtre de scope")
+            _log.debug("[RAG] collection externe %r — pas de filtre de scope", collection_name)
         response = qc.query_points(**kwargs)
         results = [
             {
@@ -1129,10 +1165,10 @@ def search(query: str, top_k: int = 5, conversation_id: str = None, collection_n
             }
             for p in response.points
         ]
-        _log.debug(f"[RAG] query_points → {len(results)} résultat(s)")
+        _log.debug("[RAG] query_points → %s résultat(s)", len(results))
         return results
     except Exception as e:
-        _log.error(f"[RAG] Erreur lors de la recherche dans '{collection_name}': {e}")
+        _log.error("[RAG] Erreur lors de la recherche dans '%s': %s", collection_name, e)
         return []
 
 
@@ -1174,7 +1210,7 @@ def list_sources(conversation_id: str = None) -> list[dict]:
             for s, v in sorted(sources.items())
         ]
     except Exception as e:
-        _log.error(f"[RAG] Erreur list_sources : {e}")
+        _log.error("[RAG] Erreur list_sources : %s", e)
         return []
 
 
@@ -1216,10 +1252,10 @@ def delete_by_source(source: str, conversation_id: str = None,
             collection_name=target,
             points_selector=FilterSelector(filter=Filter(must=must)),
         )
-        _log.info(f"[RAG] Supprimé {count_before} chunks — source='{source}' scope='{scope_value}' collection='{target}'")
+        _log.info("[RAG] Supprimé %s chunks — source='%s' scope='%s' collection='%s'", count_before, source, scope_value, target)
         return count_before
     except Exception as e:
-        _log.error(f"[RAG] Erreur delete_by_source : {e}")
+        _log.error("[RAG] Erreur delete_by_source : %s", e)
         return 0
 
 
@@ -1270,6 +1306,51 @@ def build_rag_context(query: str, conversation_id: str = None, collection_name: 
         return _build_rag_context_qdrant(query, conversation_id, collection_name)
 
 
+
+def _format_chunks_as_context(
+    chunks: list[dict],
+    title: str = "### Contexte documentaire pertinent :\n",
+    scope_tags: bool = False,
+    default_tag: str = "🌐",
+    score_decimals: int = 2,
+) -> str:
+    """
+    Formate une liste de chunks en bloc de contexte prêt à injecter dans le prompt.
+
+    Parameters
+    ----------
+    chunks : list[dict]
+        Chunks au format interne {text, source, scope, score}.
+    title : str
+        En-tête du bloc (première ligne).
+    scope_tags : bool
+        Si True, utilise 🌐 pour les chunks globaux et 💬 pour les chunks
+        de conversation (backend Qdrant). Si False, utilise default_tag.
+    default_tag : str
+        Emoji utilisé quand scope_tags=False (ex : "🌐" pour Albert).
+    score_decimals : int
+        Précision d'affichage du score (2 pour Qdrant, 3 pour Albert).
+
+    Returns
+    -------
+    str
+        Bloc Markdown prêt à insérer dans le prompt système.
+        Chaîne vide si chunks est vide.
+    """
+    if not chunks:
+        return ""
+    fmt  = f"{{:.{score_decimals}f}}"
+    parts = [title]
+    for i, h in enumerate(chunks, 1):
+        if scope_tags:
+            tag = "🌐" if h.get("scope") == "global" else "💬"
+        else:
+            tag = default_tag
+        score = fmt.format(h["score"])
+        parts.append(f"[{i}] {tag} ({h['source']}, score={score})\n{h['text']}\n")
+    return "\n".join(parts)
+
+
 def _build_rag_context_albert(query: str, force_collection_ids: list[int] | None = None) -> str:
     """Build RAG context via le backend Albert (hybride + reranking)."""
     selected = _albert_search_and_rerank(query, force_collection_ids=force_collection_ids)
@@ -1279,13 +1360,9 @@ def _build_rag_context_albert(query: str, force_collection_ids: list[int] | None
 
     method = Config.RAG_SEARCH_METHOD
     rerank = "→ reranké" if Config.RAG_RERANK_ENABLED else ""
-    parts = [f"### Contexte documentaire pertinent ({method}{rerank}) :\n"]
-    for i, h in enumerate(selected, 1):
-        parts.append(
-            f"[{i}] 🌐 ({h['source']}, score={h['score']:.3f})\n{h['text']}\n"
-        )
+    title  = f"### Contexte documentaire pertinent ({method}{rerank}) :\n"
     _log.debug("[RAG/Albert] %d chunk(s) injectés dans le prompt", len(selected))
-    return "\n".join(parts)
+    return _format_chunks_as_context(selected, title=title, score_decimals=3)
 
 
 def _build_rag_context_qdrant(
@@ -1351,21 +1428,14 @@ def _build_rag_context_qdrant(
         )
 
     # ── Diversification par source ─────────────────────────────────────
-    chunks_per_source: dict[str, int] = {}
-    selected: list[dict] = []
-    for h in above_threshold:
-        src   = h["source"]
-        count = chunks_per_source.get(src, 0)
-        if count < max_per_src:
-            selected.append(h)
-            chunks_per_source[src] = count + 1
-        if len(selected) >= max_total:
-            break
-
-    n_sources = len(chunks_per_source)
+    selected = _diversify_chunks(
+        above_threshold,
+        max_per_source=max_per_src,
+        max_total=max_total,
+    )
     _log.debug(
         "[RAG/Qdrant] %d chunk(s) retenus sur %d candidats (%d source(s))",
-        len(selected), len(candidates), n_sources,
+        len(selected), len(candidates), len({c["source"] for c in selected}),
     )
 
     if not selected:
@@ -1377,13 +1447,7 @@ def _build_rag_context_qdrant(
         )
         return ""
 
-    parts = ["### Contexte documentaire pertinent :\n"]
-    for i, h in enumerate(selected, 1):
-        tag = "🌐" if h["scope"] == "global" else "💬"
-        parts.append(
-            f"[{i}] {tag} ({h['source']}, score={h['score']:.2f})\n{h['text']}\n"
-        )
-    return "\n".join(parts)
+    return _format_chunks_as_context(selected, scope_tags=True)
 
 
 def is_available() -> bool:
@@ -1399,7 +1463,7 @@ def list_collections() -> list[str]:
         collections = qc.get_collections().collections
         return [c.name for c in collections]
     except Exception as e:
-        _log.error(f"[RAG] Erreur lors de la récupération des collections : {e}")
+        _log.error("[RAG] Erreur lors de la récupération des collections : %s", e)
         return []
 
 

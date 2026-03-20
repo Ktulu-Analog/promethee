@@ -565,3 +565,37 @@ class HistoryDB:
 
         log.info("[DB] Migration : %d conversations, %d messages chiffres.", n_conv, n_msg)
         return n_conv, n_msg
+
+    # ── Accès générique au kv_store ───────────────────────────────────────────
+
+    def kv_get(self, key: str) -> "Optional[str]":
+        """Lit une valeur dans kv_store. Retourne None si la clé n'existe pas."""
+        try:
+            with self._conn() as conn:
+                row = conn.execute(
+                    "SELECT value FROM kv_store WHERE key = ?", (key,)
+                ).fetchone()
+            return row[0] if row else None
+        except Exception as e:
+            log.warning("[DB] kv_get(%s) échoué : %s", key, e)
+            return None
+
+    def kv_set(self, key: str, value: str) -> None:
+        """Écrit ou met à jour une valeur dans kv_store (upsert)."""
+        try:
+            with self._conn() as conn:
+                conn.execute(
+                    "INSERT INTO kv_store(key, value) VALUES (?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (key, value),
+                )
+        except Exception as e:
+            log.warning("[DB] kv_set(%s) échoué : %s", key, e)
+
+    def kv_delete(self, key: str) -> None:
+        """Supprime une entrée de kv_store si elle existe."""
+        try:
+            with self._conn() as conn:
+                conn.execute("DELETE FROM kv_store WHERE key = ?", (key,))
+        except Exception as e:
+            log.warning("[DB] kv_delete(%s) échoué : %s", key, e)

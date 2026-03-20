@@ -220,7 +220,10 @@ class Config:
     APP_VERSION: str = os.getenv("APP_VERSION")
     APP_USER: str = os.getenv("APP_USER", "Vous")
     HISTORY_DB: str = os.getenv("HISTORY_DB", "history.db")
-    MAX_CONTEXT_TOKENS: int = int(os.getenv("MAX_CONTEXT_TOKENS", ""))
+    # Taille max de la réponse générée (tokens).
+    # Pas de valeur par défaut dans l'API OpenAI — on utilise 8 000 comme
+    # garde-fou raisonnable si la variable n'est pas définie dans .env.
+    MAX_CONTEXT_TOKENS: int = int(os.getenv("MAX_CONTEXT_TOKENS", "") or "8000")
 
     # Taille max d'un résultat d'outil avant troncature symétrique (caractères).
     # Les résultats contenant du code source ou des exports bureautiques sont

@@ -27,6 +27,7 @@ from PyQt6.QtGui import QEnterEvent, QCursor
 from core import tools_engine
 from ui.widgets.styles import ThemeManager
 from ui.widgets import SectionLabel
+from ui.widgets.scroll_helper import make_transparent_scroll
 
 
 # ── Tooltip flottant ──────────────────────────────────────────────────────────
@@ -468,15 +469,7 @@ class ToolsPanel(QWidget):
         layout.addWidget(SectionLabel("Familles d'outils"))
 
         # Conteneur scrollable
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        scroll.setStyleSheet(
-            "QScrollArea { background: transparent; border: none; }"
-            "QScrollArea > QWidget > QWidget { background: transparent; }"
-        )
+        scroll = make_transparent_scroll()
 
         groups_widget = QWidget()
         groups_widget.setStyleSheet("background: transparent;")

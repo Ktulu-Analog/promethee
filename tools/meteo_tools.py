@@ -49,6 +49,70 @@ _TOOL_ICONS.update({
     "prévision_météo_7j": "🗓️",
 })
 
+
+# ---------------------------------------------------------------------------
+# Table des codes météo WMO (Weather Interpretation Codes)
+# Référence : https://open-meteo.com/en/docs#weathervariables
+# ---------------------------------------------------------------------------
+# Chaque entrée : code → (icône, description)
+# Les codes pairs/impairs d'une même dizaine représentent parfois
+# intensité légère (pair) vs modérée/forte (impair).
+
+_WMO: dict[int, tuple[str, str]] = {
+    # ── Ciel dégagé ──────────────────────────────────────────────────────
+    0:  ("☀️",  "Ciel dégagé"),
+    # ── Peu nuageux ──────────────────────────────────────────────────────
+    1:  ("🌤️",  "Principalement dégagé"),
+    2:  ("⛅",  "Partiellement nuageux"),
+    3:  ("☁️",  "Couvert"),
+    # ── Brouillard ───────────────────────────────────────────────────────
+    45: ("🌫️",  "Brouillard"),
+    48: ("🌫️",  "Brouillard givrant"),
+    # ── Bruine ───────────────────────────────────────────────────────────
+    51: ("🌦️",  "Bruine légère"),
+    53: ("🌦️",  "Bruine modérée"),
+    55: ("🌧️",  "Bruine forte"),
+    56: ("🌨️",  "Bruine verglaçante légère"),
+    57: ("🌨️",  "Bruine verglaçante forte"),
+    # ── Pluie ────────────────────────────────────────────────────────────
+    61: ("🌧️",  "Pluie légère"),
+    63: ("🌧️",  "Pluie modérée"),
+    65: ("🌧️",  "Pluie forte"),
+    66: ("🌨️",  "Pluie verglaçante légère"),
+    67: ("🌨️",  "Pluie verglaçante forte"),
+    # ── Neige ────────────────────────────────────────────────────────────
+    71: ("🌨️",  "Chutes de neige légères"),
+    73: ("❄️",   "Chutes de neige modérées"),
+    75: ("❄️",   "Chutes de neige fortes"),
+    77: ("🌨️",  "Grains de neige"),
+    # ── Averses de pluie ─────────────────────────────────────────────────
+    80: ("🌦️",  "Averses légères"),
+    81: ("🌧️",  "Averses modérées"),
+    82: ("🌧️",  "Averses violentes"),
+    # ── Averses de neige ─────────────────────────────────────────────────
+    85: ("🌨️",  "Averses de neige légères"),
+    86: ("❄️",   "Averses de neige fortes"),
+    # ── Orage ────────────────────────────────────────────────────────────
+    95: ("⛈️",  "Orage"),
+    96: ("⛈️",  "Orage avec grêle légère"),
+    99: ("⛈️",  "Orage avec grêle forte"),
+}
+
+
+def _wmo_icon(code: int | None) -> str:
+    """Retourne l'icône emoji correspondant à un code météo WMO."""
+    if code is None:
+        return "🌡️"
+    return _WMO.get(code, ("🌡️", ""))[0]
+
+
+def _wmo_label(code: int | None) -> str:
+    """Retourne la description textuelle d'un code météo WMO."""
+    if code is None:
+        return "Inconnu"
+    return _WMO.get(code, ("", "Inconnu"))[1]
+
+
 # ---------------------------------------------------------------------------
 # Helpers internes
 # ---------------------------------------------------------------------------
@@ -168,7 +232,8 @@ def météo_actuelle(
             "error": "L’API Open‑Meteo n’a pas retourné de météo actuelle.",
         }
 
-    cw = data["current_weather"]
+    cw   = data["current_weather"]
+    code = cw.get("weathercode")
     return {
         "status": "success",
         "city": city or "",
@@ -177,9 +242,11 @@ def météo_actuelle(
         "temperature_c": cw.get("temperature"),
         "windspeed_kmh": cw.get("windspeed"),
         "winddirection_deg": cw.get("winddirection"),
-        "weathercode": cw.get("weathercode"),
+        "weathercode": code,
+        "weather_icon": _wmo_icon(code),
+        "weather_label": _wmo_label(code),
         "time": cw.get("time"),
-        "message": "Météo actuelle récupérée avec succès.",
+        "message": f"{_wmo_icon(code)} Météo actuelle récupérée avec succès.",
     }
 
 
@@ -257,9 +324,12 @@ def prévision_météo_7j(
     daily = data["daily"]
     forecast: List[Dict[str, Any]] = []
     for i, date in enumerate(daily.get("time", [])):
+        code = daily["weathercode"][i]
         forecast.append({
             "date": date,
-            "weathercode": daily["weathercode"][i],
+            "weathercode": code,
+            "weather_icon": _wmo_icon(code),
+            "weather_label": _wmo_label(code),
             "temp_min_c": daily["temperature_2m_min"][i],
             "temp_max_c": daily["temperature_2m_max"][i],
         })

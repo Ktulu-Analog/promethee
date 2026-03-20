@@ -18,9 +18,10 @@ tools/grist_tools.py — Outils API Grist pour Prométhée
 Famille d'outils permettant d'interagir avec une instance Grist via son API REST.
 Grist est un tableur collaboratif open-source (https://www.getgrist.com).
 
-Outils exposés (17) :
+Outils exposés (18) :
 
-  Organisations (2) :
+  Organisations (3) :
+    - grist_list_my_docs         : vue complète orgs/workspaces/docs sans paramètre
     - grist_list_orgs            : liste les organisations accessibles
     - grist_list_workspaces      : liste les espaces de travail d'une organisation
 
@@ -84,6 +85,7 @@ from core.config import Config
 set_current_family("grist_tools", "Grist", "📊")
 
 _TOOL_ICONS.update({
+    "grist_list_my_docs":       "🏠",
     "grist_list_orgs":         "🏢",
     "grist_list_workspaces":   "📁",
     "grist_list_docs":         "📄",
@@ -220,14 +222,90 @@ def _delete(path: str) -> tuple[bool, any]:
 # ══════════════════════════════════════════════════════════════════════════════
 
 @tool(
+    name="grist_list_my_docs",
+    description=(
+        "Affiche tous les fichiers, documents et tableurs présents dans Grist : "
+        "workspaces, espaces de travail, documents disponibles. "
+        "À appeler dès que l'utilisateur mentionne Grist, demande ses fichiers, "
+        "ses documents, ses tableurs, son workspace ou veut savoir ce qui est "
+        "disponible dans Grist. "
+        "Ne nécessite aucun paramètre — retourne directement la structure complète "
+        "avec org_id, workspace_id et doc_id prêts à l'emploi."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {},
+        "required": [],
+    },
+)
+def grist_list_my_docs() -> str:
+    err = _check_prerequisites()
+    if err:
+        return err
+
+    report_progress("🏠 Récupération de la structure Grist complète…")
+
+    # Récupérer toutes les organisations accessibles
+    ok, orgs = _get("/orgs")
+    if not ok:
+        return f"Erreur lors de la récupération des organisations : {orgs}"
+
+    if not orgs:
+        return json.dumps(
+            {"message": "Aucune organisation accessible avec cette clé API.", "orgs": []},
+            ensure_ascii=False, indent=2,
+        )
+
+    result = []
+    for org in orgs:
+        org_id   = org.get("id")
+        org_name = org.get("name", str(org_id))
+
+        ok_ws, workspaces = _get(f"/orgs/{org_id}/workspaces")
+        if not ok_ws:
+            result.append({
+                "org_id":   org_id,
+                "org_name": org_name,
+                "error":    workspaces,
+            })
+            continue
+
+        ws_list = []
+        for ws in workspaces:
+            ws_list.append({
+                "workspace_id":   ws.get("id"),
+                "workspace_name": ws.get("name"),
+                "docs": [
+                    {
+                        "doc_id":   doc.get("id"),
+                        "doc_name": doc.get("name"),
+                        "url_id":   doc.get("urlId"),
+                        "pinned":   doc.get("isPinned", False),
+                    }
+                    for doc in ws.get("docs", [])
+                ],
+            })
+
+        result.append({
+            "org_id":     org_id,
+            "org_name":   org_name,
+            "domain":     org.get("domain", ""),
+            "workspaces": ws_list,
+        })
+
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+
+@tool(
     name="grist_list_orgs",
     description=(
         "Liste toutes les organisations Grist accessibles avec la clé API configurée. "
         "Une organisation correspond à un espace d'équipe (team site) ou à l'espace "
         "personnel de l'utilisateur. "
         "Retourne un tableau JSON d'organisations avec leurs id, name, domain, access. "
-        "Utiliser en premier pour découvrir les organisations disponibles avant "
-        "d'accéder à leurs espaces de travail et documents."
+        "Utiliser si grist_list_my_docs ne suffit pas ou pour obtenir le domaine "
+        "exact d'une organisation."
     ),
     parameters={
         "type": "object",

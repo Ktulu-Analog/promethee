@@ -50,19 +50,19 @@ prompts:
     tools:
       enabled:
       - system_tools
+      - export_tools
+      - export_template_tools
       - python_tools
       - data_tools
       - data_file_tools
       - web_tools
-      - export_tools
-      - export_template_tools
       - skill_tools
-      - meteo_tools
       disabled:
       - sql_tools
       - legifrance_tools
     skills:
       pinned:
+      - conventions_code_python
       - guide_export_excel
       - guide_visualisation
   Assistant de code:
@@ -225,6 +225,7 @@ prompts:
       - web_tools
       - datagouv_tools
       - skill_tools
+      - grist_tools
       disabled:
       - python_tools
       - sql_tools

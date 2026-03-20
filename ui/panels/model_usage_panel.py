@@ -57,6 +57,7 @@ from PyQt6.QtWidgets import (
 
 from core.config import Config
 from ui.widgets.styles import ThemeManager
+from ui.widgets.scroll_helper import make_transparent_scroll
 
 
 # ── Structure de données ──────────────────────────────────────────────────────
@@ -285,17 +286,15 @@ class ModelUsagePanel(QWidget):
         root.addWidget(self._div_top)
 
         # ── Zone scrollable des lignes par modèle ─────────────────────────
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        scroll.setStyleSheet(
-            f"QScrollArea {{ background: transparent; border: none; }}"
-            f"QScrollBar:vertical {{ background: {t('input_border')}; "
-            f"width: 5px; border-radius: 2px; }}"
-            f"QScrollBar::handle:vertical {{ background: {t('model_badge_color')}; "
-            f"border-radius: 2px; }}"
-            f"QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical "
-            f"{{ height: 0; }}"
+        scroll = make_transparent_scroll(
+            extra_style=(
+                f"QScrollBar:vertical {{ background: {t('input_border')}; "
+                f"width: 5px; border-radius: 2px; }}"
+                f"QScrollBar::handle:vertical {{ background: {t('model_badge_color')}; "
+                f"border-radius: 2px; }}"
+                f"QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical "
+                f"{{ height: 0; }}"
+            ),
         )
 
         self._rows_widget = QWidget()

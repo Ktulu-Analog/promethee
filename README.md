@@ -1,14 +1,25 @@
-# 🔥 Prométhée AI v2.2
+# 🔥 Prométhée AI v2.2.1
 
 **Assistant IA desktop** — Interface PyQt6 connectée à un LLM (OpenAI-compatible, Albert API ou Ollama), avec outils intégrés, RAG, mémoire long terme et support Légifrance/Judilibre.
 **conçu principalement pour fonctionner avec l'API Albert de la DiNum**
 
 ---
 
+## 📋 Changelog
+
+### v2.2.1
+- 🐛 Corrections de bugs sur l'affichage des images dans le chat
+- 🎨 Correctifs divers sur l'interface utilisateur
+- 🧠 Amélioration de la mémoire long terme (LTM) : réduction des souvenirs parasites
+- 🗑️ Suppression de la mémoire long terme possible depuis l'interface
+- 🔧 Refactorisation de plusieurs scripts pour améliorer la maintenabilité et contenir leur taille
+
+---
+
 ## ✨ Fonctionnalités
 
 - 💬 **Chat en streaming** avec historique chiffré (AES-GCM)
-- 🧠 **Mémoire long terme (LTM)** : résumés vectorisés des conversations passées via Qdrant (première version, va évoluer)
+- 🧠 **Mémoire long terme (LTM)** : résumés vectorisés des conversations passées via Qdrant, avec suppression possible depuis l'interface
 - 🔧 **Outils intégrés** : web, données, export (docx/pptx/pdf/xlsx), analyse de données, Python, SQL, OCR, météo, messagerie IMAP/SMTP, Légifrance, Judilibre, data.gouv.fr, génération automatique d'outils
 - 📚 **RAG** (Retrieval-Augmented Generation) via Qdrant et Albert API
 - 📊 **Outils collaboratifs** : intégration de l'API Grist
@@ -64,7 +75,7 @@ Les paramètres essentiels à configurer dans `.env` :
 
 | Variable | Description |
 |---|---|
-| `APP_VERSION` | Numéro de version affiché dans l'interface (ex : `2.1`) |
+| `APP_VERSION` | Numéro de version affiché dans l'interface (ex : `2.2.1`) |
 | `OPENAI_API_KEY` | Clé API (Albert, OpenAI, etc.) |
 | `OPENAI_API_BASE` | URL du serveur LLM |
 | `OPENAI_MODEL` | Modèle à utiliser |
@@ -98,11 +109,12 @@ promethee/
 │   ├── widgets/        # Composants réutilisables
 │   └── dialogs/        # Boîtes de dialogue
 ├── skills/             # Guides de compétences injectés en contexte
-├── assets/             # Logo, KaTeX
+├── assets/             # Logo, KaTeX, Mermaid
 ├── scripts/            # Scripts utilitaires (CLI)
 │   ├── ingest.py       # Indexation de documents dans Qdrant (mode interactif ou CLI)
 │   ├── logview.py      # Lecteur de logs coloré en terminal (filtres, stats, follow)
-│   └── download_katex.py  # Téléchargement des assets KaTeX (à exécuter une seule fois)
+│   ├── download_katex.py  # Téléchargement des assets KaTeX (à exécuter une seule fois)
+│   └── download_mermaid.py  # Téléchargement des assets Mermaid (à exécuter une seule fois)
 ├── documentation/      # Documentation développeur
 │   ├── doc_developpeur_tools.pdf   # Guide de référence pour créer des outils
 │   ├── modele_tools.py             # Fichier modèle annoté pour un nouvel outil
@@ -145,7 +157,7 @@ Tous les types de diagrammes sont supportés : flowchart, séquence, Gantt, éta
 **Il reste des erreurs dans le moteur de rendu, notamment sur les accents. Ceci est en cours de correction pour une prochaine version**
 
 Voici un exemple de rendu par Prométhée avec Mermaid :
-*(prompt : à partir de ce rapport, génère un diagramme de flux pour présenter le système d'horaires souples*)
+*(prompt : à partir de ce rapport, génère un diagramme de flux pour présenter le système d'horaires souples)*
 
 ```mermaid
 flowchart TD
@@ -188,9 +200,6 @@ python scripts/download_mermaid.py
 
 ---
 
-
-
-
 ## 🛠️ Outils disponibles
 
 | Outil | Description |
@@ -222,6 +231,7 @@ python scripts/download_mermaid.py
 | `scripts/ingest.py` | Indexe un répertoire de documents dans Qdrant. Mode interactif ou passage direct des arguments (`--collection`, chemin). |
 | `scripts/logview.py` | Lecteur de logs coloré en terminal. Supporte le follow temps réel (`-f`), le filtrage par niveau (`-l`), par module (`-m`), les stats (`--stats`), etc. |
 | `scripts/download_katex.py` | Télécharge les assets KaTeX (JS, CSS, polices woff2) dans `assets/katex/`. À exécuter une seule fois après le clonage. |
+| `scripts/download_mermaid.py` | Télécharge les assets Mermaid (mermaid.min.js) dans `assets/mermaid/`. À exécuter une seule fois après le clonage. |
 
 ---
 
@@ -262,7 +272,7 @@ Au premier lancement, une passphrase vous sera demandée.
 
 ### Mémoire long terme (LTM)
 
-La LTM stocke des résumés vectorisés des conversations passées dans Qdrant et les réinjecte automatiquement en contexte. Configuration dans `.env` :
+La LTM stocke des résumés vectorisés des conversations passées dans Qdrant et les réinjecte automatiquement en contexte. Elle peut être entièrement effacée depuis l'interface. Configuration dans `.env` :
 
 ```env
 LTM_ENABLED=ON

@@ -26,6 +26,7 @@ from PyQt6.QtGui import QAction
 from core import rag_engine
 from core.config import Config
 from ui.widgets import SectionLabel
+from ui.widgets.scroll_helper import make_divider
 from ui.workers import IngestWorker
 from ui.widgets.styles import ThemeManager
 
@@ -71,7 +72,7 @@ class RagPanel(QWidget):
         self._update_status()
         layout.addWidget(self._status_label)
 
-        self._div1 = self._make_divider()
+        self._div1 = make_divider()
         layout.addWidget(self._div1)
 
         # ── Sélection de collection ──
@@ -106,7 +107,7 @@ class RagPanel(QWidget):
         layout.addWidget(self._collection_info)
 
         # ── Ajout par conversation ──
-        self._div1_5 = self._make_divider()
+        self._div1_5 = make_divider()
         layout.addWidget(self._div1_5)
 
         layout.addWidget(SectionLabel("💬 Cette conversation"))
@@ -130,7 +131,9 @@ class RagPanel(QWidget):
         # Zone texte libre (pour la conversation uniquement)
         self._text_scope = CONV
         self._text_scope_lbl = QLabel()
-        self._text_scope_lbl.setStyleSheet("color: #888; font-size: 10px;")
+        self._text_scope_lbl.setStyleSheet(
+            f"color: {ThemeManager.inline('rag_status_warn')}; font-size: 10px;"
+        )
         self._text_scope_lbl.setVisible(False)
         layout.addWidget(self._text_scope_lbl)
 
@@ -154,7 +157,7 @@ class RagPanel(QWidget):
         self._progress.setFixedHeight(6)
         layout.addWidget(self._progress)
 
-        self._div2 = self._make_divider()
+        self._div2 = make_divider()
         layout.addWidget(self._div2)
 
         # ── Liste docs ──
@@ -179,7 +182,7 @@ class RagPanel(QWidget):
         self._doc_list.itemSelectionChanged.connect(self._on_selection_changed)
         layout.addWidget(self._doc_list, stretch=1)
 
-        self._div3 = self._make_divider()
+        self._div3 = make_divider()
         layout.addWidget(self._div3)
 
         # Légende
@@ -296,24 +299,24 @@ class RagPanel(QWidget):
 
     # ── Helpers UI ────────────────────────────────────────────────────
 
-    def _make_divider(self) -> QWidget:
-        line = QWidget()
-        line.setFixedHeight(1)
-        line.setStyleSheet(f"background-color: {ThemeManager.inline('divider_bg')};")
-        return line
-
     def _update_status(self):
         if rag_engine.is_available():
             ok = rag_engine.ensure_collection()
             if ok:
                 self._status_label.setText("● Qdrant connecté")
-                self._status_label.setStyleSheet("color: #5a9a5a; font-size: 11px; font-weight: 600;")
+                self._status_label.setStyleSheet(
+                    f"color: {ThemeManager.inline('rag_status_ok')}; font-size: 11px; font-weight: 600;"
+                )
             else:
                 self._status_label.setText("○ Qdrant non disponible")
-                self._status_label.setStyleSheet("color: #888; font-size: 11px;")
+                self._status_label.setStyleSheet(
+                    f"color: {ThemeManager.inline('rag_status_warn')}; font-size: 11px;"
+                )
         else:
             self._status_label.setText("○ RAG désactivé")
-            self._status_label.setStyleSheet("color: #666; font-size: 11px;")
+            self._status_label.setStyleSheet(
+                f"color: {ThemeManager.inline('rag_status_off')}; font-size: 11px;"
+            )
 
     def refresh_theme(self):
         for div in (self._div1, self._div1_5, self._div2, self._div3):
@@ -361,11 +364,12 @@ class RagPanel(QWidget):
         data = item.data(Qt.ItemDataRole.UserRole) or {}
         scope_label = "la collection" if data.get("scope") == "global" else "cette conversation"
         menu = QMenu(self)
-        menu.setStyleSheet("""
-            QMenu { background:#1a1a1e; border:1px solid #2e2e33;
-                    border-radius:7px; color:#ccc; padding:4px; }
-            QMenu::item { padding:6px 18px; border-radius:4px; }
-            QMenu::item:selected { background:#3a2020; color:#e07070; }
+        t = ThemeManager.inline
+        menu.setStyleSheet(f"""
+            QMenu {{ background:{t('ctx_menu_bg')}; border:1px solid {t('ctx_menu_border')};
+                    border-radius:7px; color:{t('ctx_menu_color')}; padding:4px; }}
+            QMenu::item {{ padding:6px 18px; border-radius:4px; }}
+            QMenu::item:selected {{ background:{t('ctx_menu_sel_bg')}; color:{t('ctx_menu_sel_color')}; }}
         """)
         act = QAction(f"🗑  Supprimer de {scope_label}", self)
         act.triggered.connect(lambda: self._delete_item(item))
@@ -393,12 +397,14 @@ class RagPanel(QWidget):
         msg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel)
         msg.button(QMessageBox.StandardButton.Yes).setText("Supprimer")
         msg.button(QMessageBox.StandardButton.Cancel).setText("Annuler")
-        msg.setStyleSheet("""
-            QMessageBox { background-color:#161618; color:#e8e6e1; }
-            QLabel { color:#e8e6e1; }
-            QPushButton { background-color:#252528; color:#ccc; border:1px solid #333;
-                          border-radius:6px; padding:6px 14px; min-width:80px; }
-            QPushButton:hover { background-color:#2e2e32; }
+        t = ThemeManager.inline
+        msg.setStyleSheet(f"""
+            QMessageBox {{ background-color:{t('confirm_dlg_bg')}; color:{t('confirm_dlg_color')}; }}
+            QLabel {{ color:{t('confirm_dlg_color')}; }}
+            QPushButton {{ background-color:{t('confirm_btn_bg')}; color:{t('confirm_btn_color')};
+                          border:1px solid {t('confirm_btn_border')};
+                          border-radius:6px; padding:6px 14px; min-width:80px; }}
+            QPushButton:hover {{ background-color:{t('confirm_btn_hover_bg')}; }}
         """)
         if msg.exec() != QMessageBox.StandardButton.Yes:
             return

@@ -16,5 +16,6 @@ UI Dialogs module
 """
 from .settings_dialog import SettingsDialog
 from .about_dialog import AboutDialog
+from .ltm_dialog import LtmDialog
 
-__all__ = ["SettingsDialog", "AboutDialog"]
+__all__ = ["SettingsDialog", "AboutDialog", "LtmDialog"]

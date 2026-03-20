@@ -25,6 +25,7 @@ from PyQt6.QtGui import QPainter, QColor
 from dotenv import set_key
 from core.config import Config
 from ui.widgets.styles import ThemeManager
+from ui.widgets.scroll_helper import make_transparent_scroll
 
 
 # ── Helpers module-level ───────────────────────────────────────────────────
@@ -305,16 +306,14 @@ class SettingsDialog(QDialog):
         outer.addWidget(hint)
 
         # ── Zone scrollable ────────────────────────────────────────────────
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(scroll.Shape.NoFrame)
-        scroll.setStyleSheet(
-            f"QScrollArea {{ background: transparent; border: none; }}"
-            f"QScrollBar:vertical {{ background: {ThemeManager.inline('input_border')};"
-            f" width: 6px; border-radius: 3px; }}"
-            f"QScrollBar::handle:vertical {{ background: {ThemeManager.inline('model_badge_color')};"
-            f" border-radius: 3px; }}"
-            f"QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}"
+        scroll = make_transparent_scroll(
+            extra_style=(
+                f"QScrollBar:vertical {{ background: {ThemeManager.inline('input_border')};"
+                f" width: 6px; border-radius: 3px; }}"
+                f"QScrollBar::handle:vertical {{ background: {ThemeManager.inline('model_badge_color')};"
+                f" border-radius: 3px; }}"
+                f"QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}"
+            ),
         )
 
         inner_widget = QWidget()

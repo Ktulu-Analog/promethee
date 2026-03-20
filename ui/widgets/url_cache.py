@@ -16,9 +16,12 @@ url_cache.py — Cache persistant pour les URLs fetchées
 """
 import json
 import hashlib
+import logging
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional
+
+_log = logging.getLogger(__name__)
 
 
 class URLCache:
@@ -45,7 +48,7 @@ class URLCache:
             with open(self.cache_file, 'w', encoding='utf-8') as f:
                 json.dump(self._cache, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            print(f"[URLCache] Erreur sauvegarde : {e}")
+            _log.warning("[URLCache] Erreur sauvegarde : %s", e)
     
     def _hash_url(self, url: str) -> str:
         """Génère un hash de l'URL."""

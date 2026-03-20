@@ -216,6 +216,24 @@ class StreamingHandler(QObject):
         self.reset()
         self.status_message.emit("Prêt")
 
+    def on_cancelled(self, partial_text: str):
+        """Callback quand l'utilisateur a stoppé le streaming."""
+        # Finaliser le widget assistant en cours (rendu Markdown du texte partiel)
+        if self._cur_assistant:
+            self._cur_assistant.end_streaming()
+
+        # Sauvegarder le texte partiel en DB s'il y en a un
+        if partial_text.strip():
+            self.db.add_message(self.conv_id, "assistant", partial_text)
+
+        # Ajouter une indication visuelle discrète sous la réponse tronquée
+        cancelled_widget = MessageWidget("assistant", "*⏹ Réponse interrompue par l'utilisateur.*")
+        self._insert_widget(cancelled_widget)
+
+        # Nettoyer l'état
+        self.reset()
+        self.status_message.emit("Arrêté")
+
     def on_error(self, error: str):
         """Callback en cas d'erreur."""
         # Retirer l'indicateur si présent

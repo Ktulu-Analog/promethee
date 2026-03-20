@@ -52,7 +52,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import QWebEngineSettings, QWebEnginePage
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal
 from PyQt6.QtGui import QGuiApplication
 from .styles import ThemeManager
 from core.config import Config
@@ -203,6 +203,250 @@ hr {{ border:none; border-top:1px solid {hr_color}; margin:10px 0; }}
     return css
 
 
+# ── Images inline (matplotlib base64 + URLs https://) ────────────────────────
+#
+# Le LLM peut produire :
+#   ![alt](data:image/png;base64,<données>)   ← image base64 inline
+#   ![alt](https://example.com/image.png)     ← image distante
+#
+# Dans les deux cas, QWebEngineView ne peut pas afficher ces images :
+#   • data-URI bloquées par la CSP file:// de setHtml()
+#   • URLs https:// bloquées par LocalContentCanAccessRemoteUrls=False
+#
+# Stratégie : extraire TOUTES les images Markdown AVANT le pipeline de rendu,
+# les télécharger/décoder en Python, stocker dans self._dataimg_cache,
+# et remplacer par un bouton cliquable qui ouvre ImageViewerDialog (QPixmap).
+#
+_RE_DATA_IMAGE = re.compile(
+    r'!\[([^\]]*)\]\((data:image/[^;]+;base64,[A-Za-z0-9+/=\s]+)\)',
+    re.DOTALL,
+)
+_RE_URL_IMAGE = re.compile(
+    r'!\[([^\]]*)\]\((https?://[^\s)]+)\)',
+)
+_DATAIMG_PLACEHOLDER = re.compile(r'<!--\s*DATAIMG_(\d+)\s*-->')
+
+
+def _fetch_url_as_data_uri(url: str) -> str | None:
+    """
+    Télécharge une image distante et retourne une data-URI base64, ou None si échec.
+    Timeout court (8 s).
+    """
+    import urllib.request, base64
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Promethee/1.0"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            raw   = resp.read()
+            ctype = resp.headers.get_content_type() or "image/png"
+            b64   = base64.b64encode(raw).decode()
+            return f"data:{ctype};base64,{b64}"
+    except Exception as e:
+        _log.warning("_fetch_url_as_data_uri(%s) : %s", url, e)
+        return None
+
+
+def _protect_data_images(text: str) -> tuple[str, dict]:
+    """
+    Extrait toutes les images Markdown (data-URI et URLs https://) et les
+    remplace par des placeholders neutres.
+    Doit être appelé AVANT protect_latex et protect_mermaid.
+    Retourne (texte_protégé, cache) où cache = {idx: (alt, data_uri|url)}.
+
+    Pour les URLs distantes, la data_uri stockée est l'URL originale —
+    le téléchargement est fait de façon asynchrone par MessageWidget.
+    """
+    cache: dict[int, tuple[str, str]] = {}
+    counter = [0]
+
+    def store(alt: str, uri: str) -> str:
+        idx = counter[0]
+        cache[idx] = (alt, uri)
+        counter[0] += 1
+        return f"<!-- DATAIMG_{idx} -->"
+
+    # 1. Images data-URI base64 inline
+    def replace_data(m: re.Match) -> str:
+        data_uri = re.sub(r'\s+', '', m.group(2))
+        return store(m.group(1), data_uri)
+
+    text = _RE_DATA_IMAGE.sub(replace_data, text)
+
+    # 2. Images URL https:// — on stocke l'URL, le widget télécharge en async
+    def replace_url(m: re.Match) -> str:
+        return store(m.group(1), m.group(2))
+
+    text = _RE_URL_IMAGE.sub(replace_url, text)
+
+    return text, cache
+
+
+def _restore_data_images(html_text: str, cache: dict) -> str:
+    """
+    Remplace chaque placeholder par un bouton HTML.
+
+    Le bouton appelle window._openDataImage(idx) via onclick.
+    La WebView intercepte cet appel via runJavaScript polling ou,
+    plus simplement, via une URL spéciale interceptée par le schéma
+    Qt.  Ici on utilise une URL fake « dataimg://N » que la page
+    charge via window.location — interceptée dans _on_load_finished
+    pour ouvrir ImageViewerDialog côté Python.
+
+    Implémentation choisie : bouton avec onclick="document.title='dataimg:N'"
+    Python intercepte titleChanged sur la QWebEngineView, lit l'index,
+    et ouvre ImageViewerDialog. Aucun scheme custom à enregistrer.
+    """
+    if not cache:
+        return html_text
+
+    accent   = ThemeManager.inline('accent')
+    bg       = ThemeManager.inline('elevated_bg')
+    border   = ThemeManager.inline('border')
+    text_col = ThemeManager.inline('text_primary')
+
+    def replace(m: re.Match) -> str:
+        idx = int(m.group(1))
+        if idx not in cache:
+            return m.group(0)
+        alt, _ = cache[idx]
+        safe_alt = html.escape(alt or "Graphique")
+        label = safe_alt if len(safe_alt) <= 40 else safe_alt[:37] + "…"
+        # Pour les URLs distantes, le bouton indique "chargement…" jusqu'à
+        # ce que _on_image_fetched mette à jour le span .img-status.
+        is_url = not (cache[idx][1].startswith("data:") if idx in cache else True)
+        status_text = "— chargement…" if is_url else "— cliquer pour afficher"
+        onclick = f"document.title='dataimg:{idx}'"
+        return (
+            f'<div style="margin:12px 0;text-align:center;">'
+            f'<button onclick="{onclick}" data-imgidx="{idx}" '
+            f'style="display:inline-flex;align-items:center;gap:8px;'
+            f'padding:8px 18px;border-radius:8px;cursor:pointer;'
+            f'background:{bg};border:1px solid {border};'
+            f'color:{text_col};font-size:13px;font-family:inherit;">'
+            f'<span style="font-size:16px;">🖼</span>'
+            f'<span>{label}</span>'
+            f'<span class="img-status" style="color:{accent};font-size:11px;">{status_text}</span>'
+            f'</button></div>'
+        )
+
+    return _DATAIMG_PLACEHOLDER.sub(replace, html_text)
+
+
+# ── Visionneuse d'image dédiée ────────────────────────────────────────────────
+
+class ImageViewerDialog:
+    """
+    Ouvre une QDialog affichant un QPixmap décodé depuis une data-URI base64.
+    Utilise uniquement Qt natif — aucune contrainte WebEngine/CSP.
+    """
+
+    @staticmethod
+    def open(parent, alt: str, data_uri: str) -> None:
+        """
+        Décode data_uri et affiche l'image dans une fenêtre modale légère.
+
+        Parameters
+        ----------
+        parent   : QWidget — fenêtre parente pour le centrage
+        alt      : str     — texte alternatif (titre de la fenêtre)
+        data_uri : str     — « data:image/png;base64,<données> »
+        """
+        import base64
+        from PyQt6.QtWidgets import (
+            QDialog, QVBoxLayout, QHBoxLayout, QLabel,
+            QPushButton, QScrollArea, QSizePolicy, QFileDialog,
+        )
+        from PyQt6.QtGui import QPixmap
+        from PyQt6.QtCore import Qt, QByteArray
+
+        # ── Décodage ─────────────────────────────────────────────────
+        try:
+            header, b64data = data_uri.split(',', 1)
+            raw = base64.b64decode(b64data)
+        except Exception as e:
+            _log.warning("ImageViewerDialog: décodage échoué : %s", e)
+            return
+
+        pixmap = QPixmap()
+        if not pixmap.loadFromData(QByteArray(raw)):
+            _log.warning("ImageViewerDialog: QPixmap.loadFromData a échoué")
+            return
+
+        # ── Dialog ───────────────────────────────────────────────────
+        dlg = QDialog(parent)
+        dlg.setWindowTitle(alt or "Graphique")
+        dlg.setModal(False)          # non-bloquant : l'utilisateur peut continuer
+        dlg.resize(
+            min(pixmap.width()  + 40, 1200),
+            min(pixmap.height() + 100, 900),
+        )
+        dlg.setStyleSheet(ThemeManager.dialog_style())
+
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        # Zone scrollable pour les grandes images
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+
+        img_label = QLabel()
+        img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        img_label.setPixmap(pixmap)
+        img_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        scroll.setWidget(img_label)
+        layout.addWidget(scroll, stretch=1)
+
+        # Barre d'actions
+        bar = QHBoxLayout()
+        bar.addStretch()
+
+        save_btn = QPushButton("💾  Enregistrer…")
+        save_btn.setFixedHeight(32)
+
+        def _save():
+            path, _ = QFileDialog.getSaveFileName(
+                dlg, "Enregistrer l'image", f"{alt or 'graphique'}.png",
+                "PNG (*.png);;JPEG (*.jpg *.jpeg);;Tous (*.*)"
+            )
+            if path:
+                pixmap.save(path)
+
+        save_btn.clicked.connect(_save)
+        bar.addWidget(save_btn)
+
+        close_btn = QPushButton("Fermer")
+        close_btn.setFixedHeight(32)
+        close_btn.clicked.connect(dlg.close)
+        bar.addWidget(close_btn)
+
+        layout.addLayout(bar)
+        dlg.show()
+
+
+
+
+# ── Worker de téléchargement d'image en arrière-plan ─────────────────────────
+
+class _ImageFetchWorker(QThread):
+    """
+    Télécharge une image distante dans un thread séparé pour ne pas bloquer
+    l'interface. Émet `done(idx, data_uri)` quand le téléchargement réussit,
+    ou `done(idx, "")` en cas d'échec.
+    """
+    done = pyqtSignal(int, str)   # (idx, data_uri_or_empty)
+
+    def __init__(self, idx: int, url: str, parent=None):
+        super().__init__(parent)
+        self._idx = idx
+        self._url = url
+
+    def run(self):
+        data_uri = _fetch_url_as_data_uri(self._url)
+        self.done.emit(self._idx, data_uri or "")
+
+
 # ── Coloration syntaxique ─────────────────────────────────────────────────────
 
 def _highlight_code_blocks(text: str) -> str:
@@ -225,7 +469,19 @@ def _highlight_code_blocks(text: str) -> str:
 
 # ── HTML complet ──────────────────────────────────────────────────────────────
 
-def _md_to_html(text: str) -> str:
+def _md_to_html(text: str) -> tuple[str, dict]:
+    """
+    Convertit le texte Markdown en HTML complet.
+
+    Retourne (html, dataimg_cache) où dataimg_cache = {idx: (alt, data_uri)}.
+    Le cache est stocké dans self._dataimg_cache par set_content() pour que
+    _on_title_changed() puisse retrouver la data-URI au moment du clic.
+    """
+    # 0. Extraire les images base64 AVANT tout le reste pour les protéger
+    #    du pipeline LaTeX/Markdown (les data-URI sont très longues et peuvent
+    #    déclencher des faux positifs dans les regex de protect_latex).
+    text, dataimg_cache = _protect_data_images(text)
+
     # 1. Extraire les blocs Mermaid AVANT tout (protect_mermaid doit passer
     #    avant protect_latex et avant Markdown pour éviter toute altération)
     if mermaid_available():
@@ -253,11 +509,14 @@ def _md_to_html(text: str) -> str:
     if mermaid_cache:
         body = restore_mermaid(body, mermaid_cache)
 
+    # 7. Réinjecter les images base64 comme boutons cliquables
+    body = _restore_data_images(body, dataimg_cache)
+
     css      = _build_html_css()
     katex    = katex_html_tags() if latex_available() else ""
     mermaid  = mermaid_html_tags() if mermaid_available() else ""
 
-    return f"""<!DOCTYPE html><html><head>
+    html_out = f"""<!DOCTYPE html><html><head>
 <meta charset="utf-8">
 <style>{css}</style>
 {katex}
@@ -268,6 +527,8 @@ function getContentHeight() {{
 }}
 </script>
 </head><body>{body}</body></html>"""
+
+    return html_out, dataimg_cache
 
 
 # ── Estimation de hauteur hors-ligne ─────────────────────────────────────────
@@ -327,6 +588,7 @@ def _estimate_height(text: str) -> int:
     return max(MessageWidget._MIN_H, min(raw, MessageWidget._MAX_H))
 
 
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  MessageWidget
 # ══════════════════════════════════════════════════════════════════════════════
@@ -367,6 +629,8 @@ class MessageWidget(QWidget):
         self._pending_tokens   = ""
         self._cached_height    = self._MIN_H
         self._dirty        = False  # re-render requis au prochain attach ?
+        self._dataimg_cache: dict[int, tuple[str, str]] = {}  # {idx: (alt, data_uri)}
+        self._fetch_workers: list[_ImageFetchWorker] = []     # workers de téléchargement actifs
 
         # Timer de throttle streaming : flush toutes les 150ms pour ne pas
         # saturer le moteur WebEngine avec un token par runJavaScript().
@@ -424,6 +688,10 @@ class MessageWidget(QWidget):
         s.setAttribute(QWebEngineSettings.WebAttribute.ShowScrollBars, False)
 
         self._view.loadFinished.connect(self._on_load_finished)
+        # titleChanged est le canal de communication JS→Python le plus fiable
+        # dans Qt6 : le bouton image fait onclick="document.title='dataimg:N'"
+        # et on intercepte ici pour ouvrir ImageViewerDialog.
+        self._view.titleChanged.connect(self._on_title_changed)
 
         bl.addWidget(self._view)
 
@@ -589,7 +857,10 @@ class MessageWidget(QWidget):
             from PyQt6.QtCore import QUrl
             from .latex_renderer import _ASSETS_DIR as _KATEX_DIR
             base_url = QUrl.fromLocalFile(str(_KATEX_DIR) + "/")
-            self._view.page().setHtml(_md_to_html(text), base_url)
+            html_out, self._dataimg_cache = _md_to_html(text)
+            self._view.page().setHtml(html_out, base_url)
+            # Lancer les téléchargements async pour les URLs distantes
+            self._start_image_fetches()
         except (RuntimeError, AttributeError):
             pass
 
@@ -722,6 +993,60 @@ class MessageWidget(QWidget):
             self.updateGeometry()
         except (RuntimeError, AttributeError, ValueError):
             pass
+
+    def _start_image_fetches(self) -> None:
+        """
+        Lance un worker de téléchargement pour chaque image distante (URL https://)
+        présente dans self._dataimg_cache. Les images base64 sont ignorées.
+        """
+        for idx, (alt, uri) in self._dataimg_cache.items():
+            if uri.startswith("http://") or uri.startswith("https://"):
+                worker = _ImageFetchWorker(idx, uri, parent=self)
+                worker.done.connect(self._on_image_fetched)
+                self._fetch_workers.append(worker)
+                worker.start()
+
+    def _on_image_fetched(self, idx: int, data_uri: str) -> None:
+        """
+        Appelé dans le thread principal quand un téléchargement se termine.
+        Met à jour le cache avec la vraie data-URI et actualise le bouton
+        dans la WebView pour indiquer que l'image est prête.
+        """
+        if not data_uri:
+            _log.warning("_on_image_fetched: échec téléchargement idx=%d", idx)
+            return
+        if idx in self._dataimg_cache:
+            alt, _ = self._dataimg_cache[idx]
+            self._dataimg_cache[idx] = (alt, data_uri)
+        # Mettre à jour le texte du bouton via JS pour signaler que l'image est prête
+        try:
+            js = (
+                f"var b=document.querySelector('[data-imgidx=\"{idx}\"]');"
+                f"if(b){{b.querySelector('.img-status').textContent='— prête';}}"
+            )
+            self._view.page().runJavaScript(js)
+        except (RuntimeError, AttributeError):
+            pass
+
+    def _on_title_changed(self, title: str) -> None:
+        """
+        Intercepte les changements de titre de la WebView.
+
+        Le bouton image injecte onclick="document.title='dataimg:N'".
+        Quand l'utilisateur clique, titleChanged est émis ici avec
+        title='dataimg:N'. On extrait N, on récupère la data-URI dans
+        self._dataimg_cache (propre à ce widget) et on ouvre ImageViewerDialog.
+        """
+        if not title.startswith("dataimg:"):
+            return
+        try:
+            idx = int(title.split(":", 1)[1])
+        except (ValueError, IndexError):
+            return
+        entry = self._dataimg_cache.get(idx)
+        if entry:
+            alt, data_uri = entry
+            ImageViewerDialog.open(self, alt, data_uri)
 
     # ── Copie ─────────────────────────────────────────────────────────
 

@@ -55,6 +55,7 @@ from PyQt6.QtWidgets import (
 
 from core.config import Config
 from ui.widgets import SectionLabel
+from ui.widgets.scroll_helper import make_transparent_scroll, make_divider
 from ui.widgets.styles import ThemeManager
 
 
@@ -398,7 +399,7 @@ class MonitoringPanel(QWidget):
         self._conv_lbl.setWordWrap(True)
         layout.addWidget(self._conv_lbl)
 
-        self._div0 = self._make_divider()
+        self._div0 = make_divider()
         layout.addWidget(self._div0)
 
         # ── Section : conversation courante ───────────────────────────
@@ -444,7 +445,7 @@ class MonitoringPanel(QWidget):
         layout.addWidget(self._ctx_bar)
 
         # ── Empreinte carbone ────────────────────────────────────────
-        self._div1 = self._make_divider()
+        self._div1 = make_divider()
         layout.addWidget(self._div1)
         layout.addWidget(SectionLabel("🌿 Empreinte carbone"))
 
@@ -464,7 +465,7 @@ class MonitoringPanel(QWidget):
         layout.addWidget(self._eco_hint)
 
         # ── Sparkline ────────────────────────────────────────────────
-        self._div2 = self._make_divider()
+        self._div2 = make_divider()
         layout.addWidget(self._div2)
         layout.addWidget(SectionLabel("📈 Historique (prompt tokens)"))
 
@@ -482,7 +483,7 @@ class MonitoringPanel(QWidget):
         layout.addLayout(spark_legend)
 
         # ── Section : optimisation contexte ──────────────────────────
-        self._div_comp = self._make_divider()
+        self._div_comp = make_divider()
         layout.addWidget(self._div_comp)
         layout.addWidget(SectionLabel("⚙️ Optimisation contexte"))
 
@@ -532,18 +533,11 @@ class MonitoringPanel(QWidget):
         layout.addWidget(self._comp_hint)
 
         # ── Section : session globale ─────────────────────────────────
-        self._div3 = self._make_divider()
+        self._div3 = make_divider()
         layout.addWidget(self._div3)
         layout.addWidget(SectionLabel("🗂️ Totaux de la session"))
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setStyleSheet(
-            "QScrollArea { background: transparent; border: none; }"
-            "QScrollArea > QWidget > QWidget { background: transparent; }"
-        )
+        scroll = make_transparent_scroll()
 
         self._session_widget = QWidget()
         self._session_widget.setStyleSheet("background: transparent;")
@@ -580,7 +574,7 @@ class MonitoringPanel(QWidget):
         layout.addWidget(scroll, stretch=1)
 
         # ── Pied de page ─────────────────────────────────────────────
-        self._div4 = self._make_divider()
+        self._div4 = make_divider()
         layout.addWidget(self._div4)
 
         self._footer_lbl = QLabel("Données de la session courante uniquement.")
@@ -932,13 +926,6 @@ class MonitoringPanel(QWidget):
             self.reset_requested.emit(self._conv_id)
 
     # ── Helpers UI ────────────────────────────────────────────────────
-
-    @staticmethod
-    def _make_divider() -> QWidget:
-        line = QWidget()
-        line.setFixedHeight(1)
-        line.setStyleSheet(f"background-color: {ThemeManager.inline('divider_bg')};")
-        return line
 
     @staticmethod
     def _ctx_bar_style(pct: int) -> str:

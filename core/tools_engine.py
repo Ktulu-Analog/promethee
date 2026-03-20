@@ -53,24 +53,60 @@ _DISABLED_FAMILIES: set[str] = set()
 _PREFS_FILE = Path.home() / ".promethee_disabled_families.json"
 
 
-def _load_disabled_families() -> None:
-    global _DISABLED_FAMILIES
+def _json_load(path: Path, default):
+    """
+    Charge un fichier JSON depuis ``path``.
+
+    Retourne ``default`` si le fichier est absent, illisible ou si le type
+    du contenu ne correspond pas à celui de ``default`` (validation légère).
+
+    Parameters
+    ----------
+    path : Path
+        Chemin vers le fichier JSON.
+    default : list | dict
+        Valeur de repli — détermine aussi le type attendu.
+    """
     try:
-        if _PREFS_FILE.exists():
-            data = json.loads(_PREFS_FILE.read_text(encoding="utf-8"))
-            _DISABLED_FAMILIES = set(data) if isinstance(data, list) else set()
+        if path.exists():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, type(default)):
+                return data
     except Exception:
-        _DISABLED_FAMILIES = set()
+        pass
+    return default
 
 
-def _save_disabled_families() -> None:
+def _json_save(path: Path, data) -> None:
+    """
+    Persiste ``data`` en JSON dans ``path``.
+
+    Silencieux en cas d'erreur (permissions, disque plein…) : la perte
+    d'une préférence utilisateur ne doit pas faire crasher l'application.
+
+    Parameters
+    ----------
+    path : Path
+        Chemin cible (créé ou écrasé).
+    data : list | dict
+        Données sérialisables en JSON.
+    """
     try:
-        _PREFS_FILE.write_text(
-            json.dumps(sorted(_DISABLED_FAMILIES), ensure_ascii=False, indent=2),
+        path.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
     except Exception:
         pass
+
+
+def _load_disabled_families() -> None:
+    global _DISABLED_FAMILIES
+    _DISABLED_FAMILIES = set(_json_load(_PREFS_FILE, []))
+
+
+def _save_disabled_families() -> None:
+    _json_save(_PREFS_FILE, sorted(_DISABLED_FAMILIES))
 
 
 _load_disabled_families()
@@ -90,23 +126,11 @@ _FAMILY_MODELS_FILE = Path.home() / ".promethee_family_models.json"
 
 def _load_family_models() -> None:
     global _FAMILY_MODELS
-    try:
-        if _FAMILY_MODELS_FILE.exists():
-            data = json.loads(_FAMILY_MODELS_FILE.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                _FAMILY_MODELS = data
-    except Exception:
-        _FAMILY_MODELS = {}
+    _FAMILY_MODELS = _json_load(_FAMILY_MODELS_FILE, {})
 
 
 def _save_family_models() -> None:
-    try:
-        _FAMILY_MODELS_FILE.write_text(
-            json.dumps(_FAMILY_MODELS, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-    except Exception:
-        pass
+    _json_save(_FAMILY_MODELS_FILE, _FAMILY_MODELS)
 
 
 def get_family_model(family: str) -> dict | None:

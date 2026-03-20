@@ -12,745 +12,334 @@
 # ============================================================================
 
 """
-llm_service.py — Service LLM (business logic sans PyQt6)
-Fournit les fonctions pures pour interagir avec les LLMs.
+llm_service.py — Service LLM : point d'entrée public.
+
+Responsabilité
+──────────────
+Ce module orchestre les appels au LLM. Il expose **deux fonctions** :
+
+  stream_chat()   Chat simple sans outils, avec streaming vers l'UI.
+  agent_loop()    Boucle agent complète : tool-use, gestion de contexte,
+                  routing de modèle par famille, mémoire de session.
+
+Tout le reste est délégué à des sous-modules dédiés :
+
+  llm_events.py      Bus de callbacks vers l'UI (set_*/emit_*).
+  llm_logging.py     Logs rotatifs + TokenUsage.
+  llm_clients.py     Fabrique de clients OpenAI/Ollama.
+  context_manager.py Trim, compression, troncature du contexte.
+  session_memory.py  Consolidation périodique + pinning des tool_results.
+
+Re-exports de compatibilité
+────────────────────────────
+Pour que le code existant (workers.py, tool_creator_tools.py, rag_engine.py)
+continue de fonctionner sans modification, toutes les symboles qui étaient
+précédemment définis ici sont ré-exportés depuis leurs nouveaux modules.
+
+  from core.llm_service import set_context_event_callback  → fonctionne
+  from core.llm_service import build_family_client          → fonctionne
+  from core.llm_service import TokenUsage                  → fonctionne
+
+Flux de agent_loop
+──────────────────
+Pour chaque message utilisateur :
+
+  1. Enrichissement du contexte (RAG, LTM) — géré en amont par ChatPanel.
+  2. Fenêtre glissante initiale sur l'historique (trim_history).
+  3. Boucle sur max_iterations :
+       a. Réévaluation du pinning (flush_pending).
+       b. Consolidation de session si seuil atteint (maybe_consolidate).
+       c. Application de la protection pinning (apply_pinned_protection).
+       d. Compression in-loop des tours anciens (compress_agent_msgs).
+       e. Ré-évaluation fenêtre glissante avec tokens réels.
+       f. Appel LLM (modèle principal, décision).
+       g. Si tool_calls → exécution des outils, retour en a.
+       h. Si réponse texte → streaming vers l'UI, retour.
+  4. Si max_iterations atteint → synthèse forcée.
+
+Paramètre disable_context_management
+──────────────────────────────────────
+Si True, désactive intégralement les étapes a–e. Utile pour le débogage
+ou les sessions nécessitant une fidélité totale au contexte brut.
+Attention : sur de longues sessions, le contexte peut dépasser la fenêtre
+du modèle et provoquer une erreur API.
 """
+
 import base64
 import json
 import logging
-import logging.handlers
-import time
 from pathlib import Path
-from openai import OpenAI
-from typing import Iterator, Callable, Any
+from typing import Callable
+
 from .config import Config
 from . import tools_engine
+
+# ── Sous-modules ──────────────────────────────────────────────────────────────
+from .llm_events import (
+    emit_context_event,  # noqa: F401 — utilisé indirectement via context_manager
+    emit_family_routing,
+    emit_memory_event,
+    emit_model_usage,
+    is_cancelled,
+)
+from .llm_logging import TokenUsage
+from .llm_clients import build_client, build_family_client
+from .context_manager import trim_history, compress_agent_msgs, truncate_tool_result
 from .session_memory import SessionMemory
 
-# Taille max d'un résultat d'outil — lue depuis Config pour être configurable via .env.
-_TOOL_RESULT_MAX_CHARS = Config.TOOL_RESULT_MAX_CHARS
-
-# ── Callback compression de contexte ─────────────────────────────────────
-_context_event_callback = None
-
-def set_context_event_callback(fn) -> None:
-    """Installe un callback appelé quand la compression de contexte se déclenche."""
-    global _context_event_callback
-    _context_event_callback = fn
-
-def _context_event(msg: str) -> None:
-    """Émet un événement de compression vers l'UI si un callback est installé."""
-    if _context_event_callback is not None:
-        _context_event_callback(msg)
-
-# ── Callback statistiques de compression ──────────────────────────────────
-# Émet un dict structuré à chaque opération de compression/troncature :
-#   { "type": str, "before": int, "after": int, "saved": int, "pct": float }
-# Types possibles : "compress_tool", "truncate_text", "trim_msgs"
-_compression_stats_callback = None
-
-def set_compression_stats_callback(fn) -> None:
-    """Installe un callback recevant les stats détaillées de chaque compression."""
-    global _compression_stats_callback
-    _compression_stats_callback = fn
-
-def _compression_stats_event(op_type: str, before: int, after: int) -> None:
-    """Émet les stats structurées d'une opération de compression."""
-    if _compression_stats_callback is None:
-        return
-    saved = before - after
-    pct   = (saved / before * 100) if before > 0 else 0.0
-    _compression_stats_callback({
-        "type":   op_type,
-        "before": before,
-        "after":  after,
-        "saved":  saved,
-        "pct":    pct,
-    })
-
-# ── Callback mémoire de session ────────────────────────────────────────────
-_memory_event_callback = None
-
-def set_memory_event_callback(fn) -> None:
-    """Installe un callback appelé quand la mémoire de session génère un événement
-    (consolidation déclenchée, résultat d'outil marqué critique)."""
-    global _memory_event_callback
-    _memory_event_callback = fn
-
-def _memory_event(msg: str) -> None:
-    """Émet un événement mémoire vers l'UI si un callback est installé."""
-    if _memory_event_callback is not None:
-        _memory_event_callback(msg)
+_log = logging.getLogger(__name__)
 
 
-# ── Callback routing de famille ───────────────────────────────────────────────
-# Émis quand agent_loop bascule sur un modèle de famille pour la réponse finale.
-# Payload : dict { "family": str, "label": str, "model": str, "backend": str }
-# family == "" signifie retour au modèle principal (fin de tour ou conflit).
-_family_routing_callback = None
+# ── Re-exports de compatibilité ascendante ────────────────────────────────────
+#
+# Ces re-exports permettent au code existant de continuer à importer depuis
+# core.llm_service sans modification, même si les symboles ont migré.
 
-def set_family_routing_callback(fn) -> None:
+# Callbacks (workers.py les importe via llm_service.set_*_callback)
+from .llm_events import (                                    # noqa: F401
+    set_context_event_callback,
+    set_compression_stats_callback,
+    set_memory_event_callback,
+    set_family_routing_callback,
+    set_model_usage_callback,
+)
+
+# Clients (tool_creator_tools.py et rag_engine.py importent build_family_client)
+from .llm_clients import (                                   # noqa: F401
+    build_specialist_client,
+    list_local_models,
+    list_remote_models,
+)
+
+
+# ── stream_chat ───────────────────────────────────────────────────────────────
+
+
+# ── Helper interne : consommation d'un stream LLM ────────────────────────────
+
+
+def _stream_response(
+    stream_resp,
+    usage: "TokenUsage",
+    on_token: Callable[[str], None] | None,
+    on_usage: Callable[["TokenUsage"], None] | None,
+    *,
+    log_context: str = "",
+    emit_usage_as: str | None = None,
+    model_name: str = "",
+) -> tuple[str, int, int]:
     """
-    Installe un callback appelé quand agent_loop résout un modèle de famille
-    pour la réponse finale d'un tour.
+    Consomme un stream LLM, accumule les tokens et diffuse vers l'UI.
 
-    Le callback reçoit un dict :
-        { "family": str,   # ex: "imap_tools" — vide si modèle principal
-          "label":  str,   # ex: "Messagerie" — vide si modèle principal
-          "model":  str,   # ex: "mistral-small:7b"
-          "backend": str } # "ollama" | "openai"
-    """
-    global _family_routing_callback
-    _family_routing_callback = fn
-
-def _family_routing_event(family: str, label: str, model: str, backend: str) -> None:
-    """Émet un événement de routing vers l'UI et log en console."""
-    if family:
-        print(f"[family_routing] {family} ({label}) → {backend}:{model}")
-    if _family_routing_callback is not None:
-        _family_routing_callback({
-            "family":  family,
-            "label":   label,
-            "model":   model,
-            "backend": backend,
-        })
-
-
-# ── Callback consommation par modèle ─────────────────────────────────────────
-# Émis à chaque appel LLM avec le modèle exact et les tokens consommés.
-# Payload : dict { "model": str, "prompt": int, "completion": int,
-#                  "role": "decision"|"final"|"stream" }
-#   decision : appel de l'étape 1 (modèle principal lit le contexte + décide)
-#   final    : réponse finale non-streamée (cas A)
-#   stream   : réponse finale streamée (cas B)
-# Le panneau ModelUsagePanel utilise ce callback directement — pas besoin
-# de croiser family_routing et token_usage pour déduire le modèle.
-_model_usage_callback = None
-
-def set_model_usage_callback(fn) -> None:
-    """
-    Installe un callback appelé à chaque appel LLM dans agent_loop.
-    Le callback reçoit un dict :
-        { "model": str,       # nom exact du modèle utilisé
-          "prompt": int,      # tokens prompt de cet appel
-          "completion": int,  # tokens completion de cet appel
-          "role": str }       # "decision" | "final" | "stream"
-    """
-    global _model_usage_callback
-    _model_usage_callback = fn
-
-def _model_usage_event(model: str, prompt: int, completion: int, role: str) -> None:
-    """Émet un événement de consommation par modèle."""
-    if _model_usage_callback is not None:
-        _model_usage_callback({
-            "model":      model,
-            "prompt":     prompt,
-            "completion": completion,
-            "role":       role,
-        })
-
-
-# ── Répertoire de logs de l'application ───────────────────────────────────
-# Les logs sont stockés dans ~/.promethee/logs/ au lieu de la racine ~
-_LOG_DIR = Path.home() / ".promethee" / "logs"
-_LOG_DIR.mkdir(parents=True, exist_ok=True)
-
-def _make_rotating_handler(log_path: Path) -> logging.handlers.RotatingFileHandler:
-    """
-    Crée un RotatingFileHandler avec rotation automatique :
-      - maxBytes  : 5 Mo par fichier
-      - backupCount : 5 archives conservées (.log.1 … .log.5)
-    """
-    handler = logging.handlers.RotatingFileHandler(
-        log_path,
-        maxBytes=5 * 1024 * 1024,  # 5 Mo
-        backupCount=5,
-        encoding="utf-8",
-    )
-    handler.setFormatter(logging.Formatter("%(asctime)s %(message)s", "%Y-%m-%d %H:%M:%S"))
-    return handler
-
-
-# ── Logger tokens ─────────────────────────────────────────────────────────
-_token_log = logging.getLogger("promethee.tokens")
-_token_log.setLevel(logging.DEBUG)
-_token_log.propagate = False
-
-def _setup_token_logger():
-    """Configure le logger de tokens si ce n'est pas déjà fait."""
-    if _token_log.handlers:
-        return
-    log_path = _LOG_DIR / "tokens.log"
-    _token_log.addHandler(_make_rotating_handler(log_path))
-
-_setup_token_logger()
-
-
-# ── Logger session_memory — même fichier que les tokens ───────────────────────
-_sm_log = logging.getLogger("promethee.session_memory")
-_sm_log.setLevel(logging.DEBUG)
-_sm_log.propagate = False
-
-def _setup_sm_logger():
-    """Configure le logger session_memory sur le même fichier que les tokens."""
-    if _sm_log.handlers:
-        return
-    log_path = _LOG_DIR / "tokens.log"
-    _sm_log.addHandler(_make_rotating_handler(log_path))
-
-_setup_sm_logger()
-
-
-class TokenUsage:
-    """
-    Cumul de tokens pour une requête (stream_chat ou agent_loop).
-
-    Champs spécifiques à l'API Albert :
-      cost   — coût en euros (float)
-      carbon — empreinte carbone : {'kWh': {min, max}, 'kgCO2eq': {min, max}}
-
-    En streaming, Albert retourne deux chunks avec usage :
-      - Chunk intermédiaire : tokens partiels, sans cost/carbon
-      - Chunk final         : tokens complets + cost + carbon + requests=1
-    Seul le chunk final (détecté par la présence de requests >= 1) est pris en compte.
-    """
-    __slots__ = ("prompt", "completion", "calls", "cost", "carbon")
-
-    def __init__(self):
-        self.prompt:     int   = 0
-        self.completion: int   = 0
-        self.calls:      int   = 0
-        self.cost:       float = 0.0
-        self.carbon:     dict  = {}
-
-    @staticmethod
-    def _is_final_chunk(usage) -> bool:
-        """
-        Détecte si un chunk usage est le chunk final d'Albert.
-        Le chunk final contient requests >= 1 et cost (même à 0.0).
-        Le chunk intermédiaire n'a pas ces champs.
-        """
-        return getattr(usage, "requests", None) is not None
-
-    def add(self, usage, streaming: bool = False) -> None:
-        """
-        Ajoute les tokens d'un objet usage renvoyé par l'API.
-
-        En mode streaming, ignore les chunks intermédiaires d'Albert
-        (ceux sans le champ 'requests') pour éviter le double comptage.
-        """
-        if usage is None:
-            return
-        if streaming and not self._is_final_chunk(usage):
-            return   # chunk intermédiaire Albert — ignorer
-
-        self.prompt     += getattr(usage, "prompt_tokens",     0) or 0
-        self.completion += getattr(usage, "completion_tokens", 0) or 0
-        self.calls      += 1
-        self.cost       += getattr(usage, "cost",   0.0) or 0.0
-        carbon = getattr(usage, "carbon", None)
-        if carbon and isinstance(carbon, dict):
-            # Cumuler min/max kWh et kgCO2eq
-            for unit in ("kWh", "kgCO2eq"):
-                if unit in carbon:
-                    existing = self.carbon.setdefault(unit, {"min": 0.0, "max": 0.0})
-                    existing["min"] += carbon[unit].get("min", 0.0)
-                    existing["max"] += carbon[unit].get("max", 0.0)
-
-    @property
-    def total(self) -> int:
-        return self.prompt + self.completion
-
-    def pct(self, model_max: int = 0) -> float:
-        """Pourcentage de la fenêtre du modèle consommé (basé sur prompt_tokens)."""
-        if model_max <= 0:
-            return 0.0
-        return min(100.0, self.prompt * 100 / model_max)
-
-    def log(self, context: str = "") -> None:
-        """Écrit une ligne dans le fichier log tokens."""
-        co2_str = ""
-        if self.carbon.get("kgCO2eq"):
-            lo = self.carbon["kgCO2eq"]["min"]
-            hi = self.carbon["kgCO2eq"]["max"]
-            co2_str = f" co2=[{lo:.6f}-{hi:.6f}]kgCO2"
-        _token_log.debug(
-            "[%s] prompt=%d completion=%d total=%d calls=%d pct=%.1f%% cost=%.6f€%s",
-            context or "?",
-            self.prompt, self.completion, self.total, self.calls,
-            self.pct(Config.CONTEXT_MODEL_MAX_TOKENS),
-            self.cost,
-            co2_str,
-        )
-
-    def __str__(self) -> str:
-        return (
-            f"{self.prompt:,} prompt + {self.completion:,} completion "
-            f"= {self.total:,} tokens"
-        )
-
-
-def _estimate_chars(msgs: list[dict]) -> int:
-    """Estime la taille totale d'une liste de messages en caractères."""
-    total = 0
-    for m in msgs:
-        c = m.get("content") or ""
-        if isinstance(c, list):           # contenu multi-part
-            total += sum(len(str(p)) for p in c)
-        else:
-            total += len(c)
-        # tool_calls côté assistant
-        for tc in m.get("tool_calls", []) or []:
-            total += len(tc.get("function", {}).get("arguments", ""))
-    return total
-
-
-def _trim_history(messages: list[dict], max_chars: int,
-                  max_tokens: int = 0, known_prompt_tokens: int = 0) -> list[dict]:
-    """
-    Fenêtre glissante sur l'historique de conversation.
-
-    Priorité :
-      - Si max_tokens > 0 ET known_prompt_tokens > 0, utilise les tokens réels.
-      - Sinon, fallback sur l'estimation en caractères (max_chars).
-
-    Garanties :
-      - Le premier message utilisateur est toujours conservé (ancrage thématique).
-      - Les messages sont retirés par paires (user + assistant) depuis le début
-        pour ne pas laisser de tour incomplet.
-      - Désactivé si les deux limites sont <= 0.
-    """
-    # Choisir le critère actif
-    use_tokens = max_tokens > 0 and known_prompt_tokens > 0
-    if use_tokens:
-        if known_prompt_tokens <= max_tokens:
-            return messages
-    else:
-        if max_chars <= 0 or _estimate_chars(messages) <= max_chars:
-            return messages
-
-    # Trouver le 1er message user à préserver comme ancre
-    anchor_idx = next((i for i, m in enumerate(messages) if m["role"] == "user"), None)
-
-    trimmed = list(messages)
-    start = (anchor_idx + 1) if anchor_idx is not None else 0
-
-    def _over_limit():
-        if use_tokens:
-            # On estime la réduction proportionnelle aux caractères retirés
-            removed_chars = _estimate_chars(messages) - _estimate_chars(trimmed)
-            estimated_tokens = known_prompt_tokens - removed_chars // 4
-            return estimated_tokens > max_tokens
-        return _estimate_chars(trimmed) > max_chars
-
-    while _over_limit() and start + 1 < len(trimmed):
-        trimmed.pop(start)
-        if start < len(trimmed):
-            trimmed.pop(start)
-
-    n_dropped = len(messages) - len(trimmed)
-    if n_dropped > 0:
-        chars_before = _estimate_chars(messages)
-        chars_after  = _estimate_chars(trimmed)
-        saved        = chars_before - chars_after
-        pct          = int(saved / chars_before * 100) if chars_before > 0 else 0
-        _token_log.info(
-            "[trim_history] %d message(s) retirés — historique réduit de %d → %d msgs",
-            n_dropped, len(messages), len(trimmed),
-        )
-        _context_event(
-            f"Trim : {n_dropped} msg écarté(s) — "
-            f"{chars_before:,} → {chars_after:,} car. (-{pct}%)"
-        )
-        _compression_stats_event("trim_msgs", chars_before, chars_after)
-
-    return trimmed
-
-
-def _compress_agent_msgs(msgs: list[dict], current_turn: int,
-                         compress_after: int, summary_chars: int) -> list[dict]:
-    """
-    Compression in-loop des tool_results anciens dans la boucle agent.
-
-    Stratégie :
-      - Les tool_results des tours < (current_turn - compress_after) sont remplacés
-        par une version condensée (début + '…').
-      - Les tool_results du tour courant et des compress_after derniers tours
-        restent intacts.
-      - Les messages non-tool ne sont pas touchés.
-
-    Un "tour" = une itération de la boucle agent (un bloc assistant + ses N tool_results).
-
-    Correction P2 : le compteur turn_idx est incrémenté sur les blocs assistant
-    (role=assistant avec tool_calls) et non sur chaque message role=tool individuel.
-    Un tour générant N tool_calls en parallèle produit N messages role=tool qui
-    appartiennent tous au même tour — ils doivent partager le même turn_idx.
-    """
-    if compress_after <= 0 or current_turn <= compress_after:
-        return msgs
-
-    # Pré-calculer le turn_idx de chaque message en deux passes.
-    #
-    # Passe 1 : associer chaque tool_call_id au numéro de tour de son assistant.
-    #   Un tour = un bloc assistant avec tool_calls. Les N messages role=tool
-    #   suivants partagent le même turn_idx via leur tool_call_id.
-    #
-    # Passe 2 : construire turn_map en attribuant à chaque message role=tool
-    #   le turn_idx de son assistant parent (lookup par tool_call_id).
-    tc_to_turn: dict[str, int] = {}
-    t = 0
-    for m in msgs:
-        if m["role"] == "assistant" and m.get("tool_calls"):
-            for tc in m["tool_calls"]:
-                tc_to_turn[tc["id"]] = t
-            t += 1
-
-    turn_map: list[int] = []
-    cur_turn = 0
-    for m in msgs:
-        if m["role"] == "assistant" and m.get("tool_calls"):
-            turn_map.append(cur_turn)
-            cur_turn += 1
-        elif m["role"] == "tool":
-            turn_map.append(tc_to_turn.get(m.get("tool_call_id", ""), cur_turn - 1))
-        else:
-            turn_map.append(cur_turn)
-
-    result = []
-    for m, t_idx in zip(msgs, turn_map):
-        if (m["role"] == "tool"
-                and t_idx < current_turn - compress_after
-                and len(m.get("content", "")) > summary_chars
-                and not m.get("_pinned", False)):  # protégé par SessionMemory.apply_pinned_protection
-            # Condenser le résultat de ce tour ancien
-            original = m["content"]
-            condensed = original[:summary_chars].rstrip() + f"… [condensé, {len(original)} car.]"
-            saved = len(original) - len(condensed)
-            pct   = int(saved / len(original) * 100) if len(original) > 0 else 0
-            result.append({**m, "content": condensed})
-            _token_log.info(
-                "[compress_agent] tool_result tour %d condensé : %d → %d car.",
-                t_idx, len(original), len(condensed),
-            )
-            _context_event(
-                f"Compression outil (tour {t_idx}) : "
-                f"{len(original):,} → {len(condensed):,} car. (-{pct}%)"
-            )
-            _compression_stats_event("compress_tool", len(original), len(condensed))
-        else:
-            result.append(m)
-    return result
-
-
-def build_client(local: bool = None) -> OpenAI:
-    """Construit un client OpenAI ou Ollama."""
-    use_local = Config.LOCAL if local is None else local
-    if use_local:
-        base_url = Config.OLLAMA_BASE_URL.rstrip("/") + "/v1"
-        return OpenAI(base_url=base_url, api_key="ollama")
-    return OpenAI(
-        base_url=Config.OPENAI_API_BASE,
-        api_key=Config.OPENAI_API_KEY or "none",
-    )
-
-
-def build_specialist_client(task: str) -> tuple["OpenAI", str]:
-    """
-    Construit un client et résout le modèle pour une tâche spécialisée.
-
-    .. deprecated::
-        Préférer build_family_client(family) qui utilise le registre dynamique
-        géré par l'interface graphique (onglet "Outils" des paramètres).
-        build_specialist_client reste disponible pour rétrocompatibilité.
-
-    Consulte Config.specialist_config(task). Si aucun modèle n'est configuré,
-    retourne le client et le modèle principaux.
-    """
-    spec = Config.specialist_config(task)
-
-    if spec is None:
-        return build_client(), Config.active_model()
-
-    backend  = spec["backend"]
-    model    = spec["model"]
-    base_url = spec["base_url"]
-
-    if backend == "ollama":
-        url = (base_url or Config.OLLAMA_BASE_URL).rstrip("/") + "/v1"
-        client = OpenAI(base_url=url, api_key="ollama")
-    else:
-        client = OpenAI(
-            base_url=base_url or Config.OPENAI_API_BASE,
-            api_key=Config.OPENAI_API_KEY or "none",
-        )
-
-    return client, model
-
-
-def build_family_client(family: str) -> tuple["OpenAI", str]:
-    """
-    Construit un client et résout le modèle assigné à une famille d'outils.
-
-    Consulte le registre dynamique tools_engine._FAMILY_MODELS, géré par
-    l'interface graphique (onglet "Outils" des paramètres, colonne "Modèle").
-    Si aucun modèle n'est assigné à cette famille, retourne le client et le
-    modèle principaux — comportement identique à build_client() + active_model().
-
-    C'est la fonction à utiliser dans tout outil qui effectue des appels LLM
-    internes, en remplacement de build_client() + Config.active_model().
-    Elle permet à l'utilisateur de changer le modèle depuis l'UI sans toucher
-    au code.
-
-    Paramètre :
-        family : nom exact de la famille tel que déclaré dans set_current_family()
-                 (ex: "tool_creator_tools", "imap_tools", "rag_tools"…).
-
-    Retourne :
-        (client OpenAI, nom_du_modèle)
-
-    Exemple dans un outil :
-        from core.llm_service import build_family_client
-
-        client, model = build_family_client("tool_creator_tools")
-        resp = client.chat.completions.create(model=model, messages=[...])
-    """
-    import core.tools_engine as _te
-
-    assigned = _te.get_family_model(family)
-
-    if assigned is None:
-        # Aucune assignation → modèle principal, comportement transparent
-        return build_client(), Config.active_model()
-
-    backend  = assigned["backend"]
-    model    = assigned["model"]
-    base_url = assigned.get("base_url", "")
-
-    if backend == "ollama":
-        url = (base_url or Config.OLLAMA_BASE_URL).rstrip("/") + "/v1"
-        client = OpenAI(base_url=url, api_key="ollama")
-    else:
-        client = OpenAI(
-            base_url=base_url or Config.OPENAI_API_BASE,
-            api_key=Config.OPENAI_API_KEY or "none",
-        )
-
-    return client, model
-
-
-# Extensions de fichiers bureautiques dont le résultat ne doit jamais être tronqué.
-# Les outils d'export retournent un JSON {"path": "...", "status": "ok", ...} ;
-# tronquer ce JSON corromprait le chemin ou les métadonnées transmises au LLM.
-_OFFICE_EXTENSIONS = {
-    ".docx", ".doc", ".odt",          # Traitement de texte
-    ".xlsx", ".xls", ".ods", ".csv",  # Tableur
-    ".pptx", ".ppt", ".odp",          # Présentation
-    ".pdf",                           # PDF
-}
-
-
-def _is_office_result(result: str) -> bool:
-    """
-    Retourne True si le résultat JSON contient un champ 'path' pointant
-    vers un fichier bureautique (export Word, Excel, PowerPoint, PDF…).
-
-    Ces résultats sont compacts par nature (juste des métadonnées) mais
-    leur troncature casserait le chemin ou les champs structurels transmis
-    au LLM, ce qui est inacceptable.
-    """
-    try:
-        parsed = json.loads(result)
-        if not isinstance(parsed, dict):
-            return False
-        path_val = parsed.get("path", "")
-        if not isinstance(path_val, str):
-            return False
-        return Path(path_val).suffix.lower() in _OFFICE_EXTENSIONS
-    except (json.JSONDecodeError, TypeError):
-        return False
-
-
-def _truncate_tool_result(result: str, max_chars: int = _TOOL_RESULT_MAX_CHARS) -> str:
-    """
-    Tronque un résultat d'outil trop long pour éviter de dépasser le contexte.
-
-    Deux catégories de résultats ne sont JAMAIS tronquées :
-
-    1. Code source (_is_code → True)
-       Une troncature partielle produit du code syntaxiquement invalide ou
-       sémantiquement trompeur. Le pinning (SessionMemory) protège en outre
-       ces résultats contre la compression in-loop des tours suivants.
-
-    2. Résultats d'export bureautique (_is_office_result → True)
-       Les outils d'export (Word, Excel, PowerPoint, PDF…) retournent un JSON
-       {"path": "...", "status": "ok", ...}. Tronquer ce JSON corromprait le
-       chemin ou les métadonnées transmises au LLM.
-
-    Pour les résultats textuels génériques (texte, JSON, CSV, logs…) :
-    troncature symétrique classique début + fin, avec indicateur central.
+    Factorise la boucle de streaming commune à stream_chat, au cas B de
+    agent_loop (réponse finale) et à la synthèse forcée (max_iterations).
 
     Parameters
     ----------
-    result : str
-        Résultat brut retourné par l'outil.
-    max_chars : int
-        Limite de taille en caractères (défaut : 12 000).
+    stream_resp
+        Itérateur de chunks retourné par client.chat.completions.create(stream=True).
+    usage : TokenUsage
+        Objet de cumul de tokens de la session courante — modifié en place.
+    on_token : Callable | None
+        Callback appelé pour chaque token de texte (streaming vers l'UI).
+    on_usage : Callable | None
+        Callback appelé une fois en fin de stream avec le TokenUsage mis à jour.
+    log_context : str
+        Étiquette passée à usage.log() en fin de stream. Vide = pas de log.
+    emit_usage_as : str | None
+        Si fourni ("stream", "final"…), appelle emit_model_usage() en fin de
+        stream avec ce rôle. Ignoré si model_name est vide.
+    model_name : str
+        Nom du modèle utilisé, transmis à emit_model_usage(). Ignoré si
+        emit_usage_as est None.
 
     Returns
     -------
-    str
-        Résultat inchangé si code, export bureautique, ou taille dans la limite ;
-        sinon troncature symétrique.
+    tuple[str, int, int]
+        (texte_complet, prompt_tokens_du_chunk_final, completion_tokens_du_chunk_final)
+        Les deux derniers entiers sont utiles pour émettre les métriques
+        par modèle (emit_model_usage) après l'appel.
     """
-    if len(result) <= max_chars:
-        return result
+    text               = ""
+    _stream_prompt     = 0
+    _stream_completion = 0
 
-    if SessionMemory._is_code(result):
-        # Le code n'est jamais tronqué : risque de cohérence trop élevé.
-        # Le pinning protégera ce résultat contre la compression in-loop.
-        _token_log.info(
-            "[truncate_tool_result] code détecté (%d cars.) — troncature ignorée, résultat conservé intégralement.",
-            len(result),
-        )
-        _context_event(
-            f"Code volumineux ({len(result):,} car.) — conservé intégralement (pas de troncature)"
-        )
-        return result
+    for chunk in stream_resp:
+        # Vérifier l'annulation à chaque chunk pour interrompre le stream réseau
+        # dès que l'utilisateur clique Stop, sans attendre la fin de la réponse.
+        if is_cancelled():
+            try:
+                stream_resp.close()
+            except Exception:
+                pass
+            break
+        if hasattr(chunk, "usage") and chunk.usage:
+            usage.add(chunk.usage, streaming=True)
+            _stream_prompt     = getattr(chunk.usage, "prompt_tokens",     0) or 0
+            _stream_completion = getattr(chunk.usage, "completion_tokens", 0) or 0
+        if not chunk.choices:
+            continue
+        delta = chunk.choices[0].delta
+        if delta and delta.content:
+            text += delta.content
+            if on_token:
+                on_token(delta.content)
 
-    if _is_office_result(result):
-        # Les résultats d'export bureautique ne sont jamais tronqués.
-        _token_log.info(
-            "[truncate_tool_result] export bureautique détecté (%d cars.) — troncature ignorée.",
-            len(result),
-        )
-        _context_event(
-            f"Export bureautique ({len(result):,} car.) — conservé intégralement (pas de troncature)"
-        )
-        return result
+    if log_context:
+        usage.log(log_context)
+    if on_usage:
+        on_usage(usage)
+    if emit_usage_as and model_name:
+        emit_model_usage(model_name, _stream_prompt, _stream_completion, emit_usage_as)
 
-    # Troncature symétrique générique
-    half = max_chars // 2
-    truncated = (
-        result[:half]
-        + f"\n\n[… résultat tronqué : {len(result):,} caractères → {max_chars:,} …]\n\n"
-        + result[-half:]
-    )
-    _token_log.info(
-        "[truncate_tool_result] texte — symétrique : %d → %d cars.",
-        len(result), len(truncated),
-    )
-    saved = len(result) - len(truncated)
-    pct   = int(saved / len(result) * 100) if len(result) > 0 else 0
-    _context_event(
-        f"Troncature résultat : "
-        f"{len(result):,} → {len(truncated):,} car. (-{pct}%)"
-    )
-    _compression_stats_event("truncate_text", len(result), len(truncated))
-    return truncated
+    return text, _stream_prompt, _stream_completion
 
 
 def stream_chat(
     messages: list[dict],
     system_prompt: str = "",
-    model: str = None,
-    on_token: Callable[[str], None] = None,
-    on_error: Callable[[str], None] = None,
-    on_usage: Callable[["TokenUsage"], None] = None,
+    model: str | None = None,
+    on_token: Callable[[str], None] | None = None,
+    on_error: Callable[[str], None] | None = None,
+    on_usage: Callable[["TokenUsage"], None] | None = None,
 ) -> str:
     """
-    Streaming simple sans outils.
-    Supporte les messages multi-part (texte + images).
-    Retourne le texte complet généré.
-    Appelle on_usage(TokenUsage) en fin de génération si disponible.
+    Chat en streaming sans outils.
+
+    Mode de fonctionnement simplifié : un seul appel LLM en streaming,
+    pas de boucle agent, pas de tool-use. Adapté aux requêtes directes
+    qui n'ont pas besoin d'outils (reformulation, résumé simple…).
+
+    Supporte les messages multi-part (texte + images base64).
+
+    Parameters
+    ----------
+    messages : list[dict]
+        Historique de la conversation au format OpenAI.
+    system_prompt : str
+        Prompt système injecté en tête (optionnel).
+    model : str | None
+        Modèle à utiliser. None → Config.active_model().
+    on_token : Callable[[str], None] | None
+        Callback appelé à chaque token reçu (streaming vers l'UI).
+    on_error : Callable[[str], None] | None
+        Callback appelé en cas d'exception avant de la relancer.
+    on_usage : Callable[[TokenUsage], None] | None
+        Callback appelé en fin de génération avec le bilan de tokens.
+
+    Returns
+    -------
+    str
+        Texte complet généré.
+
+    Raises
+    ------
+    Exception
+        Toute exception de l'API LLM est relancée après appel à on_error.
     """
     try:
         client = build_client()
-        msgs = []
+        msgs: list[dict] = []
         if system_prompt:
             msgs.append({"role": "system", "content": system_prompt})
-
         msgs.extend(messages)
 
-        usage = TokenUsage()
-        full_text = ""
+        usage        = TokenUsage()
+        active_model = model or Config.active_model()
 
-        # stream_options pour récupérer l'usage en mode streaming
         resp = client.chat.completions.create(
-            model=model or Config.active_model(),
+            model=active_model,
             messages=msgs,
             stream=True,
             temperature=0.7,
             stream_options={"include_usage": True},
         )
 
-        for chunk in resp:
-            if hasattr(chunk, "usage") and chunk.usage:
-                usage.add(chunk.usage, streaming=True)
-            if not chunk.choices:
-                continue
-            delta = chunk.choices[0].delta
-            if delta and delta.content:
-                full_text += delta.content
-                if on_token:
-                    on_token(delta.content)
-
-        usage.log("stream_chat")
-        if on_usage:
-            on_usage(usage)
-
+        full_text, _, _ = _stream_response(
+            resp, usage, on_token, on_usage, log_context="stream_chat"
+        )
         return full_text
+
     except Exception as e:
         if on_error:
             on_error(str(e))
         raise
 
 
+# ── agent_loop ────────────────────────────────────────────────────────────────
+
+
 def agent_loop(
     messages: list[dict],
     system_prompt: str = "",
-    model: str = None,
+    model: str | None = None,
     use_tools: bool = True,
     max_iterations: int | None = None,
     disable_context_management: bool = False,
-    on_tool_call: Callable[[str, str], None] = None,
-    on_tool_result: Callable[[str, str], None] = None,
-    on_image: Callable[[str, str], None] = None,
-    on_token: Callable[[str], None] = None,
-    on_error: Callable[[str], None] = None,
-    on_usage: Callable[["TokenUsage"], None] = None,
+    on_tool_call: Callable[[str, str], None] | None = None,
+    on_tool_result: Callable[[str, str], None] | None = None,
+    on_image: Callable[[str, str], None] | None = None,
+    on_token: Callable[[str], None] | None = None,
+    on_error: Callable[[str], None] | None = None,
+    on_usage: Callable[["TokenUsage"], None] | None = None,
 ) -> str:
     """
-    Boucle agent avec tool-use.
-    Supporte les messages multi-part (texte + images).
-    Retourne la réponse finale complète.
+    Boucle agent avec tool-use, gestion de contexte et routing de modèle.
 
-    Paramètre disable_context_management
-    ──────────────────────────────────────
-    Si True, désactive intégralement toutes les formes de gestion du contexte :
-      - Fenêtre glissante (_trim_history) — l'historique complet est conservé.
-      - Compression in-loop (_compress_agent_msgs) — aucun tool_result n'est condensé.
-      - Troncature des résultats d'outils (_truncate_tool_result) — résultats bruts.
-      - Consolidation de mémoire (maybe_consolidate) — aucun résumé LLM secondaire.
-      - Pinning (apply_pinned_protection / flush_pending) — sans effet (déjà no-op).
-    Utile pour le débogage ou les sessions critiques nécessitant une fidélité totale.
-    Attention : sur de longues sessions, le contexte peut dépasser la fenêtre du modèle.
+    Supporte les messages multi-part (texte + images base64).
+
+    Parameters
+    ----------
+    messages : list[dict]
+        Historique de la conversation au format OpenAI.
+    system_prompt : str
+        Prompt système injecté en tête (optionnel).
+    model : str | None
+        Modèle principal. None → Config.active_model().
+    use_tools : bool
+        Si False, aucun outil n'est proposé au LLM (mode sans agent).
+    max_iterations : int | None
+        Limite de la boucle agent. None → Config.AGENT_MAX_ITERATIONS.
+    disable_context_management : bool
+        Si True, désactive trim, compression, troncature et consolidation.
+        Utile pour le débogage. Voir module docstring pour les risques.
+    on_tool_call : Callable[[str, str], None] | None
+        Appelé avant l'exécution de chaque outil : (nom, arguments_json).
+    on_tool_result : Callable[[str, str], None] | None
+        Appelé après l'exécution de chaque outil : (nom, résultat).
+    on_image : Callable[[str, str], None] | None
+        Appelé quand un outil génère une image : (mime_type, base64_data).
+    on_token : Callable[[str], None] | None
+        Appelé pour chaque token de la réponse finale (streaming UI).
+    on_error : Callable[[str], None] | None
+        Appelé en cas d'exception avant de la relancer.
+    on_usage : Callable[[TokenUsage], None] | None
+        Appelé à chaque mise à jour du bilan de tokens.
+
+    Returns
+    -------
+    str
+        Réponse finale complète de l'agent.
+
+    Raises
+    ------
+    Exception
+        Toute exception de l'API LLM est relancée après appel à on_error.
     """
     try:
-        client = build_client()
-        # Résolution de max_iterations : valeur explicite ou Config (configurable via .env)
-        if max_iterations is None:
-            max_iterations = Config.AGENT_MAX_ITERATIONS
-        msgs = []
+        client         = build_client()
+        max_iterations = max_iterations if max_iterations is not None else Config.AGENT_MAX_ITERATIONS
+        active_model   = model or Config.active_model()
+
+        msgs: list[dict] = []
         if system_prompt:
             msgs.append({"role": "system", "content": system_prompt})
 
-        # Tokens cumulés sur toute la session agent
         usage = TokenUsage()
 
-        # Mémoire de session : consolidation périodique + pinning des tool_results critiques
         memory = SessionMemory(
             client=client,
-            model=model or Config.active_model(),
+            model=active_model,
             consolidation_every=Config.CONTEXT_CONSOLIDATION_EVERY,
             consolidation_max_chars=Config.CONTEXT_CONSOLIDATION_MAX_CHARS,
             pinning_enabled=Config.CONTEXT_PINNING_ENABLED,
@@ -758,68 +347,16 @@ def agent_loop(
             model_max_tokens=Config.CONTEXT_MODEL_MAX_TOKENS,
         )
 
-        # ── Résolution du client/modèle pour la réponse finale ──────────────
-        # Mis à jour après chaque tour avec tool_calls.
-        # Logique :
-        #   - Si tous les outils appelés appartiennent à la même famille ET que
-        #     cette famille a un modèle assigné → on utilise ce modèle pour la
-        #     réponse finale (économie de tokens sur le gros modèle).
-        #   - Si plusieurs familles différentes sont impliquées → fallback sur
-        #     le modèle principal (conflit, comportement prévisible).
-        #   - Si aucun outil appelé ou aucune assignation → modèle principal.
-        # Le modèle principal reste toujours utilisé pour la décision (étape 1).
+        # Client/modèle pour la réponse finale — mis à jour après chaque tour
+        # avec tool_calls. Le modèle principal reste utilisé pour la décision.
         _final_client = client
-        _final_model  = model or Config.active_model()
+        _final_model  = active_model
 
-        def _resolve_final_client(called_tool_names: list[str]) -> tuple:
-            """
-            Résout le client et le modèle pour la réponse finale selon les
-            familles des outils effectivement appelés dans ce tour.
-            Retourne (client, model_name).
-            """
-            if not called_tool_names:
-                return client, model or Config.active_model()
-
-            # Collecter les familles distinctes avec un modèle assigné
-            families_seen: set[str] = set()
-            for tool_name in called_tool_names:
-                fam = tools_engine._TOOL_FAMILY.get(tool_name)
-                if fam and tools_engine.get_family_model(fam):
-                    families_seen.add(fam)
-
-            # Conflit (plusieurs familles avec modèles différents) → principal
-            if len(families_seen) != 1:
-                if families_seen:
-                    # Conflit explicite : log et fallback
-                    print(
-                        f"[family_routing] conflit {sorted(families_seen)} "
-                        f"→ modèle principal"
-                    )
-                _family_routing_event("", "", Config.active_model(), "")
-                return client, model or Config.active_model()
-
-            dominant_family = next(iter(families_seen))
-            fam_client, fam_model = build_family_client(dominant_family)
-
-            # Récupérer le label et le backend pour le log/UI
-            assigned      = tools_engine.get_family_model(dominant_family) or {}
-            fam_label     = next(
-                (f["label"] for f in tools_engine.list_families()
-                 if f["family"] == dominant_family),
-                dominant_family,
-            )
-            fam_backend   = assigned.get("backend", "")
-            _family_routing_event(dominant_family, fam_label, fam_model, fam_backend)
-
-            return fam_client, fam_model
-
-        # Fenêtre glissante : écrêter l'historique si trop long.
-        # Au 1er appel, known_prompt_tokens=0 → fallback sur les caractères.
-        # Désactivée si disable_context_management=True.
+        # ── Fenêtre glissante initiale ────────────────────────────────────────
         if disable_context_management:
             msgs.extend(list(messages))
         else:
-            trimmed = _trim_history(
+            trimmed = trim_history(
                 list(messages),
                 max_chars=Config.CONTEXT_HISTORY_MAX_CHARS,
                 max_tokens=Config.CONTEXT_HISTORY_MAX_TOKENS,
@@ -841,32 +378,27 @@ def agent_loop(
                 })
             msgs.extend(trimmed)
 
-        tools = tools_engine.get_tool_schemas() if use_tools else None
+        tools      = tools_engine.get_tool_schemas() if use_tools else None
         final_text = ""
 
+        # ── Boucle agent ──────────────────────────────────────────────────────
         for iteration in range(max_iterations):
+
+            # ── Préparation du contexte (désactivable) ────────────────────────
             if not disable_context_management:
-                # Réévaluation différée du pinning : les tool_results enregistrés au tour
-                # précédent sans texte assistant sont réévalués maintenant que la réponse
-                # finale du tour N-1 est présente dans msgs.
                 memory.flush_pending(msgs)
-
-                # Consolidation périodique : résumé LLM de la session + pinning
-                msgs = memory.maybe_consolidate(msgs, iteration, on_event=_memory_event, usage=usage)
+                msgs = memory.maybe_consolidate(
+                    msgs, iteration, on_event=emit_memory_event, usage=usage
+                )
                 msgs = memory.apply_pinned_protection(msgs)
-
-                # Compression in-loop : condenser les tool_results des tours anciens
-                # (les tool_results marqués _pinned=True sont exclus de la compression)
-                msgs = _compress_agent_msgs(
+                msgs = compress_agent_msgs(
                     msgs,
                     current_turn=iteration,
                     compress_after=Config.CONTEXT_AGENT_COMPRESS_AFTER,
                     summary_chars=Config.CONTEXT_TOOL_RESULT_SUMMARY_CHARS,
                 )
-
-                # Re-évaluer la fenêtre glissante avec les tokens réels du tour précédent
                 if iteration > 0 and usage.prompt > 0:
-                    re_trimmed = _trim_history(
+                    re_trimmed = trim_history(
                         msgs,
                         max_chars=Config.CONTEXT_HISTORY_MAX_CHARS,
                         max_tokens=Config.CONTEXT_HISTORY_MAX_TOKENS,
@@ -875,64 +407,60 @@ def agent_loop(
                     if len(re_trimmed) < len(msgs):
                         msgs = re_trimmed
 
-            # Étape 1: détection tool_calls
-            # Retirer les marqueurs internes (_is_consolidation, _pinned) avant l'envoi
+            # ── Appel LLM (décision) ──────────────────────────────────────────
             api_msgs = memory.strip_internal_markers(msgs)
-            kw = dict(
-                model=model or Config.active_model(),
+            kw: dict = dict(
+                model=active_model,
                 messages=api_msgs,
                 temperature=0.7,
                 stream=False,
                 max_tokens=Config.MAX_CONTEXT_TOKENS,
             )
             if tools:
-                kw["tools"] = tools
+                kw["tools"]       = tools
                 kw["tool_choice"] = "auto"
 
-            resp = client.chat.completions.create(**kw)
-            # Capturer l'usage tokens dès que disponible
+            resp          = client.chat.completions.create(**kw)
+            choice        = resp.choices[0]
+            msg           = choice.message
+            finish_reason = choice.finish_reason  # "stop", "tool_calls", "length", None
+
             if hasattr(resp, "usage") and resp.usage:
                 usage.add(resp.usage)
                 if on_usage:
                     on_usage(usage)
-                # Émettre la consommation du modèle principal (décision)
-                _model_usage_event(
-                    model=model or Config.active_model(),
+                emit_model_usage(
+                    model=active_model,
                     prompt=getattr(resp.usage, "prompt_tokens", 0) or 0,
                     completion=getattr(resp.usage, "completion_tokens", 0) or 0,
                     role="decision",
                 )
 
-            choice = resp.choices[0]
-            msg = choice.message
-            finish_reason = choice.finish_reason  # "stop", "tool_calls", "length", None
-
-            # Étape 2: exécution des outils
-            # On entre dans ce bloc seulement si le modèle a réellement demandé des outils
-            # ET que finish_reason n'est pas "stop" (certains backends incohérents).
+            # ── Exécution des outils ──────────────────────────────────────────
+            # On entre dans ce bloc seulement si le modèle a réellement demandé
+            # des outils ET que finish_reason n'est pas "stop" (certains backends
+            # incohérents retournent tool_calls avec finish_reason="stop").
             if msg.tool_calls and finish_reason != "stop":
                 # content=None (pas "") : certains backends (Albert, vLLM)
                 # rejettent explicitement content='' avec tool_calls présents.
-                assistant_msg = {
+                assistant_msg: dict = {
                     "role": "assistant",
                     "tool_calls": [
                         {
                             "id": tc.id,
                             "type": "function",
                             "function": {
-                                "name": tc.function.name,
+                                "name":      tc.function.name,
                                 "arguments": tc.function.arguments,
                             },
                         }
                         for tc in msg.tool_calls
                     ],
                 }
-                if msg.content:  # n'ajouter content que s'il est non vide
+                if msg.content:
                     assistant_msg["content"] = msg.content
                 msgs.append(assistant_msg)
 
-                # Collecte des noms d'outils appelés ce tour pour résoudre
-                # le modèle de réponse finale (option 1bis — famille dominante).
                 _called_this_turn: list[str] = []
 
                 for tc in msg.tool_calls:
@@ -948,43 +476,39 @@ def agent_loop(
 
                     result = tools_engine.call_tool(name, args)
 
-                    # ── Extraction et diffusion des images générées ───────────
-                    # Si l'outil retourne un JSON avec "image_path", on lit le
-                    # fichier image, on l'encode en base64, et on :
-                    #   1. Notifie l'UI via on_image pour affichage immédiat.
-                    #   2. Remplace image_path par image_data (base64) dans le
-                    #      tool_result envoyé au LLM (format vision multimodal).
-                    #   3. Supprime image_path du JSON pour éviter que la
-                    #      compression/troncature ne détruise la donnée utile.
-                    image_b64: str | None = None
-                    image_mime: str = "image/png"
+                    # ── Extraction d'images générées ──────────────────────────
+                    # Si l'outil retourne {"image_path": "..."}, on lit l'image,
+                    # on la diffuse en base64 via on_image et on la retire du JSON
+                    # pour ne pas exposer un chemin local au LLM.
+                    image_b64:  str | None = None
+                    image_mime: str        = "image/png"
                     try:
                         parsed = json.loads(result)
                         if isinstance(parsed, dict) and "image_path" in parsed:
                             img_path = Path(parsed["image_path"])
                             if img_path.exists() and img_path.stat().st_size > 0:
-                                suffix = img_path.suffix.lower()
                                 _mime_map = {
-                                    ".png": "image/png", ".jpg": "image/jpeg",
-                                    ".jpeg": "image/jpeg", ".gif": "image/gif",
+                                    ".png":  "image/png",
+                                    ".jpg":  "image/jpeg",
+                                    ".jpeg": "image/jpeg",
+                                    ".gif":  "image/gif",
                                     ".webp": "image/webp",
                                 }
-                                image_mime = _mime_map.get(suffix, "image/png")
+                                image_mime = _mime_map.get(
+                                    img_path.suffix.lower(), "image/png"
+                                )
                                 image_b64 = base64.b64encode(
                                     img_path.read_bytes()
                                 ).decode("ascii")
-                                # Retirer image_path du résultat JSON pour le LLM
-                                # (le LLM reçoit le texte + l'image séparément)
                                 parsed.pop("image_path")
                                 parsed["image_generated"] = True
                                 result = json.dumps(parsed, ensure_ascii=False, indent=2)
                     except (json.JSONDecodeError, OSError, TypeError):
-                        pass  # résultat non-JSON ou erreur I/O → on passe
+                        pass
 
                     if not disable_context_management:
-                        result = _truncate_tool_result(result)  # évite le dépassement de contexte
+                        result = truncate_tool_result(result)
 
-                    # Notifier l'UI de l'image AVANT on_tool_result
                     if image_b64 and on_image:
                         on_image(image_mime, image_b64)
 
@@ -992,14 +516,14 @@ def agent_loop(
                         on_tool_result(name, result)
 
                     msgs.append({
-                        "role": "tool",
+                        "role":         "tool",
                         "tool_call_id": tc.id,
-                        "content": result,
+                        "content":      result,
                     })
 
-                    # Enregistrer dans la mémoire de session pour le pinning.
-                    # assistant_text est vide ici (la réponse finale arrive après) ;
-                    # le pinning sera réévalué au tour suivant si nécessaire.
+                    # Enregistrement pour le pinning. assistant_text est vide ici
+                    # (la réponse finale arrive après) ; le pinning sera réévalué
+                    # au tour suivant via flush_pending().
                     memory.record_tool_result(
                         tool_name=name,
                         result=result,
@@ -1007,24 +531,20 @@ def agent_loop(
                         turn=iteration,
                     )
 
-                # Résoudre le client/modèle pour la réponse finale de ce tour.
-                # Si une seule famille avec modèle assigné → on bascule.
-                # Si conflit ou aucune assignation → modèle principal.
-                _final_client, _final_model = _resolve_final_client(_called_this_turn)
+                # Résoudre client/modèle pour la réponse finale de ce tour
+                _final_client, _final_model = _resolve_final_client(
+                    _called_this_turn, client, model
+                )
 
-            # Étape 3: réponse finale
+            # ── Réponse finale ────────────────────────────────────────────────
             else:
-                # Cas A : le modèle a déjà fourni du contenu texte dans cette réponse
-                # (finish_reason="stop" avec ou sans tool_calls, ou réponse directe)
+                # Cas A : le modèle a fourni du contenu texte dans cette réponse
                 if msg.content:
                     final_text = msg.content
                     if on_token:
                         on_token(final_text)
-                    # L'usage a déjà été émis par l'étape 1 ci-dessus avec role="decision".
-                    # On réémet avec role="final" pour que le panneau puisse distinguer
-                    # les tours avec et sans tool_calls.
                     if hasattr(resp, "usage") and resp.usage:
-                        _model_usage_event(
+                        emit_model_usage(
                             model=_final_model,
                             prompt=0,
                             completion=getattr(resp.usage, "completion_tokens", 0) or 0,
@@ -1032,9 +552,9 @@ def agent_loop(
                         )
                     return final_text
 
-                # Cas B : pas de contenu texte → on relance en streaming pour obtenir
-                # la synthèse finale. Utilise _final_client/_final_model si une famille
-                # dominante a été détectée au tour précédent, sinon le modèle principal.
+                # Cas B : pas de contenu texte → streaming pour obtenir la synthèse.
+                # Utilise _final_client/_final_model si une famille dominante a été
+                # résolue lors du dernier tour avec tool_calls.
                 stream_resp = _final_client.chat.completions.create(
                     model=_final_model,
                     messages=memory.strip_internal_markers(msgs),
@@ -1044,40 +564,20 @@ def agent_loop(
                     stream_options={"include_usage": True},
                 )
 
-                _stream_prompt     = 0
-                _stream_completion = 0
-                for chunk in stream_resp:
-                    if hasattr(chunk, "usage") and chunk.usage:
-                        usage.add(chunk.usage, streaming=True)
-                        _stream_prompt     = getattr(chunk.usage, "prompt_tokens",     0) or 0
-                        _stream_completion = getattr(chunk.usage, "completion_tokens", 0) or 0
-                    if not chunk.choices:
-                        continue
-                    delta = chunk.choices[0].delta
-                    if delta and delta.content:
-                        final_text += delta.content
-                        if on_token:
-                            on_token(delta.content)
-
-                usage.log("agent_loop/final_stream")
-                if on_usage:
-                    on_usage(usage)
-                # Émettre la consommation du modèle de famille (réponse finale)
-                _model_usage_event(
-                    model=_final_model,
-                    prompt=_stream_prompt,
-                    completion=_stream_completion,
-                    role="stream",
+                final_text, _, _ = _stream_response(
+                    stream_resp, usage, on_token, on_usage,
+                    log_context="agent_loop/final_stream",
+                    emit_usage_as="stream",
+                    model_name=_final_model,
                 )
-                # Réinitialiser l'indicateur de famille après la réponse finale
-                _family_routing_event("", "", Config.active_model(), "")
+                emit_family_routing("", "", active_model, "")
                 return final_text
 
-        # Max itérations atteint : on force une synthèse plutôt que le message d'erreur
+        # ── Max itérations atteint : synthèse forcée ──────────────────────────
         if not final_text:
             try:
                 msgs.append({
-                    "role": "user",
+                    "role":    "user",
                     "content": "Résume les résultats obtenus et réponds à la question initiale.",
                 })
                 stream_resp = _final_client.chat.completions.create(
@@ -1088,16 +588,11 @@ def agent_loop(
                     max_tokens=Config.MAX_CONTEXT_TOKENS,
                     stream_options={"include_usage": True},
                 )
-                for chunk in stream_resp:
-                    if hasattr(chunk, "usage") and chunk.usage:
-                        usage.add(chunk.usage, streaming=True)
-                    if not chunk.choices:
-                        continue
-                    delta = chunk.choices[0].delta
-                    if delta and delta.content:
-                        final_text += delta.content
-                        if on_token:
-                            on_token(delta.content)
+                final_text, _, _ = _stream_response(
+                    stream_resp, usage, on_token, on_usage,
+                    emit_usage_as="stream",
+                    model_name=_final_model,
+                )
             except Exception:
                 pass
 
@@ -1112,19 +607,66 @@ def agent_loop(
         raise
 
 
-def list_local_models() -> list[str]:
-    """Liste les modèles Ollama disponibles."""
-    try:
-        import ollama
-        return [m["name"] for m in ollama.list().get("models", [])]
-    except Exception:
-        return [Config.OLLAMA_MODEL]
+# ── Helper privé : résolution du modèle de famille ───────────────────────────
 
 
-def list_remote_models() -> list[str]:
-    """Liste les modèles OpenAI disponibles."""
-    try:
-        client = build_client(local=False)
-        return sorted([m.id for m in client.models.list().data])
-    except Exception:
-        return [Config.OPENAI_MODEL]
+def _resolve_final_client(
+    called_tool_names: list[str],
+    default_client,
+    model: str | None,
+) -> tuple:
+    """
+    Résout le client et le modèle pour la réponse finale d'un tour agent.
+
+    Logique de sélection
+    ─────────────────────
+    - Aucun outil appelé → modèle principal.
+    - Une seule famille avec modèle assigné → modèle de la famille.
+    - Plusieurs familles avec modèles (conflit) → modèle principal + log.
+    - Famille sans modèle assigné → modèle principal.
+
+    Parameters
+    ----------
+    called_tool_names : list[str]
+        Noms des outils appelés pendant ce tour.
+    default_client : OpenAI
+        Client du modèle principal (fallback).
+    model : str | None
+        Nom du modèle principal (None → Config.active_model()).
+
+    Returns
+    -------
+    tuple[OpenAI, str]
+        (client résolu, nom du modèle résolu).
+    """
+    if not called_tool_names:
+        return default_client, model or Config.active_model()
+
+    families_seen: set[str] = set()
+    for tool_name in called_tool_names:
+        fam = tools_engine._TOOL_FAMILY.get(tool_name)
+        if fam and tools_engine.get_family_model(fam):
+            families_seen.add(fam)
+
+    if len(families_seen) != 1:
+        if families_seen:
+            _log.debug(
+                "[_resolve_final_client] conflit %s → modèle principal",
+                sorted(families_seen),
+            )
+        emit_family_routing("", "", Config.active_model(), "")
+        return default_client, model or Config.active_model()
+
+    dominant_family       = next(iter(families_seen))
+    fam_client, fam_model = build_family_client(dominant_family)
+
+    assigned    = tools_engine.get_family_model(dominant_family) or {}
+    fam_label   = next(
+        (f["label"] for f in tools_engine.list_families()
+         if f["family"] == dominant_family),
+        dominant_family,
+    )
+    fam_backend = assigned.get("backend", "")
+    emit_family_routing(dominant_family, fam_label, fam_model, fam_backend)
+
+    return fam_client, fam_model

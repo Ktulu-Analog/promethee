@@ -32,3 +32,6 @@ __all__ = [
     "SkillEditorDialog",
     "SkillManagerDialog",
 ]
+from .scroll_helper import make_transparent_scroll, make_divider
+
+__all__ += ["make_transparent_scroll", "make_divider"]

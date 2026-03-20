@@ -251,7 +251,9 @@ class ChatPanel(QWidget):
 
         # Séparateur visuel
         sep = QLabel("|")
-        sep.setStyleSheet("color: #aaaaaa; padding: 0 4px;")
+        sep.setStyleSheet(
+            f"color: {ThemeManager.inline('chat_sep_color')}; padding: 0 4px;"
+        )
         iter_layout.addWidget(sep)
 
         # Option désactivation gestion du contexte
@@ -624,19 +626,32 @@ class ChatPanel(QWidget):
                 sys_prompt = f"{sys_prompt}\n\n{ctx}".strip()
 
         # ── Mémoire long terme : souvenirs de conversations passées ────────
-        # Le recall n'est déclenché qu'une seule fois par session (premier message
-        # de l'onglet courant), qu'il s'agisse d'une conversation neuve ou rouverte.
+        # Le bloc LTM est calculé UNE SEULE FOIS par conversation et persisté
+        # dans kv_store. Les réouvertures d'onglet réutilisent le bloc stocké
+        # sans relancer le recall, ce qui évite la double-injection.
         if ltm_enabled() and not self._ltm_recalled:
+            _ltm_log = __import__("logging").getLogger("promethee.chat_panel")
+            _kv_key  = f"ltm:injected:{self.conv_id}"
             try:
-                memory_ctx = LongTermMemory(self.db).recall(text, exclude_conv_id=self.conv_id)
+                memory_ctx = self.db.kv_get(_kv_key)
+                if memory_ctx is None:
+                    # Premier message de cette conversation : calcul du recall
+                    memory_ctx = LongTermMemory(self.db).recall(
+                        text, exclude_conv_id=self.conv_id
+                    )
+                    if memory_ctx:
+                        self.db.kv_set(_kv_key, memory_ctx)
+                        _ltm_log.debug("[LTM] Bloc calculé et persisté pour %s", self.conv_id)
+                    else:
+                        self.db.kv_set(_kv_key, "")
+                else:
+                    _ltm_log.debug("[LTM] Bloc LTM récupéré depuis kv_store pour %s", self.conv_id)
+
                 if memory_ctx:
                     sys_prompt = f"{memory_ctx}\n\n{sys_prompt}".strip()
                 self._ltm_recalled = True
             except Exception as _e:
-                import logging
-                logging.getLogger("promethee.chat_panel").warning(
-                    "[LTM] Recall échoué : %s", _e
-                )
+                _ltm_log.warning("[LTM] Recall échoué : %s", _e)
         # ─────────────────────────────────────────────────────────────────
 
         return sys_prompt
@@ -707,6 +722,7 @@ class ChatPanel(QWidget):
         # Connecter les signaux
         self._worker.token_received.connect(self._streaming_handler.on_token)
         self._worker.finished_signal.connect(self._on_streaming_finished)
+        self._worker.cancelled_signal.connect(self._on_streaming_cancelled)
         self._worker.error_signal.connect(self._streaming_handler.on_error)
         self._worker.token_usage.connect(self.token_usage_updated)
         self._worker.start()
@@ -720,6 +736,12 @@ class ChatPanel(QWidget):
     def _on_streaming_finished(self, full_text: str):
         """Appelé quand le streaming est terminé."""
         self._streaming_handler.on_finished(full_text)
+        self._worker = None
+        self._set_streaming(False)
+
+    def _on_streaming_cancelled(self, partial_text: str):
+        """Appelé quand l'utilisateur a stoppé le streaming."""
+        self._streaming_handler.on_cancelled(partial_text)
         self._worker = None
         self._set_streaming(False)
 

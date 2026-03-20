@@ -17,6 +17,8 @@ main_window.py — Fenêtre principale de l'application
 Les classes ThemeSwitch, ConvSidePanel et ToolsPanel ont été extraites
 dans leurs propres fichiers pour une meilleure organisation.
 """
+import logging
+
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QPushButton, QLabel, QSplitter, QStatusBar, QMessageBox,
@@ -26,8 +28,10 @@ from PyQt6.QtGui import QAction
 
 from core import Config, HistoryDB
 from core.long_term_memory import LongTermMemory, is_enabled as ltm_enabled
+
+_log = logging.getLogger(__name__)
 from .panels import ChatPanel, RagPanel, ToolsPanel, MonitoringPanel, ModelUsagePanel
-from .dialogs import SettingsDialog, AboutDialog
+from .dialogs import SettingsDialog, AboutDialog, LtmDialog
 from .widgets import ConvSidePanel
 from .widgets.styles import ThemeManager
 
@@ -86,6 +90,32 @@ class MainWindow(QMainWindow):
             if isinstance(panel, ChatPanel):
                 yield i, panel
 
+    def _ltm_op(self, action: str, conv_id: str, label: str) -> None:
+        """Exécute une opération LTM (index / forget) si la LTM est activée.
+
+        Factorise le pattern try/except identique utilisé dans closeEvent,
+        _on_tab_close et _on_conv_delete.
+
+        Parameters
+        ----------
+        action : str
+            ``"index"`` pour indexer la conversation, ``"forget"`` pour l'oublier.
+        conv_id : str
+            Identifiant de la conversation concernée.
+        label : str
+            Message court affiché dans le log en cas d'échec (ex. ``"Indexation échouée"``).
+        """
+        if not ltm_enabled():
+            return
+        try:
+            ltm = LongTermMemory(self.db)
+            if action == "index":
+                ltm.index_conversation(conv_id)
+            elif action == "forget":
+                ltm.forget_conversation(conv_id)
+        except Exception as _e:
+            _log.warning("[LTM] %s : %s", label, _e)
+
     # ── Menu ──────────────────────────────────────────────────────────
 
     def _setup_menu(self):
@@ -111,6 +141,8 @@ class MainWindow(QMainWindow):
 
         sm = mb.addMenu("Paramètres")
         a5 = QAction("Paramètres…", self); a5.setShortcut("Ctrl+,"); a5.triggered.connect(self._open_settings); sm.addAction(a5)
+        if ltm_enabled():
+            a_ltm = QAction("Mémoire long terme…", self); a_ltm.triggered.connect(self._open_ltm); sm.addAction(a_ltm)
 
         hm = mb.addMenu("Aide")
         a6 = QAction("À propos…", self); a6.triggered.connect(self._open_about); hm.addAction(a6)
@@ -274,13 +306,7 @@ class MainWindow(QMainWindow):
             if panels:
                 self._set_status(f"Sauvegarde mémoire long terme ({len(panels)} conversation(s))…")
                 for _, panel in panels:
-                    try:
-                        LongTermMemory(self.db).index_conversation(panel.get_conv_id())
-                    except Exception as _e:
-                        import logging
-                        logging.getLogger(__name__).warning(
-                            "[LTM] Indexation à la fermeture échouée : %s", _e
-                        )
+                    self._ltm_op("index", panel.get_conv_id(), "Indexation à la fermeture échouée")
         event.accept()
 
     def _on_tab_close(self, index: int):
@@ -288,16 +314,8 @@ class MainWindow(QMainWindow):
         if widget:
             if hasattr(widget, 'cleanup'):
                 widget.cleanup()
-
-            # ── Mémoire long terme : indexer la conversation fermée ───────
-            if ltm_enabled() and hasattr(widget, 'get_conv_id'):
-                try:
-                    LongTermMemory(self.db).index_conversation(widget.get_conv_id())
-                except Exception as _e:
-                    import logging
-                    logging.getLogger(__name__).warning("[LTM] Indexation échouée : %s", _e)
-            # ─────────────────────────────────────────────────────────────
-
+            if hasattr(widget, 'get_conv_id'):
+                self._ltm_op("index", widget.get_conv_id(), "Indexation à la fermeture d'onglet échouée")
             self._tabs.removeTab(index)
             widget.deleteLater()
         if self._tabs.count() == 0:
@@ -326,15 +344,7 @@ class MainWindow(QMainWindow):
         except AttributeError:
             self.db.clear_messages(conv_id)
 
-        # ── Mémoire long terme : oublier cette conversation ───────────────
-        if ltm_enabled():
-            try:
-                LongTermMemory(self.db).forget_conversation(conv_id)
-            except Exception as _e:
-                import logging
-                logging.getLogger(__name__).warning("[LTM] Oubli échoué : %s", _e)
-        # ─────────────────────────────────────────────────────────────────
-
+        self._ltm_op("forget", conv_id, "Oubli de conversation échoué")
         self._set_status("Conversation supprimée")
         if self._tabs.count() == 0:
             self._new_tab()
@@ -412,6 +422,23 @@ class MainWindow(QMainWindow):
         dlg = SettingsDialog(self)
         dlg.settings_changed.connect(self._on_settings_changed)
         dlg.exec()
+
+    def _open_ltm(self):
+        """Ouvre le dialogue de gestion de la mémoire long terme."""
+        dlg = LtmDialog(self.db, parent=self)
+        dlg.memory_changed.connect(self._on_ltm_changed)
+        dlg.exec()
+
+    def _on_ltm_changed(self):
+        """Appelé après une modification de la mémoire LTM (oubli, purge…).
+
+        Réinitialise le flag _ltm_recalled de tous les onglets ouverts pour
+        que le prochain message recharge le bloc LTM depuis kv_store.
+        """
+        for i in range(self._tabs.count()):
+            widget = self._tabs.widget(i)
+            if hasattr(widget, "_ltm_recalled"):
+                widget._ltm_recalled = False
 
     def _open_about(self):
         """Ouvre le dialogue À propos de l'application."""

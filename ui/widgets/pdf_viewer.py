@@ -110,11 +110,15 @@ class PDFViewer(QDialog):
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        scroll.setStyleSheet("QScrollArea { border: none; background: #0a0a0c; }")
+        scroll.setStyleSheet(
+            f"QScrollArea {{ border: none; background: {ThemeManager.inline('pdf_viewer_bg')}; }}"
+        )
         
         self._image_label = QLabel()
         self._image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._image_label.setStyleSheet("background: #0a0a0c; padding: 20px;")
+        self._image_label.setStyleSheet(
+            f"background: {ThemeManager.inline('pdf_viewer_bg')}; padding: 20px;"
+        )
         scroll.setWidget(self._image_label)
         
         layout.addWidget(scroll, stretch=1)
@@ -176,7 +180,7 @@ class PDFViewer(QDialog):
                     border-radius: 8px;
                 }}
                 QSlider::handle:horizontal:hover {{
-                    background: #e08840;
+                    background: {ThemeManager.inline('pdf_slider_hover')};
                 }}
             """)
             self._slider.valueChanged.connect(self._show_page)

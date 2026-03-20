@@ -202,6 +202,44 @@ PALETTE: dict[str, tuple[str, str]] = {
     "dot_inactive":       ("#3a3a40", "#c8c4bc"),
     "dot_active":         ("#d4813d", "#8e4e18"),
 
+    # ── Statut RAG (Qdrant connecté / non disponible / désactivé) ────
+    "rag_status_ok":        ("#5aaa7a", "#2e7a52"),   # vert — connecté
+    "rag_status_warn":      ("#8a8a98", "#646058"),   # gris  — non disponible
+    "rag_status_off":       ("#52525c", "#888078"),   # gris foncé — désactivé
+
+    # ── Séparateur inline dans le chat ───────────────────────────────
+    "chat_sep_color":       ("#8a8a98", "#888078"),   # barre | entre widgets
+
+    # ── Menus contextuels (RAG liste documents) ───────────────────────
+    "ctx_menu_bg":          ("#1a1a1e", "#ffffff"),
+    "ctx_menu_border":      ("#2e2e33", "#d8d4cc"),
+    "ctx_menu_color":       ("#c8c6d0", "#1e1c18"),
+    "ctx_menu_sel_bg":      ("#3a2020", "#fce8e8"),
+    "ctx_menu_sel_color":   ("#e07070", "#b83030"),
+
+    # ── Boîtes de dialogue de confirmation (RAG suppression) ──────────
+    "confirm_dlg_bg":       ("#161618", "#f2f0eb"),
+    "confirm_dlg_color":    ("#e8e6e1", "#1e1c18"),
+    "confirm_btn_bg":       ("#252528", "#ffffff"),
+    "confirm_btn_color":    ("#c8c6d0", "#1e1c18"),
+    "confirm_btn_border":   ("#333338", "#c8c4bc"),
+    "confirm_btn_hover_bg": ("#2e2e32", "#e6e3dc"),
+
+    # ── Visionneuse PDF ───────────────────────────────────────────────
+    "pdf_viewer_bg":        ("#0a0a0c", "#f2f0eb"),   # fond de la zone image
+    "pdf_slider_hover":     ("#e08840", "#bf6820"),   # handle slider survol
+
+    # ── Boutons Mermaid (toolbar téléchargement) ──────────────────────
+    "mermaid_btn_bg":       ("#2a2a2a", "#f0f0f0"),
+    "mermaid_btn_color":    ("#d0d0d0", "#444444"),
+    "mermaid_btn_border":   ("#444444", "#cccccc"),
+    "mermaid_btn_hover_bg": ("#383838", "#e0e0e0"),
+    "mermaid_btn_hover_color": ("#ffffff", "#111111"),
+    # Bouton SVG inline (rendu statique fallback, fond clair fixe)
+    "mermaid_svg_btn_bg":   ("#f5f5f5", "#f5f5f5"),
+    "mermaid_svg_btn_color":("#333333", "#333333"),
+    "mermaid_svg_btn_border":("#aaaaaa", "#aaaaaa"),
+
     # ── Flèches expand/collapse du QTreeWidget sidebar ───────────────
     # Valeurs = URL SVG base64 complètes, substituées directement dans
     # base.qss.tpl via __branch_arrow_closed__ / __branch_arrow_open__.

@@ -306,11 +306,11 @@ def mermaid_css() -> str:
     except Exception:
         is_dark = False
 
-    btn_bg      = "#2a2a2a" if is_dark else "#f0f0f0"
-    btn_color   = "#d0d0d0" if is_dark else "#444444"
-    btn_border  = "#444"    if is_dark else "#ccc"
-    btn_bg_hov  = "#383838" if is_dark else "#e0e0e0"
-    btn_col_hov = "#ffffff" if is_dark else "#111111"
+    btn_bg      = ThemeManager.inline('mermaid_btn_bg')
+    btn_color   = ThemeManager.inline('mermaid_btn_color')
+    btn_border  = ThemeManager.inline('mermaid_btn_border')
+    btn_bg_hov  = ThemeManager.inline('mermaid_btn_hover_bg')
+    btn_col_hov = ThemeManager.inline('mermaid_btn_hover_color')
 
     css  = ".mermaid {display:block;text-align:center;margin:14px 0 4px;"
     css += "overflow-x:auto;min-width:200px;width:100%;box-sizing:border-box;}\n"
@@ -327,6 +327,16 @@ def mermaid_css() -> str:
     css += "background:" + btn_bg_hov + ";"
     css += "color:" + btn_col_hov + ";"
     css += "border-color:" + btn_col_hov + ";}\n"
+
+    svg_bg     = ThemeManager.inline('mermaid_svg_btn_bg')
+    svg_color  = ThemeManager.inline('mermaid_svg_btn_color')
+    svg_border = ThemeManager.inline('mermaid_svg_btn_border')
+    css += ".mermaid-svg-btn {"
+    css += "display:inline-flex;align-items:center;gap:4px;"
+    css += "padding:3px 10px;margin:4px 0 10px;"
+    css += f"border:1px solid {svg_border};border-radius:4px;"
+    css += f"background:{svg_bg};color:{svg_color};"
+    css += "font-size:12px;cursor:pointer;}\n"
     return css
 
 def protect_mermaid(text: str) -> tuple[str, dict[int, str]]:
@@ -403,16 +413,9 @@ def restore_mermaid(html: str, cache: dict[int, str]) -> str:
         idx = int(m.group(1))
         if idx not in cache:
             return m.group(0)
-        style = (
-            "display:inline-flex;align-items:center;gap:4px;"
-            "padding:3px 10px;margin:4px 0 10px;"
-            "border:1px solid #aaa;border-radius:4px;"
-            "background:#f5f5f5;color:#333;"
-            "font-size:12px;cursor:pointer;"
-        )
         btn = (
             f'<div style="text-align:right">'
-            f'<button style="{style}" '
+            f'<button class="mermaid-svg-btn" '
             f'onclick="mermaidSaveSvg({idx})" '
             'title="T\u00e9l\u00e9charger en SVG">'
             '\u2b07 SVG'

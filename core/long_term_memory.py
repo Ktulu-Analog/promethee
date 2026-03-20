@@ -779,7 +779,19 @@ class LongTermMemory:
             _log.error("[LTM] consolidation : suppression des chunks originaux échouée : %s", e)
             return 0
 
-        # ── Ingérer le chunk consolidé avec marqueur _consolidated=True ───────
+        # ── Supprimer les anciens chunks consolidés avant d'en ingérer un nouveau ──
+        # Sans cette étape, chaque cycle accumule un chunk supplémentaire
+        # sous la même source "memory:consolidated".
+        try:
+            rag_engine.delete_by_source(
+                "memory:consolidated",
+                conversation_id=None,
+                collection_name=self._collection,
+            )
+        except Exception as e:
+            _log.warning("[LTM] consolidate : suppression anciens consolidés échouée : %s", e)
+
+        # ── Ingérer le nouveau chunk consolidé avec marqueur _consolidated=True ──
         rag_engine.ingest_text(
             text=f"[Mémoire consolidée]\n{consolidated_text}",
             source="memory:consolidated",
@@ -859,10 +871,19 @@ class LongTermMemory:
     # ── Formatage du contexte de rappel ───────────────────────────────────────
 
     @staticmethod
-    def _format_recall(hits: list[dict]) -> str:
+    def _format_recall(hits: list[dict], max_total_chars: int = 2000) -> str:
         """
         Formate les souvenirs en un bloc de contexte destiné
         à être injecté au début du system prompt.
+
+        Parameters
+        ----------
+        hits : list[dict]
+            Souvenirs retournés par le recall sémantique.
+        max_total_chars : int
+            Taille maximale totale du contenu des souvenirs (hors en-tête).
+            Limite la pollution du contexte en cas de chunks volumineux.
+            Défaut : 2000 caractères.
         """
         parts = [
                     "### Mémoire personnelle (conversations précédentes)\n"
@@ -872,11 +893,22 @@ class LongTermMemory:
                     "Tu peux t'y référer directement sans mentionner "
                     "que tu ne te souviens pas des échanges passés :\n"
         ]
+        total = 0
         for i, h in enumerate(hits, 1):
             score = h.get("score", 0.0)
             text  = h.get("text", "").strip()
             label = "récent" if score < 0 else f"score={score:.2f}"
+            remaining = max_total_chars - total
+            if remaining <= 0:
+                _log.debug(
+                    "[LTM] _format_recall : plafond %d cars atteint — %d souvenir(s) élagué(s)",
+                    max_total_chars, len(hits) - i + 1,
+                )
+                break
+            if len(text) > remaining:
+                text = text[:remaining].rstrip() + "…"
             parts.append(f"[{i}] ({label})\n{text}\n")
+            total += len(text)
         parts.append("---\n")
         return "\n".join(parts)
 
@@ -903,10 +935,19 @@ class LongTermMemory:
             _log.warning("[LTM] Impossible de lire kv_store (%s) : %s", key, e)
             return False
 
-    def _mark_indexed(self, conv_id: str, updated_at: str) -> None:
-        """Enregistre dans kv_store que la conversation a été indexée."""
-        key   = self._kv_key(conv_id)
-        value = updated_at or datetime.now().isoformat()
+    def _kv_set(self, key: str, value: str) -> None:
+        """Écrit ou met à jour une entrée dans kv_store (upsert).
+
+        Méthode interne partagée par _mark_indexed et _save_consolidation_counter
+        pour éviter la duplication du pattern INSERT … ON CONFLICT DO UPDATE.
+
+        Parameters
+        ----------
+        key : str
+            Clé unique dans kv_store.
+        value : str
+            Valeur à stocker.
+        """
         try:
             with self._db._conn() as conn:
                 conn.execute(
@@ -915,7 +956,13 @@ class LongTermMemory:
                     (key, value),
                 )
         except Exception as e:
-            _log.warning("[LTM] Impossible d'écrire dans kv_store (%s) : %s", key, e)
+            _log.warning("[LTM] kv_store write error (%s) : %s", key, e)
+
+    def _mark_indexed(self, conv_id: str, updated_at: str) -> None:
+        """Enregistre dans kv_store que la conversation a été indexée."""
+        key   = self._kv_key(conv_id)
+        value = updated_at or datetime.now().isoformat()
+        self._kv_set(key, value)
 
     def _clear_index_marker(self, conv_id: str) -> None:
         """Supprime le marqueur d'indexation d'une conversation."""
@@ -940,15 +987,7 @@ class LongTermMemory:
 
     def _save_consolidation_counter(self, value: int) -> None:
         """Persiste le compteur de cycles d'indexation dans kv_store."""
-        try:
-            with self._db._conn() as conn:
-                conn.execute(
-                    "INSERT INTO kv_store(key, value) VALUES (?, ?) "
-                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                    (_KV_CONSOLIDATION_CTR, str(value)),
-                )
-        except Exception as e:
-            _log.warning("[LTM] _save_consolidation_counter : %s", e)
+        self._kv_set(_KV_CONSOLIDATION_CTR, str(value))
 
     def _reset_consolidation_counter(self) -> None:
         """Remet le compteur à zéro (après une consolidation réussie)."""
