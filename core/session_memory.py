@@ -101,23 +101,25 @@ class _ToolRecord:
 # ── Prompt de consolidation ───────────────────────────────────────────────────
 
 _CONSOLIDATION_SYSTEM = """\
-Tu es un assistant qui synthétise l'avancement d'une session de travail.
+Tu es un assistant qui synthétise l'historique passé d'une session de travail.
 Réponds UNIQUEMENT en français, de manière concise et structurée.
 Ne réponds rien d'autre que la synthèse demandée.
 """
 
 _CONSOLIDATION_PROMPT = """\
-Voici l'historique d'une session de travail d'un assistant IA qui utilise des outils.
-Génère une synthèse structurée en MAXIMUM {max_chars} caractères couvrant :
+Voici l'historique d'échanges passés entre un utilisateur et un assistant IA.
+Ces échanges sont TERMINÉS. Génère un mémo de référence en MAXIMUM {max_chars} \
+caractères couvrant :
 
-1. **Objectif initial** : ce que l'utilisateur a demandé (une phrase).
-2. **Actions réalisées** : liste des étapes importantes accomplies, avec leurs résultats clés.
-3. **État actuel** : où en est-on, quelles données ou fichiers ont été produits.
-4. **Points d'attention** : erreurs rencontrées, hypothèses posées, limitations découvertes.
+1. **Sujets traités** : liste des questions/tâches abordées par l'utilisateur (passé).
+2. **Résultats obtenus** : ce qui a été produit, trouvé ou résolu.
+3. **Informations utiles** : données clés mentionnées (fichiers, valeurs, noms) \
+qui pourraient être réutilisées.
 
-Sois précis et factuel. Inclus les valeurs numériques, noms de fichiers et résultats importants.
+Ce mémo sert uniquement de référence pour ne pas oublier le contexte passé.
+L'assistant NE DOIT PAS ré-exécuter les actions déjà effectuées.
 
---- Historique ---
+--- Historique passé ---
 {history}
 --- Fin ---
 """
@@ -424,9 +426,9 @@ class SessionMemory:
         consolidation_msg = {
             "role": "system",
             "content": (
-                "── Synthèse de session (générée automatiquement) ──\n\n"
+                "── Mémo des échanges passés (historique clos — ne pas ré-exécuter) ──\n\n"
                 + summary
-                + "\n\n── Fin de la synthèse ──"
+                + "\n\n── Fin du mémo ──"
             ),
             "_is_consolidation": True,  # marqueur interne, retiré avant l'envoi à l'API
         }
