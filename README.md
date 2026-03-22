@@ -1,4 +1,4 @@
-# 🔥 Prométhée AI v2.2.1
+# 🔥 Prométhée AI v2.2.2
 
 **Assistant IA desktop** — Interface PyQt6 connectée à un LLM (OpenAI-compatible, Albert API ou Ollama), avec outils intégrés, RAG, mémoire long terme et support Légifrance/Judilibre.
 **conçu principalement pour fonctionner avec l'API Albert de la DiNum**
@@ -6,6 +6,10 @@
 ---
 
 ## 📋 Changelog
+
+### v2.2.2
+- 🐛 Corrections de bugs dans le RAG avec Qdrant
+
 
 ### v2.2.1
 - 🐛 Corrections de bugs sur l'affichage des images dans le chat
@@ -151,7 +155,7 @@ python scripts/download_katex.py
 
 ### Diagrammes Mermaid (version préliminaire)
 
-Les blocs ` ```mermaid ` sont rendus en SVG via **Mermaid.js** (v11.4.1, bundle local).
+Les blocs ` ```mermaid ` sont rendus en SVG via **Mermaid.js** (v11.13.1, bundle local).
 
 Tous les types de diagrammes sont supportés : flowchart, séquence, Gantt, état, classe, entité-relation, Sankey, etc.
 **Il reste des erreurs dans le moteur de rendu, notamment sur les accents. Ceci est en cours de correction pour une prochaine version**

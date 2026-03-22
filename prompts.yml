@@ -340,18 +340,24 @@ prompts:
 
       Donne la réponse sous une forme visuellement attractive.
     tools:
-      enabled:
+      disabled:
       - system_tools
-      - data_file_tools
       - export_tools
       - export_template_tools
-      - skill_tools
-      disabled:
       - python_tools
       - data_tools
+      - data_file_tools
       - sql_tools
+      - ocr_tools
       - web_tools
       - legifrance_tools
+      - judilibre_tools
+      - datagouv_tools
+      - imap_tools
+      - skill_tools
+      - grist_tools
+      - tool_creator_tools
+      - open_meteo_tools
   Assistant GPEC:
     prompt: |-
       Rôle : Tu es un assistant spécialisé en GPEC (Gestion Prévisionnelle des Emplois et des Compétences)

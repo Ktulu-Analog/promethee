@@ -501,3 +501,20 @@ class RagPanel(QWidget):
     def get_selected_collection(self) -> str | None:
         """Retourne le nom de la collection actuellement sélectionnée."""
         return self.selected_collection
+
+    def set_selected_collection(self, collection_name: str | None):
+        """Synchronise le combo sur la collection de l'onglet qui devient actif.
+
+        N'émet PAS collection_changed — l'appelant (main_window) déconnecte
+        le signal avant d'appeler cette méthode pour éviter la propagation.
+        """
+        self._collection_combo.blockSignals(True)
+        if collection_name is None:
+            self._collection_combo.setCurrentIndex(0)
+        else:
+            for i in range(self._collection_combo.count()):
+                if self._collection_combo.itemData(i) == collection_name:
+                    self._collection_combo.setCurrentIndex(i)
+                    break
+        self.selected_collection = collection_name
+        self._collection_combo.blockSignals(False)

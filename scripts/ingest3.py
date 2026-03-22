@@ -73,9 +73,13 @@ except ImportError:
 # Import du chunker hybride et du générateur de contexte depuis rag_engine.
 # On ajoute le dossier parent (racine du projet) au path pour permettre
 # l'import même quand le script est lancé directement depuis scripts/.
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+# Le script est dans scripts/ → parent.parent = racine du projet (où se trouve core/)
+_project_root = Path(__file__).parent.parent
+for _p in [str(_project_root), str(_project_root.parent)]:
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 try:
-    from promethee.core.rag_engine import _chunk_text, _contextual_prefix_batch
+    from core.rag_engine import _chunk_text, _contextual_prefix_batch
     RAG_ENGINE_OK = True
 except ImportError:
     RAG_ENGINE_OK = False  # Fallback sur le chunker local si rag_engine indisponible

@@ -259,7 +259,13 @@ class MainWindow(QMainWindow):
         if is_new:
             conv_id = self.db.create_conversation()
 
-        panel = ChatPanel(self.db, conversation_id=conv_id)
+        # Lire le profil actif AVANT de créer le panel pour l'injecter d'emblée.
+        # Sans ça, system_prompt reste "" jusqu'au premier changement manuel de profil.
+        from ui.widgets.profile_manager import get_profile_manager as _get_pm
+        _pm = _get_pm()
+        _current_prompt = _pm.get_current_prompt()
+
+        panel = ChatPanel(self.db, conversation_id=conv_id, system_prompt=_current_prompt)
         panel.title_changed.connect(self._on_title_changed)
         panel.status_message.connect(self._set_status)
         panel.profile_tools_changed.connect(self._tools_panel.refresh_families)
@@ -270,6 +276,9 @@ class MainWindow(QMainWindow):
         panel.token_usage_updated.connect(self._model_usage_panel.on_usage_updated)
         panel.family_routing_changed.connect(self._model_usage_panel.on_family_routing)
         panel.model_usage_updated.connect(self._model_usage_panel.on_model_usage)
+
+        # Synchroniser aussi le sélecteur de profil affiché dans la toolbar du panel
+        panel._profile_selector.setCurrentText(_pm.current_profile)
 
         selected_collection = self._rag_panel.get_selected_collection()
         if selected_collection:
@@ -354,6 +363,11 @@ class MainWindow(QMainWindow):
         if isinstance(widget, ChatPanel):
             conv_id = widget.get_conv_id()
             self._rag_panel.set_conversation(conv_id)
+            # Resynchroniser le combo du RAG panel avec la collection
+            # propre à cet onglet, sans déclencher _on_rag_collection_changed.
+            self._rag_panel.collection_changed.disconnect(self._on_rag_collection_changed)
+            self._rag_panel.set_selected_collection(widget.get_rag_collection())
+            self._rag_panel.collection_changed.connect(self._on_rag_collection_changed)
             # Récupérer le titre depuis la base pour le panneau de monitoring
             conv = self.db.get_conversation(conv_id)
             title = conv["title"] if conv else ""
@@ -465,8 +479,13 @@ class MainWindow(QMainWindow):
         self._set_status("Paramètres mis à jour")
 
     def _on_rag_collection_changed(self, collection_name: str):
-        """Appelé quand la collection RAG change."""
-        for _, panel in self._chat_panels():
+        """Appelé quand la collection RAG change.
+
+        N'affecte que l'onglet actif — chaque conversation conserve
+        sa propre collection indépendamment des autres onglets ouverts.
+        """
+        panel = self._tabs.currentWidget()
+        if isinstance(panel, ChatPanel):
             panel.set_rag_collection(collection_name)
         self._set_status(f"Collection RAG : {collection_name}")
 

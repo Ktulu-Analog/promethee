@@ -1293,12 +1293,16 @@ def build_rag_context(query: str, conversation_id: str = None, collection_name: 
         return _build_rag_context_qdrant(query, conversation_id, None)
 
     # ── Dispatch automatique ──────────────────────────────────────────
-    # On utilise Albert si des collections sont disponibles (config ou auto-découverte)
-    # et que l'utilisateur n'a pas sélectionné une collection Qdrant explicite.
-    use_albert = bool(get_albert_collection_ids()) and (
-        collection_name is None
-        or collection_name == Config.QDRANT_COLLECTION
+    # Une collection Qdrant est explicitement sélectionnée si collection_name
+    # est non-None et ne commence pas par "albert:" (préfixe réservé au backend
+    # Albert). Dans ce cas on force Qdrant, quelle que soit la disponibilité
+    # des collections Albert — l'intention de l'utilisateur prime.
+    qdrant_explicitly_selected = (
+        collection_name is not None
+        and not collection_name.startswith("albert:")
     )
+
+    use_albert = bool(get_albert_collection_ids()) and not qdrant_explicitly_selected
 
     if use_albert:
         return _build_rag_context_albert(query)
