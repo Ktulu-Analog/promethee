@@ -49,11 +49,12 @@ _log = logging.getLogger("promethee.message_widget")
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QSizePolicy, QFileDialog,
+    QMenu,
 )
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import QWebEngineSettings, QWebEnginePage
-from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal
-from PyQt6.QtGui import QGuiApplication
+from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QUrl
+from PyQt6.QtGui import QGuiApplication, QDesktopServices, QCursor
 from .styles import ThemeManager
 from core.config import Config
 from .latex_renderer import (
@@ -590,6 +591,158 @@ def _estimate_height(text: str) -> int:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  _LinkPage — Page WebEngine qui intercepte les clics sur les liens
+# ══════════════════════════════════════════════════════════════════════════════
+
+class _LinkPage(QWebEnginePage):
+    """
+    QWebEnginePage personnalisée pour les bulles de message.
+
+    Clic gauche sur un lien HTTP/HTTPS/FTP
+    ───────────────────────────────────────
+    Ouverture dans le navigateur système (QDesktopServices.openUrl).
+    La navigation interne est bloquée pour préserver le contenu du message.
+
+    Clic droit — menu contextuel minimaliste
+    ─────────────────────────────────────────
+    • Sur un lien  → « 📋 Copier le lien »
+    • Sur une image → « 💾 Enregistrer l'image »
+    • Ailleurs     → aucun menu (clic droit sans effet)
+
+    Liens file:// (assets KaTeX/Mermaid locaux) → toujours autorisés.
+    Autres schémas → bloqués.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+    # ── Clic gauche : interception des navigations ───────────────────────────
+
+    def acceptNavigationRequest(
+        self,
+        url: QUrl,
+        nav_type: QWebEnginePage.NavigationType,
+        is_main_frame: bool,
+    ) -> bool:
+        # Navigations programmatiques (setHtml, reload…) → toujours autoriser
+        if nav_type != QWebEnginePage.NavigationType.NavigationTypeLinkClicked:
+            return True
+
+        scheme = url.scheme().lower()
+
+        # Assets locaux KaTeX / Mermaid → autoriser
+        if scheme == "file":
+            return True
+
+        # Liens web → navigateur système, navigation interne bloquée
+        if scheme in ("http", "https", "ftp"):
+            QDesktopServices.openUrl(url)
+            return False
+
+        # Autres schémas → bloquer
+        return False
+
+    # ── Clic droit : menu contextuel minimaliste ─────────────────────────────
+
+    def contextMenuEvent(self, event) -> None:   # type: ignore[override]
+        """
+        Affiche un menu à une seule entrée selon l'élément sous le curseur :
+          • Lien  → « 📋 Copier le lien »    (presse-papiers)
+          • Image → « 💾 Enregistrer l'image » (QFileDialog)
+          • Autre → aucun menu
+        """
+        data = self.contextMenuData()
+        if not data.isValid():
+            return
+
+        link     = data.linkUrl()
+        img_url  = data.mediaUrl()
+
+        has_link = link.isValid() and link.scheme().lower() in ("http", "https", "ftp")
+        has_img  = (
+            img_url.isValid()
+            and data.mediaType() == data.MediaType.MediaTypeImage
+        )
+
+        if not has_link and not has_img:
+            return  # pas d'élément exploitable → pas de menu
+
+        menu = QMenu()
+        menu.setStyleSheet(self._menu_style())
+
+        if has_link:
+            act = menu.addAction("📋  Copier le lien")
+            chosen = menu.exec(QCursor.pos())
+            if chosen == act:
+                QGuiApplication.clipboard().setText(link.toString())
+
+        elif has_img:
+            act = menu.addAction("💾  Enregistrer l'image")
+            chosen = menu.exec(QCursor.pos())
+            if chosen == act:
+                self._save_image(img_url)
+
+    # ── Helpers ──────────────────────────────────────────────────────────────
+
+    def _save_image(self, url: QUrl) -> None:
+        """Télécharge l'image pointée par url et propose un QFileDialog."""
+        import urllib.request, base64 as _b64
+        from pathlib import Path
+
+        # Nom de fichier suggéré à partir de l'URL
+        suggested = Path(url.path()).name or "image"
+
+        path, _ = QFileDialog.getSaveFileName(
+            None,
+            "Enregistrer l'image",
+            suggested,
+            "Images (*.png *.jpg *.jpeg *.gif *.webp *.svg);;Tous (*.*)",
+        )
+        if not path:
+            return
+
+        try:
+            req = urllib.request.Request(
+                url.toString(),
+                headers={"User-Agent": "Promethee/1.0"},
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = resp.read()
+            with open(path, "wb") as f:
+                f.write(data)
+        except Exception as e:
+            _log.warning("_save_image(%s) : %s", url.toString(), e)
+
+    @staticmethod
+    def _menu_style() -> str:
+        """Style QSS minimal cohérent avec les tokens Prométhée."""
+        bg     = ThemeManager.inline("elevated_bg")
+        border = ThemeManager.inline("border")
+        color  = ThemeManager.inline("text_primary")
+        sel_bg = ThemeManager.inline("accent")
+        sel_fg = ThemeManager.inline("elevated_bg")
+        return f"""
+QMenu {{
+    background-color: {bg};
+    border: 1px solid {border};
+    border-radius: 6px;
+    padding: 4px 0;
+    color: {color};
+    font-size: 13px;
+}}
+QMenu::item {{
+    padding: 6px 18px 6px 12px;
+    border-radius: 4px;
+    margin: 1px 4px;
+}}
+QMenu::item:selected {{
+    background-color: {sel_bg};
+    color: {sel_fg};
+}}
+"""
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  MessageWidget
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -679,6 +832,16 @@ class MessageWidget(QWidget):
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )
         self._view.setFixedHeight(self._MIN_H)
+
+        # Page personnalisée : intercepte les clics sur les liens <a href>
+        # et les ouvre dans le navigateur système au lieu de naviguer dans la vue.
+        # Doit être installée AVANT tout appel à page() pour que les réglages
+        # (setBackgroundColor, settings…) s'appliquent bien à cette page.
+        # Page personnalisée : ouvre les liens <a href> dans le navigateur
+        # système au lieu de naviguer dans la vue (ce qui remplacerait le
+        # contenu du message).
+        self._link_page = _LinkPage(self._view)
+        self._view.setPage(self._link_page)
 
         self._view.page().setBackgroundColor(Qt.GlobalColor.transparent)
 
@@ -1054,6 +1217,7 @@ class MessageWidget(QWidget):
         QGuiApplication.clipboard().setText(self._full_text)
         self._copy_btn.setText("✓")
         QTimer.singleShot(1500, lambda: self._copy_btn.setText("⎘"))
+
 
     # ── Téléchargement SVG Mermaid ────────────────────────────────────
 

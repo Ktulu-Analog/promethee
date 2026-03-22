@@ -624,19 +624,6 @@ class ChatPanel(QWidget):
             ctx = rag_engine.build_rag_context(text, self.conv_id, self._rag_collection)
             if ctx:
                 sys_prompt = f"{sys_prompt}\n\n{ctx}".strip()
-            elif self._rag_collection:
-                # Une collection est sélectionnée mais aucun chunk pertinent
-                # n'a été trouvé. On l'indique explicitement au LLM pour éviter
-                # qu'il réponde depuis ses connaissances générales sans prévenir.
-                notice = (
-                    "INSTRUCTION IMPORTANTE : Le mode RAG est actif "
-                    f"(collection : {self._rag_collection}), mais aucun document "
-                    "pertinent n'a été trouvé pour cette question. "
-                    "Tu DOIS indiquer à l'utilisateur que tu ne disposes d'aucun "
-                    "élément dans la base documentaire pour répondre à cette demande. "
-                    "Ne réponds PAS à partir de tes connaissances générales."
-                )
-                sys_prompt = f"{sys_prompt}\n\n{notice}".strip()
 
         # ── Mémoire long terme : souvenirs de conversations passées ────────
         # Le bloc LTM est calculé UNE SEULE FOIS par conversation et persisté
