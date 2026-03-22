@@ -64,14 +64,14 @@ class MainWindow(QMainWindow):
         # 1. Construire la structure dans la sidebar depuis la BDD
         self._tabs.load_folder_tree(self.db)
 
-        # 2. Ouvrir les ChatPanels et les enregistrer dans l'arbre
+        # 2. Ouvrir uniquement la conversation la plus récente au démarrage.
+        # Les autres sont chargées à la demande (lazy) quand l'utilisateur clique
+        # dessus dans la sidebar — ce qui évite d'instancier N ChatPanels inutilement.
         convs = self.db.get_conversations()
         if convs:
-            for c in convs[:Config.SIDEBAR_MAX_CONVERSATIONS]:
-                self._open_tab(c["id"])
-            self._tabs.setCurrentIndex(0)
-            # Initialiser le monitoring sur la première conversation
             first_conv = convs[0]
+            self._open_tab(first_conv["id"])
+            self._tabs.setCurrentIndex(0)
             self._monitoring_panel.set_conversation(first_conv["id"], first_conv["title"])
         else:
             self._new_tab()
@@ -170,6 +170,7 @@ class MainWindow(QMainWindow):
         self._tabs.tabCloseRequested.connect(self._on_tab_close)
         self._tabs.currentChanged.connect(self._on_tab_changed)
         self._tabs.convDeleteRequested.connect(self._on_conv_delete)
+        self._tabs.convOpenRequested.connect(self._open_tab)
         # Signaux ex-TopBar maintenant émis par la sidebar
         self._tabs.clear_requested.connect(self._clear_current)
         self._tabs.rag_toggle.connect(self._toggle_rag)

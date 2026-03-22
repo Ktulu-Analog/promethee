@@ -194,6 +194,7 @@ class ConvSidePanel(QWidget):
     """
 
     new_tab_requested   = pyqtSignal()
+    convOpenRequested   = pyqtSignal(str)   # émet le conv_id à ouvrir (chargement lazy)
     currentChanged      = pyqtSignal(int)
     tabCloseRequested   = pyqtSignal(int)
     convDeleteRequested = pyqtSignal(str)   # émet le conv_id (str)
@@ -714,6 +715,11 @@ class ConvSidePanel(QWidget):
             return
         widget = current.data(0, _ROLE_WIDGET)
         if widget is None:
+            # Panel pas encore créé (chargement lazy) — demander à main_window
+            # de l'instancier maintenant que l'utilisateur a cliqué dessus.
+            conv_id = current.data(0, _ROLE_ID)
+            if conv_id:
+                self.convOpenRequested.emit(conv_id)
             return
         idx = self._stack.indexOf(widget)
         if idx >= 0:

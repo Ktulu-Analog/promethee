@@ -312,7 +312,8 @@ class RagPanel(QWidget):
 
     def _update_status(self):
         if rag_engine.is_available():
-            ok = rag_engine.ensure_collection()
+            # Vérifier la collection sélectionnée si possible, sinon la collection par défaut
+            ok = rag_engine.ensure_collection(self.selected_collection or None)
             if ok:
                 self._status_label.setText("● Qdrant connecté")
                 self._status_label.setStyleSheet(
