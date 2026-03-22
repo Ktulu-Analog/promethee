@@ -250,11 +250,22 @@ class RagPanel(QWidget):
             for label, value in items:
                 self._collection_combo.addItem(label, value)
 
-            # Sélectionner automatiquement la collection Qdrant par défaut
+            # Restaurer la collection précédemment sélectionnée si possible,
+            # sinon sélectionner la collection par défaut.
+            # Ceci évite qu'un clic sur "Actualiser" réinitialise la collection
+            # de l'onglet actif.
+            target = self.selected_collection or own
+            restored = False
             for i in range(self._collection_combo.count()):
-                if self._collection_combo.itemData(i) == own:
+                if self._collection_combo.itemData(i) == target:
                     self._collection_combo.setCurrentIndex(i)
+                    restored = True
                     break
+            if not restored:
+                for i in range(self._collection_combo.count()):
+                    if self._collection_combo.itemData(i) == own:
+                        self._collection_combo.setCurrentIndex(i)
+                        break
 
             n_q = len(qdrant_cols)
             n_a = len(albert_cols)
@@ -337,7 +348,7 @@ class RagPanel(QWidget):
             return
 
         # Afficher uniquement les documents de cette conversation
-        for entry in rag_engine.list_sources(self.conv_id):
+        for entry in rag_engine.list_sources(self.conv_id, collection_name=self.selected_collection):
             badge = "🌐" if entry["scope"] == "global" else "💬"
             label = f"{badge} {entry['source']}  ({entry['count']} chunks)"
             item = QListWidgetItem(label)

@@ -277,8 +277,12 @@ class MainWindow(QMainWindow):
         panel.family_routing_changed.connect(self._model_usage_panel.on_family_routing)
         panel.model_usage_updated.connect(self._model_usage_panel.on_model_usage)
 
-        # Synchroniser aussi le sélecteur de profil affiché dans la toolbar du panel
+        # Synchroniser aussi le sélecteur de profil affiché dans la toolbar du panel.
+        # On bloque les signaux pour éviter que setCurrentText déclenche
+        # _on_profile_changed (et donc apply_profile_families) de façon redondante.
+        panel._profile_selector.blockSignals(True)
         panel._profile_selector.setCurrentText(_pm.current_profile)
+        panel._profile_selector.blockSignals(False)
 
         selected_collection = self._rag_panel.get_selected_collection()
         if selected_collection:

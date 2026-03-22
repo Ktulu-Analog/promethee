@@ -1172,25 +1172,51 @@ def search(query: str, top_k: int = 5, conversation_id: str = None, collection_n
         return []
 
 
-def list_sources(conversation_id: str = None) -> list[dict]:
+def list_sources(conversation_id: str = None, collection_name: str = None) -> list[dict]:
     """Retourne les sources visibles depuis une conversation.
 
     Retourne les docs globaux + ceux de la conversation.
     Chaque entrée : {"source": str, "count": int, "scope": "global"|"conversation"}
+
+    Parameters
+    ----------
+    conversation_id : str, optional
+        Filtre sur le scope de la conversation (None → docs globaux uniquement).
+    collection_name : str, optional
+        Collection Qdrant à interroger. Défaut : Config.QDRANT_COLLECTION.
+        Pour les collections externes (sans préfixe promethee_), le filtre de
+        scope n'est pas appliqué car leur payload ne contient pas conversation_id.
     """
     if not QDRANT_OK or not EMBED_OK:
         return []
-    if not ensure_collection():
+
+    target = collection_name or Config.QDRANT_COLLECTION
+
+    if not ensure_collection(target):
         return []
+
     try:
         qc = _client()
+        collections = {c.name for c in qc.get_collections().collections}
+        if target not in collections:
+            _log.warning("[RAG] list_sources : collection '%s' introuvable", target)
+            return []
+
+        # Pour les collections externes, pas de filtre de scope
+        # (leur payload n'a pas de champ conversation_id)
+        is_internal = (
+            target.startswith("promethee_")
+            or target == Config.QDRANT_COLLECTION
+        )
+        scroll_filter = _make_scope_filter(conversation_id) if is_internal else None
+
         # Agrégation : source → (count, scope)
         sources: dict[str, dict] = {}
         offset = None
         while True:
             result, offset = qc.scroll(
-                collection_name=Config.QDRANT_COLLECTION,
-                scroll_filter=_make_scope_filter(conversation_id),
+                collection_name=target,
+                scroll_filter=scroll_filter,
                 limit=256,
                 offset=offset,
                 with_payload=["source", "conversation_id"],
