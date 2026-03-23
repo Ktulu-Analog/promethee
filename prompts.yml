@@ -234,6 +234,7 @@ prompts:
       pinned:
       - guide_datagouv
       - guide_export_docx_pdf
+      - guide_imap
       - guide_mermaid
       - guide_redactionnel_administratif
       - guide_utilisation_templates

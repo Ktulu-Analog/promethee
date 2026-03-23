@@ -1,216 +1,470 @@
 ---
 name: Guide messagerie IMAP
 description: >
-  Protocole pour lire, rechercher, envoyer et gérer des emails via IMAP/SMTP
-  avec les outils imap_*. Lister les dossiers, consulter les derniers messages,
-  rechercher par critères, lire le contenu complet avec pièces jointes,
-  envoyer et répondre à des emails.
-tags: [imap, smtp, email, messagerie, courrier, pièces-jointes]
-version: 1.0
+  Protocole complet pour lire, rechercher, envoyer et gérer des emails via
+  les outils imap_*. Couvre les règles de rédaction (HTML obligatoire,
+  ton professionnel, signature Prométhée), les paramètres exacts de chaque
+  outil, les workflows types et les bonnes pratiques.
+tags: [imap, smtp, email, messagerie, courrier, pièces-jointes, rédaction, html, signature]
+version: 2.0
 ---
 
 # Guide messagerie IMAP
 
-Guide pour lire et gérer les emails via les outils IMAP/SMTP disponibles dans Prométhée.
+Guide opérationnel pour exploiter les outils IMAP/SMTP de Prométhée :
+lecture, recherche, envoi, réponse, classement et gestion des messages.
 
 ---
 
-## 1. Workflows types
+## 1. Règles de rédaction — à respecter impérativement
 
-### Consulter les derniers messages
+### 1.1 Format : HTML obligatoire, Markdown interdit
+
+Tout mail rédigé et envoyé par Prométhée **doit être au format HTML**.
+Le Markdown n'est pas un format email standard : les astérisques, dièses et
+tirets apparaissent tels quels dans les clients mail des destinataires.
+
+**Toujours renseigner `corps_html`** avec le contenu HTML mis en forme,
+et fournir également `corps` avec une version texte brut de repli
+(pour les clients mail qui n'affichent pas le HTML).
+
+Structure HTML minimale d'un mail :
+
+```html
+<html>
+<body style="font-family: Arial, sans-serif; font-size: 14px; color: #222222; line-height: 1.6;">
+
+  <p>Madame, Monsieur,</p>
+
+  <p>Corps du message.</p>
+
+  <p>Cordialement,</p>
+
+  <!-- Signature obligatoire — voir section 1.3 -->
+
+</body>
+</html>
 ```
-imap_list_mails(folder="INBOX", limit=20)
-→ expéditeur, objet, date, taille pour chaque message
 
-imap_read_mail(mail_id="...")
-→ contenu complet : headers, corps, pièces jointes
+**Éléments HTML autorisés et recommandés :**
+
+| Besoin | Balise à utiliser |
+|---|---|
+| Paragraphe | `<p>` |
+| Titre de section | `<h3>` ou `<h4>` (ne pas utiliser `<h1>`/`<h2>` dans un mail) |
+| Liste à puces | `<ul><li>…</li></ul>` |
+| Liste numérotée | `<ol><li>…</li></ol>` |
+| Texte en gras | `<strong>` |
+| Texte en italique | `<em>` |
+| Lien hypertexte | `<a href="url">texte</a>` |
+| Tableau | `<table>` avec `border="0"` et `cellpadding="6"` |
+| Séparateur | `<hr style="border: none; border-top: 1px solid #dddddd;">` |
+
+**Ne jamais utiliser :** `#`, `**`, `*`, `---`, `>` (syntaxe Markdown),
+ni de CSS complexe ou de JavaScript.
+
+### 1.2 Ton et style professionnels
+
+- **Formule d'appel** : `Madame, Monsieur,` (générique) ou `Madame,` / `Monsieur,`
+  si le genre est connu. Pour une réponse à une personne identifiée :
+  `Madame [Nom],` ou `Monsieur [Nom],`.
+- **Vouvoiement** systématique, même si le destinataire tutoie.
+- **Formule de politesse finale** avant la signature :
+  - Neutre : `Cordialement,`
+  - Respectueuse (hiérarchie, institutionnel) :
+    `Veuillez agréer, Madame, Monsieur, l'expression de mes salutations distinguées.`
+  - Collégiale (collègue) : `Bien cordialement,`
+- **Pas d'écriture inclusive** (pas de `·`, `/`, `(e)`).
+- **Pas d'émoticônes** ni d'abréviations familières.
+- **Objet** : court, informatif, sans ponctuation finale.
+  Exemples : `Demande de rendez-vous — 15 janvier 2026`,
+  `Transmission du rapport trimestriel`, `Réponse à votre courrier du 3 mars`.
+
+### 1.3 Signature obligatoire
+
+Tout mail envoyé ou rédigé par Prométhée **doit inclure la signature suivante**
+à la fin du corps HTML, avant la balise `</body>` :
+
+```html
+<hr style="border: none; border-top: 1px solid #dddddd; margin: 24px 0 12px;">
+<p style="font-size: 12px; color: #888888; margin: 0;">
+  <em>Ce message a été rédigé et envoyé par <strong>Prométhée</strong>,
+  assistant IA — à la demande de l'utilisateur.</em>
+</p>
+```
+
+Version texte brut de repli à inclure dans le champ `corps` :
+
+```
+--
+Ce message a été rédigé et envoyé par Prométhée, assistant IA — à la demande de l'utilisateur.
+```
+
+### 1.4 Objet d'une réponse
+
+Ne pas modifier l'objet lors d'un `imap_reply_mail` : l'outil ajoute
+automatiquement le préfixe `Re:` si absent. Ne fournir le paramètre `objet`
+que pour les nouveaux messages ou les transferts.
+
+---
+
+## 2. Référence des outils — paramètres exacts
+
+### `imap_list_folders`
+
+Liste les dossiers disponibles sur le serveur IMAP.
+**Appeler en premier** si les noms de dossiers sont inconnus.
+
+```json
+{
+  "profil": "pro"
+}
+```
+
+Tous les paramètres sont optionnels. Sans `profil`, utilise le compte par défaut.
+
+---
+
+### `imap_list_mails`
+
+Liste les N derniers messages d'un dossier.
+
+```json
+{
+  "dossier": "INBOX",
+  "n": 20,
+  "non_lus_seulement": false,
+  "profil": null
+}
+```
+
+| Paramètre | Type | Défaut | Description |
+|---|---|---|---|
+| `dossier` | string | `"INBOX"` | Nom exact du dossier IMAP |
+| `n` | integer | `20` | Nombre de messages (max 100) |
+| `non_lus_seulement` | boolean | `false` | Filtrer sur les non-lus |
+| `profil` | string | null | Préfixe du compte dans `.env` |
+
+Retourne : `uid`, `from`, `to`, `subject`, `date`, `lu`, `important`.
+
+---
+
+### `imap_search_mails`
+
+Recherche multicritères dans un dossier. Tous les critères sont cumulatifs (ET logique).
+
+```json
+{
+  "dossier": "INBOX",
+  "expediteur": "drh@organisme.fr",
+  "destinataire": null,
+  "objet": "convocation",
+  "corps": null,
+  "depuis": "2026-01-01",
+  "jusqu_au": "2026-03-31",
+  "non_lus_seulement": false,
+  "n": 20,
+  "profil": null
+}
+```
+
+| Paramètre | Type | Description |
+|---|---|---|
+| `expediteur` | string | Recherche partielle sur FROM |
+| `destinataire` | string | Recherche partielle sur TO |
+| `objet` | string | Recherche partielle sur SUBJECT |
+| `corps` | string | Recherche dans le corps (lent sur grandes boîtes) |
+| `depuis` | string | Date de début `YYYY-MM-DD` |
+| `jusqu_au` | string | Date de fin `YYYY-MM-DD` |
+| `non_lus_seulement` | boolean | Filtrer sur UNSEEN |
+| `n` | integer | Max résultats (max 50) |
+
+---
+
+### `imap_read_mail`
+
+Lit le contenu complet d'un message. **Marque le message comme lu automatiquement.**
+
+```json
+{
+  "uid": "4271",
+  "dossier": "INBOX",
+  "inclure_html": false,
+  "inclure_pj": true,
+  "profil": null
+}
+```
+
+Retourne : `message_id`, `from`, `to`, `cc`, `subject`, `date`, `body`,
+`in_reply_to`, `references`, `attachments` (liste avec `filename`,
+`content_type`, `size_bytes`, `data_base64` pour PDF/images/Office).
+
+---
+
+### `imap_send_mail`
+
+Envoie un nouveau message. L'expéditeur est défini par `IMAP_FROM` (ou `IMAP_USER`) dans `.env`.
+
+```json
+{
+  "destinataires": ["destinataire@exemple.fr"],
+  "objet": "Transmission du rapport — mars 2026",
+  "corps": "Madame, Monsieur,\n\nVeuillez trouver ci-joint...\n\n--\nCe message a été rédigé et envoyé par Prométhée.",
+  "corps_html": "<html><body>...</body></html>",
+  "cc": ["copie@exemple.fr"],
+  "cci": ["archivage@exemple.fr"],
+  "profil": null
+}
+```
+
+| Paramètre | Requis | Description |
+|---|---|---|
+| `destinataires` | ✓ | Liste d'adresses TO |
+| `objet` | ✓ | Objet du mail |
+| `corps` | ✓ | Corps texte brut (repli) |
+| `corps_html` | — | Corps HTML (obligatoire si mise en forme) |
+| `cc` | — | Copie |
+| `cci` | — | Copie cachée |
+| `profil` | — | Compte à utiliser |
+
+---
+
+### `imap_reply_mail`
+
+Répond à un message existant. Conserve `In-Reply-To` et `References`.
+
+```json
+{
+  "uid": "4271",
+  "corps": "Madame,\n\nBien reçu...\n\n--\nCe message a été rédigé et envoyé par Prométhée.",
+  "dossier": "INBOX",
+  "repondre_a_tous": false,
+  "profil": null
+}
+```
+
+**Note :** cet outil envoie uniquement du texte brut.
+Pour envoyer une réponse en HTML, utiliser `imap_read_mail` pour récupérer
+le `message_id`, `from`, `subject` et `references` du message original,
+puis construire manuellement la réponse avec `imap_send_mail` en renseignant
+`corps_html` et en positionnant manuellement les headers `In-Reply-To`
+(non supporté directement — voir note ci-dessous).
+
+> **Conseil :** pour les réponses nécessitant une mise en forme HTML,
+> utiliser `imap_send_mail` avec `corps_html` et préfixer l'objet de `Re: `
+> manuellement. Les headers de fil de conversation ne seront pas conservés
+> mais la mise en forme sera correcte.
+
+---
+
+### `imap_mark_mail`
+
+Modifie les flags d'un message.
+
+```json
+{
+  "uid": "4271",
+  "action": "lu",
+  "dossier": "INBOX",
+  "profil": null
+}
+```
+
+| Action | Effet serveur |
+|---|---|
+| `lu` | Ajoute `\Seen` |
+| `non_lu` | Retire `\Seen` |
+| `important` | Ajoute `\Flagged` (étoile) |
+| `non_important` | Retire `\Flagged` |
+| `supprime` | Ajoute `\Deleted` + EXPUNGE immédiat |
+
+---
+
+### `imap_move_mail`
+
+Déplace un message vers un autre dossier.
+
+```json
+{
+  "uid": "4271",
+  "dossier_destination": "Archives/2026",
+  "dossier_source": "INBOX",
+  "profil": null
+}
+```
+
+Utilise MOVE (RFC 6851) si le serveur le supporte, sinon COPY + DELETE.
+Appeler `imap_list_folders` pour connaître le nom exact du dossier de destination.
+
+---
+
+## 3. Workflows types
+
+### Consulter les derniers messages non lus
+
+```
+1. imap_list_mails(dossier="INBOX", n=20, non_lus_seulement=true)
+   → liste uid, expéditeur, objet, date
+
+2. imap_read_mail(uid="...", dossier="INBOX")
+   → contenu complet, marque automatiquement comme lu
 ```
 
 ### Rechercher un message précis
-```
-imap_search_mails(sender="direction@organisme.fr", subject="convocation")
-→ liste des messages correspondants avec leurs IDs
 
-imap_read_mail(mail_id="...")
-→ lecture du message retenu
 ```
+1. imap_search_mails(expediteur="rh@organisme.fr", objet="congé", depuis="2026-01-01")
+   → liste des messages correspondants avec leurs uid
 
-### Envoyer un message
-```
-imap_send_mail(to="destinataire@exemple.fr", subject="...", body="...")
+2. imap_read_mail(uid="...")
+   → lecture du message retenu
 ```
 
-### Répondre à un message
+### Rédiger et envoyer un nouveau mail
+
 ```
-imap_reply_mail(mail_id="...", body="...")
-→ conserve le fil de conversation (In-Reply-To)
+1. Rédiger le corps HTML avec signature Prométhée (section 1.3)
+2. Préparer le corps texte brut de repli avec signature texte
+3. imap_send_mail(
+     destinataires=["..."],
+     objet="...",
+     corps="... [texte brut]",
+     corps_html="<html>...</html>"
+   )
+```
+
+### Répondre à un message avec mise en forme HTML
+
+```
+1. imap_read_mail(uid="...", inclure_html=false)
+   → récupérer from, subject, date, body, message_id
+
+2. Construire le corps HTML de réponse avec :
+   - La réponse rédigée
+   - La signature Prométhée (section 1.3)
+   - La citation du message original :
+     <blockquote style="border-left: 3px solid #cccccc; padding-left: 12px; color: #666666;">
+       <p><em>Le [date], [expéditeur] a écrit :</em></p>
+       [corps original]
+     </blockquote>
+
+3. imap_send_mail(
+     destinataires=["expéditeur original"],
+     objet="Re: [objet original]",
+     corps="... [texte brut]",
+     corps_html="<html>...</html>"
+   )
+
+4. imap_mark_mail(uid="...", action="lu")  ← si pas encore fait
+```
+
+### Traitement d'une pièce jointe reçue
+
+```
+1. imap_read_mail(uid="...", inclure_pj=true)
+   → attachments[].data_base64 pour PDF/images/Office
+
+2. Selon le type :
+   - PDF texte  → extraire le texte avec python_exec + PyMuPDF
+   - PDF scanné → ocr_tools
+   - Excel      → data_file_tools (lire depuis base64)
+   - Word/PPT   → python_exec + python-docx / python-pptx
+   - Image      → ocr_tools ou analyse directe
+```
+
+### Classer et archiver
+
+```
+1. imap_list_folders()
+   → identifier le dossier d'archivage (ex: "Archives/2026")
+
+2. imap_move_mail(uid="...", dossier_destination="Archives/2026")
+
+3. Optionnel : imap_mark_mail(uid="...", action="lu")
 ```
 
 ---
 
-## 2. `imap_list_folders` — lister les dossiers disponibles
+## 4. Gestion multi-comptes (profils)
 
-```json
-{}
+L'outil supporte plusieurs comptes via des profils définis dans `.env`.
+Chaque profil correspond à un préfixe de variables d'environnement.
+
+**Exemple — profil `pro` :**
+```
+IMAP_PRO_HOST=imap.monorganisme.fr
+IMAP_PRO_PORT=993
+IMAP_PRO_USER=pierre.dupont@monorganisme.fr
+IMAP_PRO_PASSWORD=motdepasse
+IMAP_PRO_SSL=ON
+IMAP_PRO_FROM=pierre.dupont@monorganisme.fr
+IMAP_PRO_DISPLAY_NAME=Pierre Dupont
+SMTP_PRO_HOST=smtp.monorganisme.fr
+SMTP_PRO_PORT=465
+SMTP_PRO_USER=pierre.dupont@monorganisme.fr
+SMTP_PRO_PASSWORD=motdepasse
 ```
 
-Retourne les noms exacts des dossiers du serveur IMAP.
-**Toujours appeler en premier** si on ne connaît pas les noms de dossiers exacts — ils varient selon le serveur (`Envoyés`, `Sent`, `Sent Messages`, etc.).
+Utilisation : `profil="pro"` dans tous les appels d'outils.
+Sans `profil`, le compte par défaut (`IMAP_HOST`, `IMAP_USER`…) est utilisé.
+
+**Authentification OAuth2 :** si `IMAP_[PROFIL_]OAUTH2_TOKEN` est défini,
+il est utilisé en priorité sur le mot de passe (mécanisme XOAUTH2).
 
 ---
 
-## 3. `imap_list_mails` — consulter les derniers messages
+## 5. Dossiers IMAP courants
 
-```json
-{
-  "folder": "INBOX",
-  "limit": 20
-}
-```
+Les noms varient selon les serveurs et les clients mail.
+Toujours vérifier avec `imap_list_folders` avant le premier usage.
 
-Retourne les N messages les plus récents : expéditeur, destinataires, objet, date, taille, indicateurs (lu/non-lu, important).
-
-**Dossiers courants :**
-
-| Dossier | Variantes fréquentes |
+| Usage | Noms fréquents |
 |---|---|
-| Boîte de réception | `INBOX` |
-| Messages envoyés | `Sent`, `Envoyés`, `Sent Messages` |
-| Brouillons | `Drafts`, `Brouillons` |
-| Corbeille | `Trash`, `Corbeille`, `Deleted Messages` |
-| Spam | `Junk`, `Spam` |
-
-→ Utiliser `imap_list_folders` si le dossier n'est pas trouvé.
-
----
-
-## 4. `imap_search_mails` — recherche multicritères
-
-```json
-{
-  "folder": "INBOX",
-  "sender": "rh@organisme.fr",
-  "subject": "congé",
-  "since": "2026-01-01",
-  "unseen": true,
-  "limit": 50
-}
-```
-
-**Paramètres disponibles :**
-- `sender` : filtrer par expéditeur
-- `recipient` : filtrer par destinataire
-- `subject` : filtrer par objet (recherche partielle)
-- `body` : filtrer par contenu du corps
-- `since` / `before` : plage de dates (format `YYYY-MM-DD`)
-- `unseen` : `true` pour les non-lus uniquement
-- `flagged` : `true` pour les messages importants (étoilés)
+| Boîte de réception | `INBOX` (universel) |
+| Messages envoyés | `Sent`, `Envoyés`, `Sent Messages`, `INBOX.Sent` |
+| Brouillons | `Drafts`, `Brouillons`, `INBOX.Drafts` |
+| Corbeille | `Trash`, `Corbeille`, `Deleted Messages`, `INBOX.Trash` |
+| Spam / Indésirables | `Junk`, `Spam`, `INBOX.Junk` |
+| Archives | `Archive`, `Archives`, `All Mail` (Gmail) |
 
 ---
 
-## 5. `imap_read_mail` — lire un message complet
+## 6. Comportements importants à connaître
 
-```json
-{
-  "mail_id": "12345"
-}
-```
+- **`imap_read_mail` marque le message comme lu** automatiquement.
+  Pour lire sans marquer, il n'y a pas de paramètre dédié — utiliser
+  `imap_mark_mail(action="non_lu")` immédiatement après si nécessaire.
 
-Retourne :
-- **Headers** : expéditeur, destinataires, CC, objet, date, message-ID
-- **Corps** : texte brut et/ou HTML
-- **Pièces jointes** : nom, type MIME, taille, contenu en base64
+- **`imap_mark_mail(action="supprime")` est irréversible** : le message
+  est supprimé définitivement (EXPUNGE effectué immédiatement).
+  Préférer `imap_move_mail` vers la Corbeille pour une suppression récupérable.
 
-**Note sur les pièces jointes :** les fichiers PDF, images et documents Office sont retournés en base64. Pour les traiter, utiliser `ocr_pdf` (PDF scannés), `data_file_tools` (Excel), ou `python_exec` pour tout traitement personnalisé.
+- **Les UID IMAP ne sont pas permanents** sur tous les serveurs : ils peuvent
+  changer si la boîte est réorganisée (compactage). Ne pas stocker les UID
+  sur le long terme — toujours relancer une recherche si un UID est incertain.
 
----
+- **Corps vide à la lecture** : certains messages sont HTML uniquement
+  (le champ `body` est vide). Relire avec `inclure_html=true` pour obtenir
+  le contenu HTML, puis en extraire le texte si besoin.
 
-## 6. `imap_send_mail` — envoyer un message
+- **Pièces jointes volumineuses** : `imap_read_mail` avec `inclure_pj=true`
+  peut être lent pour les messages avec des PJ > 5 Mo. Prévenir l'utilisateur
+  avant de lancer la lecture. Si seules les métadonnées sont nécessaires,
+  utiliser `inclure_pj=false`.
 
-```json
-{
-  "to": "destinataire@exemple.fr",
-  "subject": "Réponse à votre demande",
-  "body": "Madame, Monsieur,\n\nSuite à votre demande...",
-  "cc": "copie@exemple.fr",
-  "html_body": "<p>Version HTML optionnelle</p>"
-}
-```
-
-- `to` : adresse du destinataire (ou liste séparée par des virgules)
-- `cc` / `bcc` : copie et copie cachée (optionnels)
-- `body` : corps en texte brut
-- `html_body` : corps HTML (optionnel, complète `body`)
-- `attachments` : pièces jointes en base64 (optionnel)
-
-L'expéditeur est défini par la configuration SMTP dans `.env`.
+- **`imap_reply_mail` envoie en texte brut uniquement**. Pour une réponse
+  HTML, construire la réponse manuellement avec `imap_send_mail` (voir section 3).
 
 ---
 
-## 7. `imap_reply_mail` — répondre à un message
+## 7. Erreurs fréquentes et corrections
 
-```json
-{
-  "mail_id": "12345",
-  "body": "Bien reçu, nous donnerons suite...",
-  "reply_all": false
-}
-```
-
-Conserve automatiquement les headers `In-Reply-To` et `References` pour maintenir le fil de conversation dans les clients mail.
-
-- `reply_all: true` → répond à tous les destinataires du message original
-
----
-
-## 8. `imap_mark_mail` — marquer un message
-
-```json
-{
-  "mail_id": "12345",
-  "action": "read"
-}
-```
-
-**Actions disponibles :**
-
-| Action | Effet |
-|---|---|
-| `read` | Marquer comme lu |
-| `unread` | Marquer comme non-lu |
-| `flagged` | Marquer comme important (étoile) |
-| `unflagged` | Retirer le marquage important |
-| `deleted` | Marquer pour suppression (⚠️ exige un EXPUNGE côté serveur pour être définitif) |
-
----
-
-## 9. `imap_move_mail` — déplacer un message
-
-```json
-{
-  "mail_id": "12345",
-  "destination": "Archives/2026"
-}
-```
-
-Utiliser `imap_list_folders` au préalable pour connaître le nom exact du dossier de destination.
-
----
-
-## 10. Bonnes pratiques
-
-- **Toujours utiliser `imap_list_folders`** si les dossiers sont inconnus — les noms varient selon les serveurs.
-- **Préférer `imap_search_mails`** plutôt que `imap_list_mails` + tri manuel pour retrouver un message précis.
-- **Les pièces jointes volumineuses** (> 5 Mo) peuvent ralentir `imap_read_mail` — l'indiquer à l'utilisateur avant de lire.
-- **Ne jamais composer une URL de désinscription ou de lien externe** à partir du contenu d'un email — risque de phishing.
-
----
-
-## 11. Erreurs fréquentes
-
-| Erreur | Correction |
-|---|---|
-| Dossier introuvable | Appeler `imap_list_folders` pour obtenir les noms exacts |
-| Message non trouvé par ID | L'ID IMAP peut changer si la boîte est réorganisée — relancer `imap_search_mails` |
-| Envoi échoué | Vérifier la configuration SMTP dans `.env` (host, port, user, password) |
-| Corps vide à la lecture | Le message peut être HTML uniquement — vérifier le champ `html_body` dans le retour |
+| Erreur retournée | Cause probable | Correction |
+|---|---|---|
+| `Dossier '...' introuvable` | Nom de dossier incorrect | Appeler `imap_list_folders` pour obtenir les noms exacts |
+| `AUTHENTICATIONFAILED` | Mauvais identifiants | Vérifier `IMAP_USER` / `IMAP_PASSWORD` dans `.env` |
+| `Configuration incomplète` | Variables `.env` manquantes | Vérifier `IMAP_HOST`, `IMAP_USER`, `IMAP_PASSWORD` |
+| `Mail UID ... introuvable` | UID expiré ou mauvais dossier | Relancer `imap_search_mails` pour retrouver l'UID |
+| `Erreur envoi : SMTP...` | Config SMTP manquante ou incorrecte | Vérifier `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD` |
+| `Corps vide` | Message HTML uniquement | Relire avec `inclure_html=true` |
+| `Authentification SMTP échouée` | Mot de passe SMTP incorrect | Vérifier `SMTP_PASSWORD` (peut différer de `IMAP_PASSWORD`) |

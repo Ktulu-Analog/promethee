@@ -623,6 +623,55 @@ def _fix_universal(src: str) -> str:
 
 
 
+def _fix_flowchart_labels(src: str) -> str:
+    """
+    Encapsule dans des guillemets Mermaid les labels de nœuds [...] contenant
+    des caractères qui font planter le parser :
+      - parenthèses ()  → interprétées comme sous-nœud
+      - deux-points :   → interprétés comme séparateur de label d'arête
+      - guillemets "    → déjà convertis depuis les guillemets typographiques
+                          par _fix_universal, mais invalides dans un label nu
+
+    Transforme :  NodeID[texte (parens) ou : deux-points]
+    En :          NodeID["texte (parens) ou : deux-points"]
+
+    Les labels déjà entre guillemets ne sont pas touchés.
+    Les guillemets " dans le contenu sont remplacés par ' pour éviter
+    l'imbrication.
+
+    Note : n'agit que sur les crochets simples [ ] (type le plus courant
+    et le plus sensible). Les types ([), (()), {} sont moins affectés.
+    """
+    _LABEL_PROBLEM_RE = re.compile(r'[():]|"')
+
+    def _quote_label(m: re.Match) -> str:
+        prefix  = m.group(1)   # ID nœud ou contexte précédent
+        bracket = m.group(2)   # [
+        content = m.group(3)   # contenu brut
+        close   = m.group(4)   # ]
+
+        # Déjà quoté → ne pas retoucher
+        stripped = content.strip()
+        if stripped.startswith('"') and stripped.endswith('"'):
+            return m.group(0)
+
+        # Contient des caractères problématiques → encapsuler
+        if _LABEL_PROBLEM_RE.search(content):
+            safe = content.replace('"', "'")
+            return f'{prefix}{bracket}"{safe}"{close}'
+
+        return m.group(0)
+
+    _LABEL_RE = re.compile(
+        r'((?:^|\s|-->|---)[A-Za-z0-9_\-]*)'   # ID nœud ou transition
+        r'(\[)'                                   # crochet ouvrant
+        r'([^\[\]]*?)'                            # contenu (sans crochets imbriqués)
+        r'(\])',                                  # crochet fermant
+        re.MULTILINE,
+    )
+    return _LABEL_RE.sub(_quote_label, src)
+
+
 def _fix_structured(src: str) -> str:
     """
     Corrections pour les diagrammes à syntaxe flowchart/sequence/etc.
@@ -639,6 +688,8 @@ def _fix_structured(src: str) -> str:
     src = src.replace("\u21d2", "==>").replace("\u25ba", "-->")
     # Comparateurs (utiles dans les noeuds de décision {})
     src = src.replace("\u2265", ">=").replace("\u2264", "<=")
+    # Labels de nœuds contenant () : " → encapsuler dans des guillemets Mermaid
+    src = _fix_flowchart_labels(src)
     # Mots réservés Mermaid utilisés comme IDs de noeuds
     src = _fix_reserved_ids(src)
     # Supprimer les titres ## générés par le LLM dans le corps du diagramme

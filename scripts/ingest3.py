@@ -489,16 +489,84 @@ def extract_text_from_file(file_path: Path) -> str:
 
     elif suffix == '.docx':
         # Nouveau format .docx (Office Open XML)
+        # Méthode 1 : python-docx (installé comme dépendance des outils export)
+        # Extrait paragraphes + contenu des tableaux + en-têtes/pieds de page.
+        try:
+            from docx import Document
+            doc = Document(str(file_path))
+            parts = []
+
+            # Paragraphes du corps principal
+            for para in doc.paragraphs:
+                t = para.text.strip()
+                if t:
+                    parts.append(t)
+
+            # Contenu des tableaux (cellule par cellule)
+            for table in doc.tables:
+                for row in table.rows:
+                    row_cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+                    if row_cells:
+                        parts.append("  ".join(row_cells))
+
+            # En-têtes et pieds de page de chaque section
+            for section in doc.sections:
+                for header_footer in (
+                    section.header, section.footer,
+                    section.even_page_header, section.even_page_footer,
+                    section.first_page_header, section.first_page_footer,
+                ):
+                    try:
+                        for para in header_footer.paragraphs:
+                            t = para.text.strip()
+                            if t:
+                                parts.append(t)
+                    except Exception:
+                        pass
+
+            text = "\n".join(parts)
+            if text.strip():
+                return text
+        except ImportError:
+            pass
+        except Exception as e:
+            print_warning(f"python-docx : erreur lecture {file_path.name} : {e}")
+
+        # Méthode 2 : docx2txt (si installé)
         try:
             import docx2txt
             text = docx2txt.process(str(file_path))
-            return text
+            if text.strip():
+                return text
         except ImportError:
-            print_warning(f"docx2txt non installé, impossible de lire {file_path.name}")
-            return ""
+            pass
+        except Exception:
+            pass
+
+        # Méthode 3 : extraction brute via zipfile (le .docx est une archive ZIP)
+        # Lit directement word/document.xml et en extrait le texte sans dépendance.
+        try:
+            import zipfile
+            from xml.etree import ElementTree as ET
+            with zipfile.ZipFile(str(file_path), 'r') as z:
+                xml_parts = []
+                for name in z.namelist():
+                    if name.startswith('word/') and name.endswith('.xml') and 'rels' not in name:
+                        with z.open(name) as f:
+                            tree = ET.parse(f)
+                            root = tree.getroot()
+                            ns = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
+                            texts = [node.text for node in root.iter('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t') if node.text]
+                            if texts:
+                                xml_parts.append(" ".join(texts))
+                text = "\n".join(xml_parts)
+                if text.strip():
+                    return text
         except Exception as e:
-            print_warning(f"Erreur lors de la lecture de {file_path.name} : {e}")
-            return ""
+            print_warning(f"Extraction brute XML échouée pour {file_path.name} : {e}")
+
+        print_warning(f"Impossible de lire {file_path.name} — aucune méthode disponible")
+        return ""
 
     elif suffix == '.doc':
         # Ancien format .doc (binaire) - essayer plusieurs méthodes
