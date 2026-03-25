@@ -130,6 +130,8 @@ version: 1.0
 
 Même structure que `export_docx`. À préférer uniquement quand le document est destiné à être diffusé en lecture seule (publication, envoi externe, archivage).
 
+**Moteur de rendu : WeasyPrint (HTML/CSS → PDF).** Supporte nativement les formules LaTeX.
+
 ```json
 {
   "title": "Rapport annuel 2025",
@@ -137,6 +139,42 @@ Même structure que `export_docx`. À préférer uniquement quand le document es
   "output_path": "~/Documents/rapport_2025.pdf"
 }
 ```
+
+### Support LaTeX dans `export_pdf`
+
+Les formules mathématiques LaTeX peuvent être insérées dans **tout champ textuel** des sections (`paragraphs`, `content`, `intro`, `bullets`, `heading`) du document PDF.
+
+| Syntaxe | Usage | Exemple |
+|---|---|---|
+| `$formule$` | Formule **inline** (dans le texte courant) | `La loi de Newton est $F = ma$.` |
+| `$$formule$$` | Formule **display** (bloc centré, grande taille) | `$$\int_0^\infty e^{-x^2}dx = \frac{\sqrt{\pi}}{2}$$` |
+
+**Rendu :** chaque formule est compilée par un vrai moteur **LaTeX** (`latex` + `dvipng`) et embarquée en base64 dans le HTML source. Support complet de `amsmath`, `amssymb`, `bm`, `\boldsymbol`, `\oint`, `\displaystyle`, `\partial`, etc. Fond transparent, résolution 200–220 dpi.
+
+**Exemple de section avec LaTeX :**
+
+```json
+{
+  "heading": "Équation de Schrödinger",
+  "paragraphs": [
+    "L'équation de Schrödinger dépendante du temps s'écrit :",
+    "$$i\\hbar\\frac{\\partial}{\\partial t}\\Psi(\\mathbf{r},t) = \\hat{H}\\Psi(\\mathbf{r},t)$$",
+    "où $\\hat{H}$ est l'opérateur hamiltonien et $\\hbar$ la constante de Planck réduite.",
+    "Pour une particule libre, l'énergie cinétique vaut $E = \\frac{p^2}{2m}$."
+  ]
+}
+```
+
+> ⚠ Les antislashes LaTeX doivent être **doublés** dans les chaînes JSON : `\\frac`, `\\int`, `\\hbar`, etc.
+
+### Prérequis système (export_pdf avec LaTeX)
+
+```
+pip install weasyprint
+apt install texlive-latex-base texlive-latex-extra dvipng
+```
+
+Si `weasyprint` est absent, l'outil bascule automatiquement sur `reportlab` (sans rendu LaTeX). Si `latex`/`dvipng` sont absents, les formules sont remplacées par un bloc `<code>` de repli.
 
 ---
 
@@ -167,3 +205,5 @@ Toujours communiquer le chemin exact du fichier généré à l'utilisateur.
 | Signet non substitué | Vérifier dans `list_docx_template_styles` → champ `bookmarks` |
 | Document trop court / squelette de puces | Développer chaque section avec plusieurs paragraphes rédigés |
 | Utiliser `export_pdf` pour un document à éditer | Préférer `export_docx` si l'utilisateur doit modifier le document |
+| Antislash simple dans LaTeX JSON | Doubler les antislashes dans les strings JSON : `\\frac`, `\\int`, `\\hbar` |
+| Formule LaTeX dans export_docx | LaTeX n'est rendu que dans `export_pdf` (moteur WeasyPrint + matplotlib) |

@@ -8,7 +8,7 @@ build-backend = "setuptools.backends.legacy:build"
 
 [project]
 name = "Prométhée-ai"
-version = "2.2.2"
+version = "2.2.3"
 description = "Assistant IA desktop avec outils intégrés, RAG, mémoire long terme et support Légifrance/Judilibre"
 readme = "README.md"
 license = { text = "AGPL-3.0-only" }
@@ -75,6 +75,7 @@ office = [
     "python-pptx>=0.6.23",
     "openpyxl>=3.1.0",
     "reportlab>=4.1.0",
+    "docx2txt>=0.8",
 ]
 
 # Rendu Markdown et coloration syntaxique (interface chat)

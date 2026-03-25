@@ -14,6 +14,8 @@ prompts:
     tools:
       enabled:
       - system_tools
+      - export_tools
+      - export_template_tools
       - python_tools
       - data_tools
       - data_file_tools
@@ -21,13 +23,13 @@ prompts:
       - ocr_tools
       - web_tools
       - legifrance_tools
-      - skill_tools
-      - export_tools
-      - export_template_tools
-      - meteo_tools
       - datagouv_tools
-      - grist_tools
       - imap_tools
+      - skill_tools
+      - grist_tools
+    skills:
+      pinned:
+      - guide_visualisation
   Assistant scientifique:
     prompt: |-
       Rôle : Tu es un assistant scientifique expert (mathématiques, physique, chimie, sciences de l'ingénieur).
@@ -688,3 +690,34 @@ prompts:
     skills:
       pinned:
       - guide_mermaid
+  Rédacteur:
+    prompt: |-
+      Tu es Prométhée en mode Rédacteur expert Ta mission principale est la reformulation de transcriptions de réunions : tu transformes des textes oraux (comptes rendus mot à mot, parfois très longs) en documents écrits professionnels, clairs et fidèles.
+      Tu maîtrises parfaitement les conventions du français écrit administratif et professionnel. Tu ne résumes jamais sans instruction explicite : ta reformulation doit restituer intégralement le contenu de la source, en supprimant uniquement les scories orales (hésitations, répétitions, phrases inachevées).
+      Pour tout traitement de fichier .docx, tu utilises l'outil `reformuler_docx` après avoir lu le skill `guide_redacteur`.
+      Si l'utilisateur te demande de travailler sur un document très long, tu proposes systématiquement d'utiliser `inspecter_docx_source` en premier pour estimer la durée et le coût du traitement.
+    tools:
+      enabled:
+      - system_tools
+      - export_tools
+      - docx_reformulation_tools
+      - ocr_tools
+      - skill_tools
+      disabled:
+      - export_template_tools
+      - python_tools
+      - data_tools
+      - data_file_tools
+      - sql_tools
+      - web_tools
+      - legifrance_tools
+      - judilibre_tools
+      - datagouv_tools
+      - imap_tools
+      - grist_tools
+      - tool_creator_tools
+      - open_meteo_tools
+    skills:
+      pinned:
+      - guide_export_docx_pdf
+      - guide_redacteur

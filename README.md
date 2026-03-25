@@ -1,4 +1,4 @@
-# 🔥 Prométhée AI v2.2.2
+# 🔥 Prométhée AI v2.2.3
 
 **Assistant IA desktop** — Interface PyQt6 connectée à un LLM (OpenAI-compatible, Albert API ou Ollama), avec outils intégrés, RAG, mémoire long terme et support Légifrance/Judilibre.
 **conçu principalement pour fonctionner avec l'API Albert de la DiNum**
@@ -6,6 +6,12 @@
 ---
 
 ## 📋 Changelog
+
+### v2.2.3
+- 🐛 Corrections de bugs dans le rendu LaTeX et Mermaid
+- 🔧 **Rajout d'un outil** pour reformuler les comptes rendus oraux dans un style adapté à l'écrit
+- 💬 **Rajout du profil associé** à cet outil (Rédacteur) et d'un skill dédié.
+
 
 ### v2.2.2
 - 🐛 Corrections de bugs dans le RAG avec Qdrant

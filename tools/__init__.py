@@ -52,6 +52,7 @@ def register_all() -> None:
     from tools import system_tools
     from tools import export_tools
     from tools import export_template_tools
+    from tools import reformulation_tools
     from tools import python_tools
     from tools import data_tools
     from tools import data_file_tools

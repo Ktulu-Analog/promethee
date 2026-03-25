@@ -13,6 +13,7 @@ PyQt6-Qt6>=6.6.0
 PyQt6-sip>=13.6.0
 PyQt6-WebEngine>=6.6.0
 PyQt6-WebEngine-Qt6>=6.6.0
+PyQt6-Qt6-SVG>=6.6.0
 
 # ── LLM / API ────────────────────────────────────────────────
 openai>=1.30.0
@@ -22,7 +23,7 @@ requests>=2.31.0
 # ── Web / scraping ───────────────────────────────────────────
 beautifulsoup4>=4.12.0
 lxml>=5.0.0
-markdownify>=0.11.6
+markdownify>=0.12.0
 
 # ── Données ──────────────────────────────────────────────────
 pandas>=2.1.0
@@ -34,6 +35,7 @@ matplotlib>=3.8.0
 python-docx>=1.1.0
 python-pptx>=0.6.23
 reportlab>=4.1.0
+docx2txt>=0.8
 
 # ── Configuration ────────────────────────────────────────────
 python-dotenv>=1.0.0
@@ -59,6 +61,13 @@ tiktoken>=0.7.0
 # ── Tests ────────────────────────────────────────────────────
 pytest>=8.0.0
 pytest-cov>=5.0.0
+coverage>=7.5.0
+
+# ── Développement (optionnel) ────────────────────────────────
+# ruff>=0.4.0
+# mypy>=1.10.0
+# types-requests>=2.31.0
+# types-PyYAML>=6.0.12
 
 
 # ── Optionnel : SQL distant ──────────────────────────────────
@@ -68,3 +77,6 @@ pytest-cov>=5.0.0
 
 # ── Optionnel : modèles locaux Ollama ────────────────────────
 # ollama>=0.2.0
+
+# ── Optionnel : audio ────────────────────────────────────────
+# pydub>=0.25.1
