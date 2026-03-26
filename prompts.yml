@@ -226,6 +226,7 @@ prompts:
       - data_file_tools
       - web_tools
       - datagouv_tools
+      - imap_tools
       - skill_tools
       - grist_tools
       disabled:

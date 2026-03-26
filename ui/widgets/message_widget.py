@@ -218,6 +218,12 @@ hr {{ border:none; border-top:1px solid {hr_color}; margin:10px 0; }}
 # les télécharger/décoder en Python, stocker dans self._dataimg_cache,
 # et remplacer par un bouton cliquable qui ouvre ImageViewerDialog (QPixmap).
 #
+# Cas supplémentaire : le LLM peut reproduire dans son texte de réponse une
+# data-URI base64 tronquée (quand la chaîne dépasse les limites de contexte).
+# Ces fragments sont invisibles dans la WebView (CSP) mais polluent le rendu
+# texte sous forme de longues chaînes illisibles.  _clean_orphan_data_uris()
+# les supprime proprement avant le pipeline Markdown.
+#
 _RE_DATA_IMAGE = re.compile(
     r'!\[([^\]]*)\]\((data:image/[^;]+;base64,[A-Za-z0-9+/=\s]+)\)',
     re.DOTALL,
@@ -226,6 +232,33 @@ _RE_URL_IMAGE = re.compile(
     r'!\[([^\]]*)\]\((https?://[^\s)]+)\)',
 )
 _DATAIMG_PLACEHOLDER = re.compile(r'<!--\s*DATAIMG_(\d+)\s*-->')
+
+# Regex pour détecter les data-URI orphelines (tronquées ou sans parenthèse
+# fermante) que _RE_DATA_IMAGE n'aurait pas capturées.
+# On tolère les espaces/sauts de ligne dans la base64 (le LLM peut en insérer).
+_RE_ORPHAN_DATA_URI = re.compile(
+    r'data:image/[^;]+;base64,[A-Za-z0-9+/=\s]{20,}',
+    re.DOTALL,
+)
+
+
+def _clean_orphan_data_uris(text: str) -> str:
+    """
+    Supprime du texte les fragments de data-URI base64 qui n'ont pas été
+    capturés par _protect_data_images() — typiquement des URI tronquées que
+    le LLM a reproduites dans sa réponse textuelle.
+
+    Ces fragments sont remplacés par une note discrète plutôt que supprimés
+    silencieusement, pour que l'utilisateur comprenne qu'une image était prévue
+    mais n'a pas pu être rendue (données corrompues/tronquées).
+
+    Doit être appelé APRÈS _protect_data_images() (qui traite les URI complètes)
+    et AVANT protect_latex / protect_mermaid.
+    """
+    def _replace_orphan(m: re.Match) -> str:
+        return "*(image non rendue — données tronquées)*"
+
+    return _RE_ORPHAN_DATA_URI.sub(_replace_orphan, text)
 
 
 def _fetch_url_as_data_uri(url: str) -> str | None:
@@ -283,18 +316,17 @@ def _protect_data_images(text: str) -> tuple[str, dict]:
 
 def _restore_data_images(html_text: str, cache: dict) -> str:
     """
-    Remplace chaque placeholder par un bouton HTML.
+    Remplace chaque placeholder par un aperçu inline ou un bouton de repli.
 
-    Le bouton appelle window._openDataImage(idx) via onclick.
-    La WebView intercepte cet appel via runJavaScript polling ou,
-    plus simplement, via une URL spéciale interceptée par le schéma
-    Qt.  Ici on utilise une URL fake « dataimg://N » que la page
-    charge via window.location — interceptée dans _on_load_finished
-    pour ouvrir ImageViewerDialog côté Python.
+    Pour les images data-URI déjà disponibles (base64), un <img> miniature
+    est affiché directement dans la bulle — QWebEngineView autorise les
+    data-URI dans setHtml() malgré LocalContentCanAccessRemoteUrls=False
+    (elles ne sont pas considérées comme du contenu "distant").
 
-    Implémentation choisie : bouton avec onclick="document.title='dataimg:N'"
-    Python intercepte titleChanged sur la QWebEngineView, lit l'index,
-    et ouvre ImageViewerDialog. Aucun scheme custom à enregistrer.
+    Pour les URLs distantes en cours de téléchargement, un bouton de repli
+    est affiché ; il est remplacé par la miniature via JS dans _on_image_fetched.
+
+    Dans les deux cas, un clic ouvre ImageViewerDialog (QPixmap natif).
     """
     if not cache:
         return html_text
@@ -308,26 +340,47 @@ def _restore_data_images(html_text: str, cache: dict) -> str:
         idx = int(m.group(1))
         if idx not in cache:
             return m.group(0)
-        alt, _ = cache[idx]
+        alt, uri = cache[idx]
         safe_alt = html.escape(alt or "Graphique")
         label = safe_alt if len(safe_alt) <= 40 else safe_alt[:37] + "…"
-        # Pour les URLs distantes, le bouton indique "chargement…" jusqu'à
-        # ce que _on_image_fetched mette à jour le span .img-status.
-        is_url = not (cache[idx][1].startswith("data:") if idx in cache else True)
-        status_text = "— chargement…" if is_url else "— cliquer pour afficher"
         onclick = f"document.title='dataimg:{idx}'"
-        return (
-            f'<div style="margin:12px 0;text-align:center;">'
-            f'<button onclick="{onclick}" data-imgidx="{idx}" '
-            f'style="display:inline-flex;align-items:center;gap:8px;'
-            f'padding:8px 18px;border-radius:8px;cursor:pointer;'
-            f'background:{bg};border:1px solid {border};'
-            f'color:{text_col};font-size:13px;font-family:inherit;">'
-            f'<span style="font-size:16px;">🖼</span>'
-            f'<span>{label}</span>'
-            f'<span class="img-status" style="color:{accent};font-size:11px;">{status_text}</span>'
-            f'</button></div>'
-        )
+
+        if uri.startswith("data:"):
+            # Image déjà disponible : miniature cliquable inline
+            return (
+                f'<div style="margin:12px 0;text-align:center;">'
+                f'<img src="{uri}" alt="{safe_alt}" '
+                f'onclick="{onclick}" '
+                f'style="max-width:100%;max-height:500px;border-radius:8px;'
+                f'cursor:zoom-in;border:1px solid {border};'
+                f'box-shadow:0 2px 8px rgba(0,0,0,0.15);" '
+                f'title="Cliquer pour agrandir" />'
+                f'<div style="margin-top:4px;font-size:11px;color:{accent};'
+                f'cursor:pointer;" onclick="{onclick}">'
+                f'🔍 {label} — cliquer pour agrandir'
+                f'</div>'
+                f'</div>'
+            )
+        else:
+            # URL distante pas encore téléchargée : bouton de repli
+            # _on_image_fetched() mettra à jour le src dès que la data-URI sera disponible
+            return (
+                f'<div style="margin:12px 0;text-align:center;">'
+                f'<img data-imgidx="{idx}" src="" alt="{safe_alt}" '
+                f'style="display:none;max-width:100%;max-height:500px;'
+                f'border-radius:8px;cursor:zoom-in;border:1px solid {border};" '
+                f'onclick="{onclick}" title="Cliquer pour agrandir" />'
+                f'<button onclick="{onclick}" data-imgidx="{idx}" '
+                f'style="display:inline-flex;align-items:center;gap:8px;'
+                f'padding:8px 18px;border-radius:8px;cursor:pointer;'
+                f'background:{bg};border:1px solid {border};'
+                f'color:{text_col};font-size:13px;font-family:inherit;">'
+                f'<span style="font-size:16px;">🖼</span>'
+                f'<span>{label}</span>'
+                f'<span class="img-status" style="color:{accent};font-size:11px;">'
+                f'— chargement…</span>'
+                f'</button></div>'
+            )
 
     return _DATAIMG_PLACEHOLDER.sub(replace, html_text)
 
@@ -355,6 +408,7 @@ class ImageViewerDialog:
         from PyQt6.QtWidgets import (
             QDialog, QVBoxLayout, QHBoxLayout, QLabel,
             QPushButton, QScrollArea, QSizePolicy, QFileDialog,
+            QMessageBox,
         )
         from PyQt6.QtGui import QPixmap
         from PyQt6.QtCore import Qt, QByteArray
@@ -362,14 +416,32 @@ class ImageViewerDialog:
         # ── Décodage ─────────────────────────────────────────────────
         try:
             header, b64data = data_uri.split(',', 1)
+            # Supprimer les espaces/sauts de ligne éventuels dans la base64
+            b64data = re.sub(r'\s+', '', b64data)
             raw = base64.b64decode(b64data)
         except Exception as e:
             _log.warning("ImageViewerDialog: décodage échoué : %s", e)
+            QMessageBox.warning(
+                parent,
+                "Erreur d'affichage",
+                f"Impossible de décoder l'image « {alt or 'Graphique'} ».\n\n"
+                f"Détail : {e}\n\n"
+                "L'image est peut-être corrompue ou tronquée.",
+            )
             return
 
         pixmap = QPixmap()
         if not pixmap.loadFromData(QByteArray(raw)):
-            _log.warning("ImageViewerDialog: QPixmap.loadFromData a échoué")
+            _log.warning("ImageViewerDialog: QPixmap.loadFromData a échoué (%d octets)", len(raw))
+            QMessageBox.warning(
+                parent,
+                "Erreur d'affichage",
+                f"Impossible d'afficher l'image « {alt or 'Graphique'} ».\n\n"
+                f"Les données reçues ({len(raw):,} octets) ne correspondent pas "
+                "à un format image reconnu (PNG, JPEG, GIF, WebP).\n\n"
+                "Conseil : si l'image provient d'un graphique matplotlib, "
+                "vérifiez que le code n'a pas été interrompu avant la fin du tracé.",
+            )
             return
 
         # ── Dialog ───────────────────────────────────────────────────
@@ -482,6 +554,13 @@ def _md_to_html(text: str) -> tuple[str, dict]:
     #    du pipeline LaTeX/Markdown (les data-URI sont très longues et peuvent
     #    déclencher des faux positifs dans les regex de protect_latex).
     text, dataimg_cache = _protect_data_images(text)
+
+    # 0b. Nettoyer les data-URI orphelines (tronquées) que _protect_data_images
+    #     n'a pas capturées — typiquement quand le LLM reproduit une data-URI
+    #     dans son texte de réponse et que la chaîne base64 est tronquée par les
+    #     limites de contexte. Sans cette étape, la chaîne illisible s'affiche
+    #     en clair dans la bulle de message.
+    text = _clean_orphan_data_uris(text)
 
     # 1. Extraire les blocs Mermaid AVANT tout (protect_mermaid doit passer
     #    avant protect_latex et avant Markdown pour éviter toute altération)
@@ -1172,22 +1251,41 @@ class MessageWidget(QWidget):
     def _on_image_fetched(self, idx: int, data_uri: str) -> None:
         """
         Appelé dans le thread principal quand un téléchargement se termine.
-        Met à jour le cache avec la vraie data-URI et actualise le bouton
-        dans la WebView pour indiquer que l'image est prête.
+        Met à jour le cache avec la vraie data-URI, révèle l'<img> inline
+        et masque le bouton de repli dans la WebView.
         """
         if not data_uri:
             _log.warning("_on_image_fetched: échec téléchargement idx=%d", idx)
+            try:
+                js = (
+                    f"var b=document.querySelector('button[data-imgidx=\"{idx}\"]');"
+                    f"if(b){{b.querySelector('.img-status').textContent='— échec du chargement';}}"
+                )
+                self._view.page().runJavaScript(js)
+            except (RuntimeError, AttributeError):
+                pass
             return
+
         if idx in self._dataimg_cache:
             alt, _ = self._dataimg_cache[idx]
             self._dataimg_cache[idx] = (alt, data_uri)
-        # Mettre à jour le texte du bouton via JS pour signaler que l'image est prête
+
+        # Révéler l'<img> inline avec la data-URI et masquer le bouton de repli
         try:
+            escaped_uri = data_uri.replace("'", "\\'")
             js = (
-                f"var b=document.querySelector('[data-imgidx=\"{idx}\"]');"
-                f"if(b){{b.querySelector('.img-status').textContent='— prête';}}"
+                f"(function(){{"
+                f"  var imgs=document.querySelectorAll('img[data-imgidx=\"{idx}\"]');"
+                f"  imgs.forEach(function(img){{"
+                f"    img.src='{escaped_uri}';"
+                f"    img.style.display='';"
+                f"  }});"
+                f"  var btns=document.querySelectorAll('button[data-imgidx=\"{idx}\"]');"
+                f"  btns.forEach(function(b){{b.style.display='none';}});"
+                f"}})();"
             )
             self._view.page().runJavaScript(js)
+            QTimer.singleShot(100, self._query_height)
         except (RuntimeError, AttributeError):
             pass
 

@@ -6,8 +6,9 @@ description: >
   Étape 2 : si gabarit trouvé → list_docx_template_styles pour obtenir les styles et signets exacts.
   Étape 3 : export_docx_template (avec gabarit) ou export_docx / export_pdf (sans gabarit).
   Choisir export_pdf uniquement pour les documents destinés à la diffusion externe non modifiable.
-tags: [word, docx, pdf, export, gabarit, template, document, rapport, note, courrier]
-version: 1.0
+  Choisir export_pdf_from_tex UNIQUEMENT si un fichier .tex existe déjà sur disque.
+tags: [word, docx, pdf, export, gabarit, template, document, rapport, note, courrier, latex, tex]
+version: 1.1
 ---
 
 # Guide export Word et PDF
@@ -130,7 +131,12 @@ version: 1.0
 
 Même structure que `export_docx`. À préférer uniquement quand le document est destiné à être diffusé en lecture seule (publication, envoi externe, archivage).
 
-**Moteur de rendu : WeasyPrint (HTML/CSS → PDF).** Supporte nativement les formules LaTeX.
+**Moteur de rendu : WeasyPrint (HTML/CSS → PDF).** Repli automatique sur reportlab si WeasyPrint est absent.
+
+> ⚠ **`export_pdf` génère un PDF depuis du contenu JSON. Il ne compile PAS un fichier `.tex`.**
+> Ne jamais appeler `pdflatex`, `xelatex` ou tout autre compilateur LaTeX externe : le rendu
+> des formules est géré en interne par l'outil (pipeline `latex + dvipng`). Si un fichier `.tex`
+> existe déjà sur disque, utiliser `export_pdf_from_tex` (voir section E ci-dessous).
 
 ```json
 {
@@ -178,6 +184,44 @@ Si `weasyprint` est absent, l'outil bascule automatiquement sur `reportlab` (san
 
 ---
 
+## Outil D : `export_pdf_from_tex` — compilation d'un fichier .tex existant
+
+**À utiliser UNIQUEMENT** quand un fichier source LaTeX (`.tex`) a **déjà été écrit sur le disque** (par exemple après un appel à `write_file` ou `export_md`).
+
+> ⚠ **Ne jamais utiliser `export_pdf_from_tex` pour créer un document depuis du contenu JSON.**
+> Dans ce cas, utiliser `export_pdf`.
+
+```json
+{
+  "input_path": "~/Documents/demonstration_financiere.tex",
+  "output_path": "~/Documents/demonstration_financiere.pdf"
+}
+```
+
+- Effectue **deux passes** `pdflatex` pour résoudre les références croisées, la table des matières, les `\cite`, etc.
+- Retourne un message d'erreur avec le log de compilation si `pdflatex` échoue.
+- Retourne une erreur explicite si `pdflatex` n'est pas installé (avec la commande d'installation).
+
+### Prérequis système
+
+```
+apt install texlive-latex-base texlive-latex-extra
+```
+
+### Arbre de décision PDF
+
+```
+L'utilisateur veut un PDF
+│
+├── Il fournit du CONTENU (texte, sections, formules) à mettre en forme
+│     → export_pdf  (génère depuis JSON, rendu LaTeX interne, pas de pdflatex)
+│
+└── Un fichier .tex existe déjà sur le disque
+      → export_pdf_from_tex  (compile le .tex via pdflatex)
+```
+
+---
+
 ## Exigences de contenu pour les documents professionnels
 
 - **Rédiger un contenu COMPLET et DÉVELOPPÉ**, proportionnel au sujet traité.
@@ -206,4 +250,7 @@ Toujours communiquer le chemin exact du fichier généré à l'utilisateur.
 | Document trop court / squelette de puces | Développer chaque section avec plusieurs paragraphes rédigés |
 | Utiliser `export_pdf` pour un document à éditer | Préférer `export_docx` si l'utilisateur doit modifier le document |
 | Antislash simple dans LaTeX JSON | Doubler les antislashes dans les strings JSON : `\\frac`, `\\int`, `\\hbar` |
-| Formule LaTeX dans export_docx | LaTeX n'est rendu que dans `export_pdf` (moteur WeasyPrint + matplotlib) |
+| Formule LaTeX dans export_docx | LaTeX n'est rendu que dans `export_pdf` (moteur WeasyPrint + latex+dvipng) |
+| Appeler `pdflatex` / `xelatex` manuellement pour `export_pdf` | `export_pdf` gère le rendu LaTeX en interne — aucun compilateur externe n'est nécessaire |
+| Utiliser `export_pdf` pour compiler un `.tex` existant | Utiliser `export_pdf_from_tex` si le fichier `.tex` est déjà sur disque |
+| Utiliser `export_pdf_from_tex` pour du contenu JSON | Utiliser `export_pdf` pour générer un PDF depuis du contenu structuré |

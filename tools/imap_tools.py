@@ -23,8 +23,13 @@ Outils exposés (8) :
     - imap_read_mail      : lit un mail complet (headers + corps + pièces jointes)
 
   Écriture (2) :
-    - imap_send_mail      : envoie un mail via SMTP
-    - imap_reply_mail     : répond à un mail existant (In-Reply-To, References)
+    - imap_send_mail      : envoie un mail via SMTP (HTML, PJ chemin disque ou base64)
+    - imap_reply_mail     : répond à un mail existant (In-Reply-To, References, HTML, PJ)
+
+  Gestion (3) :
+    - imap_mark_mail      : marque lu / non-lu / important / supprimé
+    - imap_move_mail      : déplace un mail vers un autre dossier
+    - imap_list_folders   : liste les dossiers IMAP disponibles
 
   Gestion (3) :
     - imap_mark_mail      : marque lu / non-lu / important / supprimé
@@ -977,7 +982,8 @@ def imap_move_mail(
     name="imap_send_mail",
     description=(
         "Envoie un mail via SMTP. "
-        "Supporte le texte brut et/ou HTML, et les pièces jointes en base64. "
+        "Supporte le texte brut et/ou HTML, et les pièces jointes (chemins fichiers sur disque "
+        "ou données base64 nommées). "
         "L'expéditeur est défini par IMAP_FROM (ou IMAP_USER) dans le .env."
     ),
     parameters={
@@ -994,7 +1000,7 @@ def imap_move_mail(
             },
             "corps": {
                 "type": "string",
-                "description": "Corps du mail en texte brut.",
+                "description": "Corps du mail en texte brut (repli obligatoire).",
             },
             "corps_html": {
                 "type": "string",
@@ -1009,6 +1015,38 @@ def imap_move_mail(
                 "type": "array",
                 "items": {"type": "string"},
                 "description": "Destinataires en copie cachée (optionnel).",
+            },
+            "pieces_jointes": {
+                "type": "array",
+                "description": (
+                    "Pièces jointes à attacher au mail (optionnel). "
+                    "Chaque élément est un objet avec SOIT 'chemin' (chemin absolu du fichier sur disque), "
+                    "SOIT 'data_base64' + 'nom_fichier' + 'type_mime' (données en base64). "
+                    "Exemples : "
+                    "{\"chemin\": \"/home/pierre/Exports/rapport.pdf\"} "
+                    "ou {\"data_base64\": \"...\", \"nom_fichier\": \"rapport.pdf\", \"type_mime\": \"application/pdf\"}."
+                ),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "chemin": {
+                            "type": "string",
+                            "description": "Chemin absolu du fichier sur le disque.",
+                        },
+                        "data_base64": {
+                            "type": "string",
+                            "description": "Contenu du fichier encodé en base64.",
+                        },
+                        "nom_fichier": {
+                            "type": "string",
+                            "description": "Nom du fichier tel qu'il apparaîtra dans le mail.",
+                        },
+                        "type_mime": {
+                            "type": "string",
+                            "description": "Type MIME (ex: application/pdf, image/png). Défaut : application/octet-stream.",
+                        },
+                    },
+                },
             },
             "profil": {
                 "type": "string",
@@ -1025,6 +1063,7 @@ def imap_send_mail(
     corps_html: Optional[str] = None,
     cc: Optional[list] = None,
     cci: Optional[list] = None,
+    pieces_jointes: Optional[list] = None,
     profil: Optional[str] = None,
 ) -> dict:
     cfg = _get_profile_config(profil)
@@ -1034,15 +1073,31 @@ def imap_send_mail(
 
     try:
         # Construction du message
-        if corps_html:
+        # Si PJ présentes → MIMEMultipart("mixed") obligatoire
+        # Si HTML + PJ     → mixed > alternative (plain + html) + PJ
+        # Si HTML seulement → alternative (plain + html)
+        # Si texte seul    → MIMEText simple
+        has_attachments = bool(pieces_jointes)
+
+        if has_attachments:
+            outer = MIMEMultipart("mixed")
+            if corps_html:
+                alt = MIMEMultipart("alternative")
+                alt.attach(MIMEText(corps, "plain", "utf-8"))
+                alt.attach(MIMEText(corps_html, "html", "utf-8"))
+                outer.attach(alt)
+            else:
+                outer.attach(MIMEText(corps, "plain", "utf-8"))
+            msg = outer
+        elif corps_html:
             msg = MIMEMultipart("alternative")
             msg.attach(MIMEText(corps, "plain", "utf-8"))
             msg.attach(MIMEText(corps_html, "html", "utf-8"))
         else:
             msg = MIMEText(corps, "plain", "utf-8")
 
-        from_addr = cfg["from_address"]
-        display   = cfg["display_name"]
+        from_addr   = cfg["from_address"]
+        display     = cfg["display_name"]
         from_header = f"{display} <{from_addr}>" if display else from_addr
 
         msg["From"]    = from_header
@@ -1050,6 +1105,56 @@ def imap_send_mail(
         msg["Subject"] = objet
         if cc:
             msg["Cc"] = ", ".join(cc)
+
+        # Ajout des pièces jointes
+        pj_errors = []
+        pj_added  = []
+        if pieces_jointes:
+            for pj in pieces_jointes:
+                try:
+                    chemin      = pj.get("chemin")
+                    data_b64    = pj.get("data_base64")
+                    nom_fichier = pj.get("nom_fichier")
+                    type_mime   = pj.get("type_mime", "application/octet-stream")
+
+                    if chemin:
+                        # Chargement depuis le disque
+                        chemin = os.path.expanduser(chemin)
+                        if not os.path.isfile(chemin):
+                            pj_errors.append(f"Fichier introuvable : {chemin}")
+                            continue
+                        with open(chemin, "rb") as f:
+                            data = f.read()
+                        nom_fichier = nom_fichier or os.path.basename(chemin)
+                        # Détection du type MIME depuis l'extension si non fourni
+                        if type_mime == "application/octet-stream":
+                            import mimetypes
+                            guessed, _ = mimetypes.guess_type(chemin)
+                            if guessed:
+                                type_mime = guessed
+                    elif data_b64 and nom_fichier:
+                        data = base64.b64decode(data_b64)
+                    else:
+                        pj_errors.append(
+                            "Pièce jointe ignorée : fournir 'chemin' ou 'data_base64' + 'nom_fichier'."
+                        )
+                        continue
+
+                    # Construction de la partie MIME
+                    maintype, subtype = type_mime.split("/", 1) if "/" in type_mime else ("application", "octet-stream")
+                    part = MIMEBase(maintype, subtype)
+                    part.set_payload(data)
+                    encoders.encode_base64(part)
+                    part.add_header(
+                        "Content-Disposition",
+                        "attachment",
+                        filename=nom_fichier,
+                    )
+                    msg.attach(part)
+                    pj_added.append(nom_fichier)
+
+                except Exception as e:
+                    pj_errors.append(f"Erreur PJ '{pj.get('nom_fichier') or pj.get('chemin', '?')}' : {e}")
 
         all_recipients = destinataires + (cc or []) + (cci or [])
 
@@ -1074,14 +1179,19 @@ def imap_send_mail(
         server.sendmail(from_addr, all_recipients, msg.as_bytes())
         server.quit()
 
-        return {
+        result = {
             "status":        "success",
             "from":          from_header,
             "destinataires": destinataires,
             "cc":            cc or [],
             "objet":         objet,
-            "message":       f"Mail envoyé à {', '.join(destinataires)}.",
+            "pieces_jointes": pj_added,
+            "message":       f"Mail envoyé à {', '.join(destinataires)}."
+                             + (f" PJ : {', '.join(pj_added)}." if pj_added else ""),
         }
+        if pj_errors:
+            result["avertissements_pj"] = pj_errors
+        return result
 
     except smtplib.SMTPAuthenticationError:
         return {"status": "error", "error": "Authentification SMTP échouée. Vérifiez SMTP_USER / SMTP_PASSWORD."}
@@ -1094,6 +1204,7 @@ def imap_send_mail(
     description=(
         "Répond à un mail existant en conservant le fil de conversation "
         "(In-Reply-To et References correctement remplis). "
+        "Supporte le HTML et les pièces jointes. "
         "Utiliser imap_read_mail pour obtenir le message_id avant de répondre."
     ),
     parameters={
@@ -1105,7 +1216,15 @@ def imap_send_mail(
             },
             "corps": {
                 "type": "string",
-                "description": "Corps de la réponse (texte brut).",
+                "description": "Corps de la réponse (texte brut, repli obligatoire).",
+            },
+            "corps_html": {
+                "type": "string",
+                "description": (
+                    "Corps de la réponse en HTML (optionnel). "
+                    "Si fourni, le mail est envoyé en HTML avec texte brut de repli. "
+                    "Inclure la citation du message original et la signature Prométhée."
+                ),
             },
             "dossier": {
                 "type": "string",
@@ -1114,6 +1233,22 @@ def imap_send_mail(
             "repondre_a_tous": {
                 "type": "boolean",
                 "description": "Si true, répond à tous les destinataires (Reply-All). Défaut : false.",
+            },
+            "pieces_jointes": {
+                "type": "array",
+                "description": (
+                    "Pièces jointes à attacher à la réponse (optionnel). "
+                    "Même format que imap_send_mail : 'chemin' ou 'data_base64' + 'nom_fichier' + 'type_mime'."
+                ),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "chemin":      {"type": "string"},
+                        "data_base64": {"type": "string"},
+                        "nom_fichier": {"type": "string"},
+                        "type_mime":   {"type": "string"},
+                    },
+                },
             },
             "profil": {
                 "type": "string",
@@ -1126,8 +1261,10 @@ def imap_send_mail(
 def imap_reply_mail(
     uid: str,
     corps: str,
+    corps_html: Optional[str] = None,
     dossier: str = "INBOX",
     repondre_a_tous: bool = False,
+    pieces_jointes: Optional[list] = None,
     profil: Optional[str] = None,
 ) -> dict:
     cfg = _get_profile_config(profil)
@@ -1181,28 +1318,88 @@ def imap_reply_mail(
     orig_references = original.get("References", "").strip()
     new_references  = f"{orig_references} {orig_message_id}".strip() if orig_references else orig_message_id
 
-    # Citer le message original
-    orig_plain, _ = _extract_body(original)
+    # Citer le message original (texte brut)
+    orig_plain, orig_html_body = _extract_body(original)
     orig_date = original.get("Date", "")
-    citation = f"\n\n--- Le {orig_date}, {_decode_header(orig_from)} a écrit :\n"
-    citation += "\n".join(f"> {line}" for line in orig_plain.splitlines()[:30])
-
-    full_body = corps + citation
+    citation_plain = f"\n\n--- Le {orig_date}, {_decode_header(orig_from)} a écrit :\n"
+    citation_plain += "\n".join(f"> {line}" for line in orig_plain.splitlines()[:30])
+    full_body_plain = corps + citation_plain
 
     try:
-        msg = MIMEText(full_body, "plain", "utf-8")
-
         from_addr   = cfg["from_address"]
         display     = cfg["display_name"]
         from_header = f"{display} <{from_addr}>" if display else from_addr
 
-        msg["From"]       = from_header
-        msg["To"]         = ", ".join(destinataires)
-        msg["Subject"]    = reply_subject
-        msg["In-Reply-To"]= orig_message_id
-        msg["References"] = new_references
+        has_attachments = bool(pieces_jointes)
+
+        # Construction MIME (même logique que imap_send_mail)
+        if has_attachments:
+            outer = MIMEMultipart("mixed")
+            if corps_html:
+                alt = MIMEMultipart("alternative")
+                alt.attach(MIMEText(full_body_plain, "plain", "utf-8"))
+                alt.attach(MIMEText(corps_html, "html", "utf-8"))
+                outer.attach(alt)
+            else:
+                outer.attach(MIMEText(full_body_plain, "plain", "utf-8"))
+            msg = outer
+        elif corps_html:
+            msg = MIMEMultipart("alternative")
+            msg.attach(MIMEText(full_body_plain, "plain", "utf-8"))
+            msg.attach(MIMEText(corps_html, "html", "utf-8"))
+        else:
+            msg = MIMEText(full_body_plain, "plain", "utf-8")
+
+        msg["From"]        = from_header
+        msg["To"]          = ", ".join(destinataires)
+        msg["Subject"]     = reply_subject
+        msg["In-Reply-To"] = orig_message_id
+        msg["References"]  = new_references
         if cc_list:
             msg["Cc"] = ", ".join(cc_list)
+
+        # Ajout des pièces jointes (réutilise la même logique)
+        pj_errors = []
+        pj_added  = []
+        if pieces_jointes:
+            for pj in pieces_jointes:
+                try:
+                    chemin      = pj.get("chemin")
+                    data_b64    = pj.get("data_base64")
+                    nom_fichier = pj.get("nom_fichier")
+                    type_mime   = pj.get("type_mime", "application/octet-stream")
+
+                    if chemin:
+                        chemin = os.path.expanduser(chemin)
+                        if not os.path.isfile(chemin):
+                            pj_errors.append(f"Fichier introuvable : {chemin}")
+                            continue
+                        with open(chemin, "rb") as f:
+                            data = f.read()
+                        nom_fichier = nom_fichier or os.path.basename(chemin)
+                        if type_mime == "application/octet-stream":
+                            import mimetypes
+                            guessed, _ = mimetypes.guess_type(chemin)
+                            if guessed:
+                                type_mime = guessed
+                    elif data_b64 and nom_fichier:
+                        data = base64.b64decode(data_b64)
+                    else:
+                        pj_errors.append(
+                            "Pièce jointe ignorée : fournir 'chemin' ou 'data_base64' + 'nom_fichier'."
+                        )
+                        continue
+
+                    maintype, subtype = type_mime.split("/", 1) if "/" in type_mime else ("application", "octet-stream")
+                    part = MIMEBase(maintype, subtype)
+                    part.set_payload(data)
+                    encoders.encode_base64(part)
+                    part.add_header("Content-Disposition", "attachment", filename=nom_fichier)
+                    msg.attach(part)
+                    pj_added.append(nom_fichier)
+
+                except Exception as e:
+                    pj_errors.append(f"Erreur PJ '{pj.get('nom_fichier') or pj.get('chemin', '?')}' : {e}")
 
         all_recipients = destinataires + cc_list
 
@@ -1225,14 +1422,19 @@ def imap_reply_mail(
         server.sendmail(from_addr, all_recipients, msg.as_bytes())
         server.quit()
 
-        return {
-            "status":         "success",
-            "uid_original":   uid,
-            "destinataires":  destinataires,
-            "objet":          reply_subject,
+        result = {
+            "status":          "success",
+            "uid_original":    uid,
+            "destinataires":   destinataires,
+            "objet":           reply_subject,
             "repondre_a_tous": repondre_a_tous,
-            "message":        f"Réponse envoyée à {', '.join(destinataires)}.",
+            "pieces_jointes":  pj_added,
+            "message":         f"Réponse envoyée à {', '.join(destinataires)}."
+                               + (f" PJ : {', '.join(pj_added)}." if pj_added else ""),
         }
+        if pj_errors:
+            result["avertissements_pj"] = pj_errors
+        return result
 
     except smtplib.SMTPAuthenticationError:
         return {"status": "error", "error": "Authentification SMTP échouée."}

@@ -502,6 +502,12 @@ def agent_loop(
                                 ).decode("ascii")
                                 parsed.pop("image_path")
                                 parsed["image_generated"] = True
+                                parsed["image_display_note"] = (
+                                    "L'image a été transmise automatiquement à l'interface "
+                                    "et s'affiche dans la bulle de réponse. "
+                                    "NE PAS reproduire la data-URI base64 dans le texte — "
+                                    "elle est déjà affichée et serait corrompue si réécrite."
+                                )
                                 result = json.dumps(parsed, ensure_ascii=False, indent=2)
                     except (json.JSONDecodeError, OSError, TypeError):
                         pass

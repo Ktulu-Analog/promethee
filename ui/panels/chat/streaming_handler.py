@@ -166,14 +166,18 @@ class StreamingHandler(QObject):
 
         Affiche l'image directement dans le chat sous forme de bulle assistant
         indépendante, avant la réponse textuelle finale.
+
+        On utilise la syntaxe Markdown  ![alt](data:...)  plutôt qu'une balise
+        HTML <img> brute : _protect_data_images() dans message_widget.py intercepte
+        cette forme et la remplace par un bouton cliquable qui ouvre
+        ImageViewerDialog via QPixmap natif.  La balise <img> avec data-URI est
+        bloquée par la politique CSP file:// de QWebEngineView.setHtml() et ne
+        s'affiche donc jamais dans la WebView.
         """
         data_uri = f"data:{mime_type};base64,{base64_data}"
-        img_html = (
-            f'<img src="{data_uri}" '
-            f'style="max-width:100%;border-radius:6px;margin-top:6px;" '
-            f'alt="Graphique généré">'
-        )
-        img_widget = MessageWidget("assistant", img_html)
+        # Syntaxe Markdown — interceptée par _protect_data_images()
+        img_md = f"![Graphique généré]({data_uri})"
+        img_widget = MessageWidget("assistant", img_md)
         self._insert_widget(img_widget)
         self.scroll_requested.emit()
 

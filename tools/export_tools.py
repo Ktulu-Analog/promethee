@@ -15,36 +15,41 @@
 tools/export_tools.py — Génération et export de fichiers bureautiques
 ======================================================================
 
-Outils exposés (9) :
+Outils exposés (10) :
 
   Markdown (1) :
-    - export_md         : écrit un fichier Markdown à partir de contenu texte
+    - export_md            : écrit un fichier Markdown à partir de contenu texte
 
   Word / docx (1) :
-    - export_docx       : génère un document Word structuré (titres, paragraphes,
-                          tableaux, listes) depuis une description JSON
+    - export_docx          : génère un document Word structuré (titres, paragraphes,
+                             tableaux, listes) depuis une description JSON
 
   Tableur / xlsx (2) :
-    - export_xlsx_json  : génère un classeur Excel depuis une structure JSON
-                          (feuilles, en-têtes, lignes, graphiques)
-    - export_xlsx_csv   : génère un classeur Excel depuis du CSV brut (une feuille)
+    - export_xlsx_json     : génère un classeur Excel depuis une structure JSON
+                             (feuilles, en-têtes, lignes, graphiques)
+    - export_xlsx_csv      : génère un classeur Excel depuis du CSV brut (une feuille)
 
   Présentation / pptx (2) :
-    - export_pptx_json  : génère une présentation PowerPoint depuis une structure
-                          JSON (titre, slides, puces, notes)
-    - export_pptx_outline: génère une présentation depuis un outline texte
-                          (ligne "# Titre", "- Puce", "> Note")
+    - export_pptx_json     : génère une présentation PowerPoint depuis une structure
+                             JSON (titre, slides, puces, notes)
+    - export_pptx_outline  : génère une présentation depuis un outline texte
+                             (ligne "# Titre", "- Puce", "> Note")
 
-  PDF (1) :
-    - export_pdf        : génère un PDF structuré (titres, paragraphes, tableaux)
-                          depuis une description JSON, via reportlab
+  PDF (2) :
+    - export_pdf           : génère un PDF structuré (titres, paragraphes, tableaux,
+                             formules LaTeX) depuis une description JSON,
+                             via WeasyPrint (repli : reportlab).
+                             NE compile PAS de fichier .tex existant.
+    - export_pdf_from_tex  : compile un fichier .tex existant sur disque en PDF
+                             via pdflatex. À utiliser UNIQUEMENT quand un fichier
+                             source LaTeX (.tex) a déjà été écrit sur le disque.
 
   LibreOffice natif (2) :
-    - export_libreoffice: convertit un fichier existant vers odt/ods/odp
-                          en invoquant LibreOffice headless
+    - export_libreoffice   : convertit un fichier existant vers odt/ods/odp
+                             en invoquant LibreOffice headless
     - export_libreoffice_native : génère directement un odt/ods/odp depuis
-                          une description JSON (via python-docx/openpyxl/python-pptx
-                          + conversion LibreOffice)
+                             une description JSON (via python-docx/openpyxl/python-pptx
+                             + conversion LibreOffice)
 
 Conventions communes
 ────────────────────
@@ -86,8 +91,10 @@ Structure JSON commune pour export_docx, export_pdf, export_pptx_json
   Chaque section doit contenir un contenu rédigé, dense et proportionnel au sujet.
 
 Prérequis :
-    pip install python-docx openpyxl python-pptx reportlab
+    pip install python-docx openpyxl python-pptx reportlab weasyprint
     LibreOffice installé système (apt install libreoffice)
+    LaTeX + dvipng pour le rendu de formules (apt install texlive-latex-base texlive-latex-extra dvipng)
+    pdflatex pour export_pdf_from_tex (inclus dans texlive-latex-base)
 """
 
 import io
@@ -1828,10 +1835,15 @@ def _doc_to_html(document: dict) -> str:
         "Génère un document PDF structuré depuis une description JSON. "
         "Supporte les titres hiérarchiques (niveaux 1 à 3), les paragraphes, "
         "les listes à puces, les tableaux et les formules mathématiques LaTeX. "
-        "Les formules LaTeX inline ($...$) et display ($$...$$) sont rendu "
-        "automatiquement en images vectorielles via matplotlib. "
+        "Les formules LaTeX inline ($...$) et display ($$...$$) sont compilées "
+        "automatiquement en images PNG via latex+dvipng — aucun appel externe "
+        "à pdflatex, xelatex ou tout autre compilateur LaTeX n'est nécessaire ni "
+        "attendu : l'outil gère intégralement le rendu en interne. "
+        "NE PAS utiliser cet outil pour compiler un fichier .tex existant sur disque : "
+        "utiliser export_pdf_from_tex à la place. "
         "Le moteur de rendu est WeasyPrint (HTML/CSS → PDF) : mise en page "
         "professionnelle avec numérotation des pages et pied de page automatiques. "
+        "Repli automatique sur reportlab si WeasyPrint est absent (sans rendu LaTeX). "
         "À utiliser pour produire des rapports, fiches, documents formels, "
         "documents scientifiques ou techniques contenant des formules mathématiques. "
         "Même format JSON que export_docx : utiliser 'paragraphs' (liste) pour plusieurs "
@@ -2108,6 +2120,108 @@ def export_pdf(document: dict, output_path: str = "", filename: str = "") -> str
 
     except Exception as e:
         return _err(f"export_pdf (reportlab fallback) : {e}")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PDF — COMPILATION DEPUIS UN FICHIER .TEX EXISTANT
+# ═════════════════════════════════════════════════════════════════════════════
+
+@tool(
+    name="export_pdf_from_tex",
+    description=(
+        "Compile un fichier source LaTeX (.tex) existant sur disque en PDF, "
+        "via pdflatex (deux passes pour résoudre les références croisées). "
+        "À utiliser UNIQUEMENT quand un fichier .tex a déjà été écrit sur le disque "
+        "(par exemple après un appel à write_file ou export_md avec extension .tex). "
+        "NE PAS utiliser pour créer un nouveau document depuis du contenu JSON : "
+        "utiliser export_pdf à la place. "
+        "Retourne le chemin du PDF généré ou un message d'erreur explicite si "
+        "pdflatex est absent ou si la compilation échoue (log inclus)."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "input_path": {
+                "type": "string",
+                "description": (
+                    "Chemin absolu ou relatif au home du fichier .tex à compiler. "
+                    "Exemple : ~/Documents/rapport.tex"
+                )
+            },
+            "output_path": {
+                "type": "string",
+                "description": (
+                    "Chemin de destination du PDF généré. "
+                    "Si omis, le PDF est placé dans ~/Exports/Prométhée/ "
+                    "avec le même nom de base que le fichier .tex."
+                )
+            }
+        },
+        "required": ["input_path"]
+    }
+)
+def export_pdf_from_tex(input_path: str, output_path: str = "") -> str:
+    """
+    Compile un fichier .tex existant en PDF via pdflatex (2 passes).
+    Contrairement à export_pdf (qui génère du contenu depuis JSON),
+    cet outil prend en entrée un fichier source LaTeX déjà présent sur disque.
+    """
+    try:
+        src = Path(input_path).expanduser().resolve()
+        if not src.exists():
+            return _err(f"export_pdf_from_tex : fichier source introuvable : {src}")
+        if src.suffix.lower() != ".tex":
+            return _err(
+                f"export_pdf_from_tex : le fichier doit avoir l'extension .tex "
+                f"(reçu : '{src.suffix}'). Pour générer un PDF depuis du contenu JSON, "
+                f"utiliser export_pdf."
+            )
+
+        if not shutil.which("pdflatex"):
+            return _err(
+                "export_pdf_from_tex : pdflatex introuvable sur le système. "
+                "Installer texlive-latex-base : apt install texlive-latex-base"
+            )
+
+        name = src.stem + ".pdf"
+        dest = _resolve_output(output_path, name)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+
+            # Deux passes pdflatex pour résoudre \ref, \cite, table des matières, etc.
+            for _ in range(2):
+                result = subprocess.run(
+                    [
+                        "pdflatex",
+                        "-interaction=nonstopmode",
+                        "-halt-on-error",
+                        "-output-directory", str(tmp),
+                        str(src),
+                    ],
+                    capture_output=True,
+                    timeout=120,
+                )
+
+            out_pdf = tmp / (src.stem + ".pdf")
+            if not out_pdf.exists():
+                log_snippet = result.stderr.decode(errors="replace")[-1000:]
+                stdout_snippet = result.stdout.decode(errors="replace")[-500:]
+                return _err(
+                    f"export_pdf_from_tex : compilation échouée "
+                    f"(code retour {result.returncode}).\n"
+                    f"--- stderr ---\n{log_snippet}\n"
+                    f"--- stdout (fin) ---\n{stdout_snippet}"
+                )
+
+            shutil.copy2(str(out_pdf), str(dest))
+
+        return _ok(dest, {"engine": "pdflatex", "source": str(src)})
+
+    except subprocess.TimeoutExpired:
+        return _err("export_pdf_from_tex : délai de compilation dépassé (> 120 s).")
+    except Exception as e:
+        return _err(f"export_pdf_from_tex : {e}")
 
 
 # ═════════════════════════════════════════════════════════════════════════════

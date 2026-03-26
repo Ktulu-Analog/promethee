@@ -213,6 +213,10 @@ Envoie un nouveau message. L'expéditeur est défini par `IMAP_FROM` (ou `IMAP_U
   "corps_html": "<html><body>...</body></html>",
   "cc": ["copie@exemple.fr"],
   "cci": ["archivage@exemple.fr"],
+  "pieces_jointes": [
+    {"chemin": "/home/pierre/Exports/rapport.pdf"},
+    {"data_base64": "...", "nom_fichier": "annexe.xlsx", "type_mime": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}
+  ],
   "profil": null
 }
 ```
@@ -225,35 +229,60 @@ Envoie un nouveau message. L'expéditeur est défini par `IMAP_FROM` (ou `IMAP_U
 | `corps_html` | — | Corps HTML (obligatoire si mise en forme) |
 | `cc` | — | Copie |
 | `cci` | — | Copie cachée |
+| `pieces_jointes` | — | Liste de PJ (voir ci-dessous) |
 | `profil` | — | Compte à utiliser |
+
+**Format des pièces jointes (`pieces_jointes`) :**
+
+Chaque élément est un objet avec **soit** `chemin` (chemin absolu du fichier sur disque),
+**soit** `data_base64` + `nom_fichier` + `type_mime` (données base64) :
+
+```json
+// Depuis le disque (recommandé — type MIME détecté automatiquement)
+{"chemin": "/home/pierre/Exports/Prométhée/rapport.pdf"}
+
+// Depuis des données base64 (ex : PJ reçue et retransmise)
+{"data_base64": "JVBERi0x...", "nom_fichier": "rapport.pdf", "type_mime": "application/pdf"}
+```
+
+> **Note MIME :** la présence de PJ force automatiquement un conteneur `multipart/mixed`.
+> Si `corps_html` est également fourni, la structure sera `mixed > alternative (plain + html) + PJ`.
+> Le type MIME est détecté automatiquement depuis l'extension si non fourni.
 
 ---
 
 ### `imap_reply_mail`
 
 Répond à un message existant. Conserve `In-Reply-To` et `References`.
+**Supporte désormais le HTML et les pièces jointes.**
 
 ```json
 {
   "uid": "4271",
   "corps": "Madame,\n\nBien reçu...\n\n--\nCe message a été rédigé et envoyé par Prométhée.",
+  "corps_html": "<html><body>...</body></html>",
   "dossier": "INBOX",
   "repondre_a_tous": false,
+  "pieces_jointes": [
+    {"chemin": "/home/pierre/Exports/reponse.pdf"}
+  ],
   "profil": null
 }
 ```
 
-**Note :** cet outil envoie uniquement du texte brut.
-Pour envoyer une réponse en HTML, utiliser `imap_read_mail` pour récupérer
-le `message_id`, `from`, `subject` et `references` du message original,
-puis construire manuellement la réponse avec `imap_send_mail` en renseignant
-`corps_html` et en positionnant manuellement les headers `In-Reply-To`
-(non supporté directement — voir note ci-dessous).
+| Paramètre | Requis | Description |
+|---|---|---|
+| `uid` | ✓ | UID du mail original |
+| `corps` | ✓ | Corps texte brut (repli) |
+| `corps_html` | — | Corps HTML avec signature et citation |
+| `dossier` | — | Dossier source (défaut : INBOX) |
+| `repondre_a_tous` | — | Reply-All (défaut : false) |
+| `pieces_jointes` | — | Même format que `imap_send_mail` |
+| `profil` | — | Compte à utiliser |
 
-> **Conseil :** pour les réponses nécessitant une mise en forme HTML,
-> utiliser `imap_send_mail` avec `corps_html` et préfixer l'objet de `Re: `
-> manuellement. Les headers de fil de conversation ne seront pas conservés
-> mais la mise en forme sera correcte.
+> **Fil de conversation :** `imap_reply_mail` positionne toujours `In-Reply-To` et `References`
+> correctement, y compris quand `corps_html` est fourni — contrairement à l'ancienne
+> recommandation qui suggérait d'utiliser `imap_send_mail` pour contourner cette limitation.
 
 ---
 
@@ -320,7 +349,7 @@ Appeler `imap_list_folders` pour connaître le nom exact du dossier de destinati
    → lecture du message retenu
 ```
 
-### Rédiger et envoyer un nouveau mail
+### Rédiger et envoyer un nouveau mail (avec ou sans PJ)
 
 ```
 1. Rédiger le corps HTML avec signature Prométhée (section 1.3)
@@ -329,15 +358,23 @@ Appeler `imap_list_folders` pour connaître le nom exact du dossier de destinati
      destinataires=["..."],
      objet="...",
      corps="... [texte brut]",
-     corps_html="<html>...</html>"
+     corps_html="<html>...</html>",
+     pieces_jointes=[
+       {"chemin": "/chemin/absolu/vers/fichier.pdf"},
+       {"data_base64": "...", "nom_fichier": "annexe.xlsx", "type_mime": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}
+     ]
    )
 ```
 
-### Répondre à un message avec mise en forme HTML
+**Sources acceptées pour les pièces jointes :**
+- Fichier généré sur disque → `{"chemin": "/home/pierre/Exports/rapport.pdf"}` (type MIME auto-détecté)
+- Données base64 (ex : PJ reçue et retransmise) → `{"data_base64": "...", "nom_fichier": "doc.pdf", "type_mime": "application/pdf"}`
+
+### Répondre à un message avec mise en forme HTML (et PJ optionnelle)
 
 ```
 1. imap_read_mail(uid="...", inclure_html=false)
-   → récupérer from, subject, date, body, message_id
+   → récupérer from, subject, date, body pour construire la citation
 
 2. Construire le corps HTML de réponse avec :
    - La réponse rédigée
@@ -348,15 +385,16 @@ Appeler `imap_list_folders` pour connaître le nom exact du dossier de destinati
        [corps original]
      </blockquote>
 
-3. imap_send_mail(
-     destinataires=["expéditeur original"],
-     objet="Re: [objet original]",
-     corps="... [texte brut]",
-     corps_html="<html>...</html>"
+3. imap_reply_mail(
+     uid="...",
+     corps="... [texte brut de repli]",
+     corps_html="<html>...</html>",
+     pieces_jointes=[{"chemin": "/chemin/vers/fichier.pdf"}]  ← optionnel
    )
-
-4. imap_mark_mail(uid="...", action="lu")  ← si pas encore fait
+   → conserve automatiquement In-Reply-To et References
 ```
+
+> Les headers de fil de conversation sont conservés même avec `corps_html` et des pièces jointes.
 
 ### Traitement d'une pièce jointe reçue
 
