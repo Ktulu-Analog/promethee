@@ -15,7 +15,7 @@
 tools/sql_tools.py — Outils SQL génériques (SQLite, PostgreSQL, MySQL)
 =======================================================================
 
-Outils exposés (9) :
+Outils exposés (10) :
 
   Connexions (2) :
     - sql_connect       : ouvre une connexion nommée vers une base de données
@@ -31,8 +31,9 @@ Outils exposés (9) :
     - sql_execute       : exécute INSERT/UPDATE/DELETE/CREATE (avec confirmation)
     - sql_explain       : affiche le plan d'exécution d'une requête
 
-  Utilitaires (1) :
-    - sql_export_csv    : exporte le résultat d'une requête en CSV local
+  Utilitaires (2) :
+    - sql_export_csv         : exporte le résultat d'une requête en CSV local
+    - sql_detect_instances   : détecte les instances de BdD actives sur le système local
 
 Stratégie :
   - Les connexions sont nommées et maintenues en mémoire pour la session
@@ -73,6 +74,7 @@ _TOOL_ICONS.update({
     "sql_execute":          "⚡",
     "sql_explain":          "🧠",
     "sql_export_csv":       "📤",
+    "sql_detect_instances": "🔍",
 })
 
 # ── Registre de connexions (session) ─────────────────────────────────────────
@@ -1054,3 +1056,344 @@ def sql_export_csv(
         return {"status": "error", "error": f"Permission refusée : {dest}"}
     except Exception as e:
         return {"status": "error", "error": f"Erreur export : {e}"}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# sql_detect_instances
+# ══════════════════════════════════════════════════════════════════════════════
+
+_KNOWN_ENGINES: list[dict] = [
+    # (port, driver, nom_affichage, url_template, noms_processus)
+    {
+        "port": 5432,
+        "driver": "postgresql",
+        "nom": "PostgreSQL",
+        "url_template": "postgresql://user:password@localhost:5432/database",
+        "processus": ["postgres", "postmaster"],
+    },
+    {
+        "port": 3306,
+        "driver": "mysql",
+        "nom": "MySQL / MariaDB",
+        "url_template": "mysql://user:password@localhost:3306/database",
+        "processus": ["mysqld", "mariadbd", "mysqld_safe"],
+    },
+    {
+        "port": 5433,
+        "driver": "postgresql",
+        "nom": "PostgreSQL (port alternatif)",
+        "url_template": "postgresql://user:password@localhost:5433/database",
+        "processus": ["postgres", "postmaster"],
+    },
+    {
+        "port": 3307,
+        "driver": "mysql",
+        "nom": "MySQL / MariaDB (port alternatif)",
+        "url_template": "mysql://user:password@localhost:3307/database",
+        "processus": ["mysqld", "mariadbd"],
+    },
+    {
+        "port": 5984,
+        "driver": None,
+        "nom": "CouchDB",
+        "url_template": None,
+        "processus": ["beam.smp", "couchdb"],
+    },
+    {
+        "port": 27017,
+        "driver": None,
+        "nom": "MongoDB",
+        "url_template": None,
+        "processus": ["mongod"],
+    },
+    {
+        "port": 6379,
+        "driver": None,
+        "nom": "Redis",
+        "url_template": None,
+        "processus": ["redis-server"],
+    },
+    {
+        "port": 9200,
+        "driver": None,
+        "nom": "Elasticsearch",
+        "url_template": None,
+        "processus": ["java", "elasticsearch"],
+    },
+    {
+        "port": 1433,
+        "driver": None,
+        "nom": "Microsoft SQL Server",
+        "url_template": None,
+        "processus": ["sqlservr"],
+    },
+    {
+        "port": 1521,
+        "driver": None,
+        "nom": "Oracle Database",
+        "url_template": None,
+        "processus": ["oracle", "tnslsnr"],
+    },
+    {
+        "port": 5439,
+        "driver": "postgresql",
+        "nom": "Amazon Redshift (local)",
+        "url_template": "postgresql://user:password@localhost:5439/database",
+        "processus": [],
+    },
+]
+
+
+def _tcp_ping(port: int, timeout: float = 0.3) -> bool:
+    """Tente une connexion TCP sur localhost:port. Retourne True si le port répond."""
+    import socket
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def _process_info_for_port(port: int, processus_cibles: list[str]) -> dict | None:
+    """
+    Tente de retrouver le PID et le nom du processus qui écoute sur ce port.
+    Stratégie : psutil d'abord (cross-platform), puis ss/netstat en fallback Unix.
+    Retourne un dict {pid, nom, cmdline} ou None.
+    """
+    import subprocess as _sp
+
+    # ── Stratégie 1 : psutil (si disponible) ────────────────────────────────
+    try:
+        import psutil  # type: ignore
+        for conn in psutil.net_connections(kind="tcp"):
+            if conn.laddr.port == port and conn.status == "LISTEN":
+                try:
+                    proc = psutil.Process(conn.pid)
+                    return {
+                        "pid":     conn.pid,
+                        "nom":     proc.name(),
+                        "cmdline": " ".join(proc.cmdline())[:120],
+                    }
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    return {"pid": conn.pid, "nom": "?", "cmdline": ""}
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
+    # ── Stratégie 2 : ss (Linux) ────────────────────────────────────────────
+    try:
+        r = _sp.run(
+            ["ss", "-tlnp", f"sport = :{port}"],
+            capture_output=True, text=True, timeout=3
+        )
+        if r.returncode == 0:
+            for line in r.stdout.splitlines():
+                if f":{port}" in line:
+                    # Extraire pid=XXXX depuis la colonne "users:(("prog",pid=NNN,...))"
+                    import re as _re
+                    m = _re.search(r'pid=(\d+)', line)
+                    pid = int(m.group(1)) if m else None
+                    mn = _re.search(r'"([^"]+)"', line)
+                    nom = mn.group(1) if mn else "?"
+                    return {"pid": pid, "nom": nom, "cmdline": ""}
+    except Exception:
+        pass
+
+    # ── Stratégie 3 : netstat (macOS / Linux sans ss) ───────────────────────
+    try:
+        r = _sp.run(
+            ["netstat", "-tlnp"],
+            capture_output=True, text=True, timeout=3
+        )
+        if r.returncode == 0:
+            import re as _re
+            for line in r.stdout.splitlines():
+                if f":{port} " in line or f":{port}\t" in line:
+                    parts = line.split()
+                    if parts:
+                        pid_prog = parts[-1]  # ex: "1234/postgres"
+                        pid_str, _, prog = pid_prog.partition("/")
+                        try:
+                            return {"pid": int(pid_str), "nom": prog or "?", "cmdline": ""}
+                        except ValueError:
+                            return {"pid": None, "nom": prog or "?", "cmdline": ""}
+    except Exception:
+        pass
+
+    return None
+
+
+def _find_sqlite_files(repertoires: list[str], profondeur_max: int = 4) -> list[dict]:
+    """
+    Recherche récursive de fichiers SQLite (.db, .sqlite, .sqlite3) dans les
+    répertoires indiqués, jusqu'à profondeur_max niveaux.
+    """
+    import os
+    extensions = {".db", ".sqlite", ".sqlite3", ".db3", ".s3db"}
+    _ignorer = {
+        ".git", ".hg", "__pycache__", "node_modules", ".venv", "venv",
+        ".tox", "dist", "build", ".mypy_cache", "site-packages",
+    }
+    trouvés: list[dict] = []
+
+    def _walk(path: Path, depth: int) -> None:
+        if depth > profondeur_max:
+            return
+        try:
+            for entry in os.scandir(path):
+                if entry.is_symlink():
+                    continue
+                if entry.is_dir(follow_symlinks=False):
+                    if entry.name not in _ignorer:
+                        _walk(Path(entry.path), depth + 1)
+                elif entry.is_file(follow_symlinks=False):
+                    p = Path(entry.path)
+                    if p.suffix.lower() in extensions and p.stat().st_size > 0:
+                        # Vérifier le magic number SQLite ("SQLite format 3\x00")
+                        try:
+                            with open(p, "rb") as f:
+                                header = f.read(16)
+                            if header[:6] == b"SQLite":
+                                taille = p.stat().st_size
+                                taille_str = (
+                                    f"{taille / 1024:.1f} Ko"
+                                    if taille < 1_048_576
+                                    else f"{taille / 1_048_576:.2f} Mo"
+                                )
+                                trouvés.append({
+                                    "chemin":  str(p),
+                                    "taille":  taille_str,
+                                    "url":     f"sqlite:///{p}",
+                                })
+                        except OSError:
+                            pass
+        except PermissionError:
+            pass
+
+    for rep in repertoires:
+        rp = Path(rep).expanduser()
+        if rp.exists():
+            _walk(rp, 0)
+
+    return trouvés
+
+
+
+@tool(
+    name="sql_detect_instances",
+    description=(
+        "Détecte les instances de bases de données actives sur le système local : "
+        "scan des ports standards (PostgreSQL, MySQL/MariaDB…), identification du processus "
+        "(PID, nom) via psutil ou ss/netstat, et recherche de fichiers SQLite dans les "
+        "répertoires courants. Retourne pour chaque instance détectée une URL de connexion "
+        "prête à passer à sql_connect."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "inclure_sqlite": {
+                "type": "boolean",
+                "description": (
+                    "Rechercher des fichiers SQLite dans les répertoires courants "
+                    "(défaut: true)."
+                ),
+            },
+            "repertoires_sqlite": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Répertoires à scanner pour les fichiers SQLite "
+                    "(défaut: ['~', '~/Documents', '~/Projets', '.'])."
+                ),
+            },
+            "timeout_port": {
+                "type": "number",
+                "description": (
+                    "Délai d'attente en secondes pour chaque test TCP (défaut: 0.3)."
+                ),
+            },
+        },
+        "required": [],
+    },
+)
+def sql_detect_instances(
+    inclure_sqlite: bool = True,
+    repertoires_sqlite: list[str] | None = None,
+    timeout_port: float = 0.3,
+) -> dict:
+    """
+    Détecte les instances de bases de données actives sur le système local.
+
+    Méthode :
+      1. Scan TCP sur les ports standards de chaque moteur connu.
+      2. Pour chaque port ouvert : identification du processus via psutil,
+         ss ou netstat.
+      3. Optionnel : recherche de fichiers SQLite dans les répertoires indiqués.
+    """
+    instances_reseau: list[dict] = []
+
+    # ── 1. Scan des ports réseau ─────────────────────────────────────────────
+    for moteur in _KNOWN_ENGINES:
+        port = moteur["port"]
+        if not _tcp_ping(port, timeout=max(0.05, min(float(timeout_port), 5.0))):
+            continue
+
+        proc = _process_info_for_port(port, moteur["processus"])
+
+        instance: dict = {
+            "moteur":  moteur["nom"],
+            "driver":  moteur["driver"],
+            "port":    port,
+            "host":    "localhost",
+            "statut":  "actif ✅",
+        }
+        if moteur["url_template"]:
+            instance["url_connexion"] = moteur["url_template"]
+            if moteur["driver"] in ("postgresql", "mysql"):
+                instance["note"] = (
+                    "Remplacer user, password et database dans l'URL avant sql_connect."
+                )
+        else:
+            instance["note"] = (
+                f"{moteur['nom']} détecté mais non supporté par sql_connect "
+                "(aucun driver intégré)."
+            )
+        if proc:
+            instance["processus"] = proc
+
+        instances_reseau.append(instance)
+
+    # ── 2. Recherche fichiers SQLite ─────────────────────────────────────────
+    fichiers_sqlite: list[dict] = []
+    if inclure_sqlite:
+        reps = repertoires_sqlite or ["~", "~/Documents", "~/Projets", "."]
+        fichiers_sqlite = _find_sqlite_files(reps)
+
+    # ── 3. Construction de la réponse ────────────────────────────────────────
+    total = len(instances_reseau) + len(fichiers_sqlite)
+
+    if total == 0:
+        return {
+            "status":  "success",
+            "total":   0,
+            "message": (
+                "Aucune instance de base de données détectée sur ce système. "
+                "Vérifiez que le serveur est démarré et que les ports standards "
+                "ne sont pas filtrés."
+            ),
+            "instances_reseau": [],
+            "fichiers_sqlite":  [],
+        }
+
+    return {
+        "status":            "success",
+        "total":             total,
+        "instances_reseau":  instances_reseau,
+        "fichiers_sqlite":   fichiers_sqlite,
+        "message": (
+            f"{len(instances_reseau)} instance(s) réseau détectée(s)"
+            + (f", {len(fichiers_sqlite)} fichier(s) SQLite trouvé(s)" if fichiers_sqlite else "")
+            + "."
+        ),
+    }

@@ -1300,6 +1300,10 @@ class MessageWidget(QWidget):
         """
         if not title.startswith("dataimg:"):
             return
+        # Réinitialiser le titre immédiatement : titleChanged n'est émis que si
+        # la valeur change. Sans ce reset, un second clic sur la même image
+        # (ou toute image ayant le même idx) ne déclencherait plus le signal.
+        self._view.page().runJavaScript("document.title = '';")
         try:
             idx = int(title.split(":", 1)[1])
         except (ValueError, IndexError):

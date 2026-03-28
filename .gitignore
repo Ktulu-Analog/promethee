@@ -6,6 +6,8 @@
 .env
 *.env
 
+# ── fonctions en test ──────────────────────────
+qdrant_manager/
 # ── Base de données ──────────────────────────────────────────
 *.db
 *.db-shm
