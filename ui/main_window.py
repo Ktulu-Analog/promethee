@@ -288,6 +288,11 @@ class MainWindow(QMainWindow):
         selected_collection = self._rag_panel.get_selected_collection()
         if selected_collection:
             panel.set_rag_collection(selected_collection)
+        # Propager l'état du toggle RAG du dernier onglet actif au nouvel onglet.
+        # Sans ça, un nouvel onglet ouvert après un toggle OFF aurait RAG actif.
+        current = self._tabs.currentWidget()
+        if hasattr(current, "get_rag_enabled"):
+            panel.set_rag_enabled(current.get_rag_enabled())
 
         conv  = self.db.get_conversation(conv_id)
         title = conv["title"] if conv else "Nouveau chat"
@@ -373,6 +378,8 @@ class MainWindow(QMainWindow):
             self._rag_panel.collection_changed.disconnect(self._on_rag_collection_changed)
             self._rag_panel.set_selected_collection(widget.get_rag_collection())
             self._rag_panel.collection_changed.connect(self._on_rag_collection_changed)
+            # Restaurer l'état du toggle RAG propre à cet onglet
+            widget.set_rag_enabled(widget.get_rag_enabled())
             # Récupérer le titre depuis la base pour le panneau de monitoring
             conv = self.db.get_conversation(conv_id)
             title = conv["title"] if conv else ""
@@ -488,10 +495,13 @@ class MainWindow(QMainWindow):
 
         N'affecte que l'onglet actif — chaque conversation conserve
         sa propre collection indépendamment des autres onglets ouverts.
+        Choisir une collection réactive le RAG s'il était désactivé manuellement :
+        l'intention de l'utilisateur est explicite.
         """
         panel = self._tabs.currentWidget()
         if isinstance(panel, ChatPanel):
             panel.set_rag_collection(collection_name)
+            panel.set_rag_enabled(True)
         self._set_status(f"Collection RAG : {collection_name}")
 
     # ── Barre de statut ───────────────────────────────────────────────

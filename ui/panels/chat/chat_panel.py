@@ -276,8 +276,15 @@ class ChatPanel(QWidget):
 
         toolbar.addStretch()
 
-        # Badge RAG
-        self._rag_badge = QLabel()
+        # Badge RAG — cliquable pour activer/désactiver le RAG à la demande
+        self._rag_badge = QPushButton()
+        self._rag_badge.setFlat(True)
+        self._rag_badge.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._rag_badge.setToolTip(
+            "Cliquer pour activer / désactiver le RAG\n"
+            "(la mémoire long terme reste toujours active)"
+        )
+        self._rag_badge.clicked.connect(self._toggle_rag)
         self._update_rag_badge()
         toolbar.addWidget(self._rag_badge)
 
@@ -390,8 +397,21 @@ class ChatPanel(QWidget):
         if hasattr(self, '_no_compress_check'):
             self._no_compress_check.setStyleSheet(ThemeManager.checkbox_style())
 
+    def _toggle_rag(self):
+        """Bascule l'état du RAG pour cet onglet.
+
+        N'affecte que la recherche documentaire (build_rag_context).
+        La mémoire long terme (LTM) est gouvernée par ltm_enabled() et
+        reste active indépendamment de cet état.
+        """
+        # Ne pas activer si Qdrant/embeddings non disponibles
+        if not self._rag_enabled and not rag_engine.is_available():
+            return
+        self._rag_enabled = not self._rag_enabled
+        self._update_rag_badge()
+
     def _update_rag_badge(self):
-        """Met à jour le badge RAG."""
+        """Met à jour le badge RAG (QPushButton cliquable)."""
         if self._rag_enabled:
             self._rag_badge.setText("RAG actif")
             self._rag_badge.setStyleSheet(
@@ -858,3 +878,19 @@ class ChatPanel(QWidget):
     def get_rag_collection(self) -> str | None:
         """Retourne la collection RAG active pour cet onglet."""
         return self._rag_collection
+
+    def get_rag_enabled(self) -> bool:
+        """Retourne l'état du toggle RAG pour cet onglet."""
+        return self._rag_enabled
+
+    def set_rag_enabled(self, enabled: bool) -> None:
+        """Restaure l'état du toggle RAG (appelé lors d'un changement d'onglet).
+
+        Ne permet pas d'activer le RAG si Qdrant/embeddings ne sont pas disponibles.
+        Met à jour le badge sans émettre de signal — le caller (main_window) gère
+        la synchronisation, pas ce panneau.
+        """
+        if enabled and not rag_engine.is_available():
+            return
+        self._rag_enabled = enabled
+        self._update_rag_badge()

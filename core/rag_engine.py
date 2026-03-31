@@ -349,6 +349,110 @@ def _albert_rerank(
     return reranked
 
 
+def _qdrant_rerank(
+    query: str,
+    candidates: list[dict],
+    top_n: int,
+    model: str,
+    min_score: float,
+) -> list[dict]:
+    """
+    Reranking cross-encoder pour le backend Qdrant via une API POST /v1/rerank
+    compatible OpenAI (même interface qu'Albert).
+
+    Contrairement à _albert_rerank() qui réutilise le transport Albert (_albert_post),
+    cette fonction construit sa propre requête HTTP vers RAG_RERANK_API_BASE — un
+    endpoint indépendant d'Albert (Infinity, TEI, ou Albert lui-même configuré
+    séparément pour le reranking Qdrant).
+
+    Deux stratégies de transport (même pattern que _albert_request) :
+      1. urllib stdlib — aucune dépendance supplémentaire.
+      2. Si RAG_RERANK_API_BASE est vide → retourne candidates[:top_n] sans appel.
+
+    La normalisation de l'URL suit la même logique que _albert_base_url() :
+    RAG_RERANK_API_BASE ne doit PAS se terminer par /v1 (géré ici).
+
+    En cas d'échec réseau ou HTTP, dégradation gracieuse : conserve les candidats
+    dans l'ordre vectoriel original (identique au comportement d'_albert_rerank).
+
+    Parameters
+    ----------
+    query      : question originale de l'utilisateur (toujours la requête brute,
+                 pas le document HyDE — le cross-encoder est plus précis ainsi)
+    candidates : chunks au format interne {"text", "source", "scope", "score"}
+    top_n      : nombre de chunks à retourner après reranking
+    model      : ID du modèle reranker (ex: "BAAI/bge-reranker-v2-m3")
+    min_score  : score logit minimal pour conserver un chunk
+    """
+    if not candidates:
+        return []
+
+    base = Config.RAG_RERANK_API_BASE
+    if not base:
+        # Pas d'endpoint configuré — pas de reranking pour Qdrant
+        return candidates[:top_n]
+
+    # Normaliser : retirer /v1 final si présent (on l'ajoute nous-mêmes)
+    if base.endswith("/v1"):
+        base = base[:-3]
+    url = f"{base}/v1/rerank"
+
+    texts = [c["text"] for c in candidates]
+    payload = {
+        "query":     query,
+        "documents": texts,
+        "model":     model,
+        "top_n":     top_n,
+    }
+    _log.debug(
+        "[Qdrant/rerank] POST %s — model=%s top_n=%d n_docs=%d",
+        url, model, top_n, len(texts),
+    )
+
+    # ── Appel HTTP via urllib (stdlib, sans dépendance) ─────────────────
+    try:
+        data = _json.dumps(payload).encode("utf-8")
+        headers = {
+            "Content-Type":  "application/json",
+            "Authorization": f"Bearer {Config.OPENAI_API_KEY}",
+        }
+        req  = urllib.request.Request(url, data=data, headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = _json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        err_body = ""
+        try:
+            err_body = e.read().decode("utf-8", errors="replace")[:300]
+        except Exception:
+            pass
+        _log.error("[Qdrant/rerank] HTTP %d — %s", e.code, err_body)
+        _log.warning("[Qdrant/rerank] rerank échoué — conservation de l'ordre vectoriel")
+        return candidates[:top_n]
+    except Exception as e:
+        _log.error("[Qdrant/rerank] erreur réseau : %s", e)
+        _log.warning("[Qdrant/rerank] rerank échoué — conservation de l'ordre vectoriel")
+        return candidates[:top_n]
+
+    reranked = []
+    for result in body.get("results", []):
+        idx   = result.get("index", -1)
+        score = float(result.get("relevance_score", 0.0))
+        if idx < 0 or idx >= len(candidates):
+            continue
+        if score < min_score:
+            _log.debug(
+                "[Qdrant/rerank] chunk #%d écarté (score=%.3f < min=%.3f)",
+                idx, score, min_score,
+            )
+            continue
+        chunk = dict(candidates[idx])
+        chunk["score"]     = score   # remplace le score cosinus par le score cross-encoder
+        chunk["_reranked"] = True    # marqueur interne, retiré par _diversify_chunks
+        reranked.append(chunk)
+
+    _log.debug("[Qdrant/rerank] → %d chunk(s) retenus sur %d", len(reranked), len(candidates))
+    return reranked
+
 
 def _diversify_chunks(
     candidates: list[dict],
@@ -1400,14 +1504,26 @@ def _build_rag_context_qdrant(
     conversation_id: str = None,
     collection_name: str = None,
 ) -> str:
-    """Build RAG context via le backend Qdrant (vectoriel dense, comportement historique).
+    """Build RAG context via le backend Qdrant.
 
-    Stratégie de sélection des chunks :
-      1. Récupère RAG_TOP_K candidats depuis Qdrant (filet large).
-      2. Filtre les chunks sous le seuil de score RAG_MIN_SCORE (trop peu pertinents).
-      3. Limite à RAG_MAX_CHUNKS_PER_SOURCE chunks par document source
-         pour éviter qu'un seul document monopolise le contexte.
-      4. Retient au maximum RAG_MAX_CHUNKS_TOTAL chunks au total.
+    Pipeline complet, à parité fonctionnelle avec le backend Albert :
+
+      1. HyDE (optionnel, RAG_HYDE_ENABLED)
+         Génère un document hypothétique avant l'embedding pour mieux aligner
+         l'espace sémantique requête ↔ chunks indexés.
+
+      2. Recherche vectorielle dense (Qdrant query_points)
+         Récupère RAG_TOP_K candidats. Le seuil adaptatif (RAG_ADAPTIVE_THRESHOLD)
+         pré-filtre les chunks clairement hors-sujet avant le reranking.
+
+      3. Reranking cross-encoder (optionnel, RAG_RERANK_ENABLED + RAG_RERANK_API_BASE)
+         Reclasse les candidats via POST /v1/rerank sur RAG_RERANK_API_BASE.
+         Le reranker reçoit toujours la requête originale (pas le document HyDE)
+         pour une pertinence optimale vis-à-vis de l'intention utilisateur.
+         Sans RAG_RERANK_API_BASE configuré : étape ignorée (comportement historique).
+
+      4. Diversification par source + plafond total
+         Limite à RAG_MAX_CHUNKS_PER_SOURCE par document et RAG_MAX_CHUNKS_TOTAL au total.
     """
     top_k       = Config.RAG_TOP_K
     min_score   = Config.RAG_MIN_SCORE
@@ -1432,6 +1548,9 @@ def _build_rag_context_qdrant(
     #
     # Le seuil calculé ne peut jamais descendre sous RAG_MIN_SCORE, ce qui
     # garantit un niveau de qualité minimal même si le corpus est bruité.
+    # Quand le reranking est actif, ce filtre pré-sélectionne les candidats
+    # envoyés au cross-encoder (réduction du coût réseau + amélioration de
+    # la qualité en éliminant les chunks vraiment hors-sujet en amont).
     effective_min_score = min_score
     if Config.RAG_ADAPTIVE_THRESHOLD and len(candidates) >= 2:
         scores = [h["score"] for h in candidates]
@@ -1457,15 +1576,46 @@ def _build_rag_context_qdrant(
             " (adaptatif)" if Config.RAG_ADAPTIVE_THRESHOLD else " (fixe)",
         )
 
-    # ── Diversification par source ─────────────────────────────────────
+    if not above_threshold:
+        _log.warning(
+            "[RAG/Qdrant] aucun chunk retenu après filtrage (seuil=%.3f%s, top_k=%d)",
+            effective_min_score,
+            " adaptatif" if Config.RAG_ADAPTIVE_THRESHOLD else " fixe",
+            top_k,
+        )
+        return ""
+
+    # ── Reranking cross-encoder (optionnel) ───────────────────────────
+    # Actif si RAG_RERANK_ENABLED=ON ET RAG_RERANK_API_BASE est défini.
+    # Le reranker reçoit la requête originale (pas HyDE) : plus précis pour
+    # scorer la pertinence réelle vis-à-vis de l'intention de l'utilisateur.
+    reranking_active = Config.RAG_RERANK_ENABLED and bool(Config.RAG_RERANK_API_BASE)
+    if reranking_active:
+        above_threshold = _qdrant_rerank(
+            query=query,
+            candidates=above_threshold,
+            top_n=max_total * 2,   # marge avant diversification, comme dans Albert
+            model=Config.RAG_RERANK_MODEL,
+            min_score=Config.RAG_RERANK_MIN_SCORE,
+        )
+        if not above_threshold:
+            _log.warning("[RAG/Qdrant] aucun chunk retenu après reranking")
+            return ""
+
+    # ── Diversification par source + plafond total ────────────────────
+    # strip_keys retire le marqueur _reranked ajouté par _qdrant_rerank,
+    # identique au comportement du pipeline Albert (_albert_search_and_rerank).
     selected = _diversify_chunks(
         above_threshold,
         max_per_source=max_per_src,
         max_total=max_total,
+        strip_keys=frozenset({"_reranked"}) if reranking_active else frozenset(),
     )
     _log.debug(
-        "[RAG/Qdrant] %d chunk(s) retenus sur %d candidats (%d source(s))",
-        len(selected), len(candidates), len({c["source"] for c in selected}),
+        "[RAG/Qdrant] %d chunk(s) retenus sur %d candidats (%d source(s))%s",
+        len(selected), len(candidates),
+        len({c["source"] for c in selected}),
+        " [rerankés]" if reranking_active else "",
     )
 
     if not selected:
@@ -1477,6 +1627,11 @@ def _build_rag_context_qdrant(
         )
         return ""
 
+    # ── Titre du bloc contextuel ──────────────────────────────────────
+    # Indique la méthode active pour la traçabilité dans les logs et le debug.
+    if reranking_active:
+        title = "### Contexte documentaire pertinent (vectoriel → reranké) :\n"
+        return _format_chunks_as_context(selected, title=title, scope_tags=True, score_decimals=3)
     return _format_chunks_as_context(selected, scope_tags=True)
 
 

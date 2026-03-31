@@ -321,9 +321,17 @@ class Config:
     # Valeurs typiques : < 0 = non pertinent, > 0 = pertinent, > 5 = très pertinent.
     # Défaut : -2.0 (filtre les chunks vraiment hors-sujet, garde le reste).
     RAG_RERANK_MIN_SCORE: float = float(os.getenv("RAG_RERANK_MIN_SCORE", "-2.0"))
-    # Activer le reranking Albert. ON = actif si RAG_ALBERT_COLLECTION_IDS défini.
-    # Mettre OFF pour désactiver sans toucher aux autres paramètres Albert.
+    # Activer le reranking. ON = actif pour Albert ET pour Qdrant (si RAG_RERANK_API_BASE défini).
+    # Mettre OFF pour désactiver sans toucher aux autres paramètres.
     RAG_RERANK_ENABLED: bool = os.getenv("RAG_RERANK_ENABLED", "ON").strip().upper() == "ON"
+    # URL de base de l'API de reranking pour le backend Qdrant.
+    # Doit exposer un endpoint POST /v1/rerank compatible OpenAI (même interface qu'Albert).
+    # Exemples :
+    #   Albert (même serveur)            : RAG_RERANK_API_BASE=https://albert.api.etalab.gouv.fr
+    #   Infinity (auto-hébergé)          : RAG_RERANK_API_BASE=http://localhost:7997
+    #   TEI (Text Embeddings Inference)  : RAG_RERANK_API_BASE=http://localhost:8080
+    # Si vide, le reranking est désactivé pour le backend Qdrant (comportement historique).
+    RAG_RERANK_API_BASE: str = os.getenv("RAG_RERANK_API_BASE", "").strip().rstrip("/")
 
     # ── RAG — Reformulation HyDE (Hypothetical Document Embedding) ───────────
     # Génère un document hypothétique à partir de la requête avant l'embedding,

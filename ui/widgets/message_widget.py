@@ -55,6 +55,7 @@ from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import QWebEngineSettings, QWebEnginePage
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QUrl
 from PyQt6.QtGui import QGuiApplication, QDesktopServices, QCursor
+from PyQt6.QtCore import QMimeData
 from .styles import ThemeManager
 from core.config import Config
 from .latex_renderer import (
@@ -899,10 +900,18 @@ class MessageWidget(QWidget):
         self._copy_btn = QPushButton("📋")
         self._copy_btn.setObjectName("tool_btn")
         self._copy_btn.setFixedSize(32, 32)
-        self._copy_btn.setToolTip("Copier")
+        self._copy_btn.setToolTip("Copier (texte brut)")
         self._copy_btn.clicked.connect(self._copy)
         self._copy_btn.setVisible(False)
         header.addWidget(self._copy_btn)
+
+        self._copy_rich_btn = QPushButton("📄")
+        self._copy_rich_btn.setObjectName("tool_btn")
+        self._copy_rich_btn.setFixedSize(32, 32)
+        self._copy_rich_btn.setToolTip("Copier avec mise en forme (Word, LibreOffice…)")
+        self._copy_rich_btn.clicked.connect(self._copy_rich)
+        self._copy_rich_btn.setVisible(False)
+        header.addWidget(self._copy_rich_btn)
         bl.addLayout(header)
 
         # QWebEngineView
@@ -1082,6 +1091,7 @@ class MessageWidget(QWidget):
         """
         self._full_text = text
         self._copy_btn.setVisible(bool(text))
+        self._copy_rich_btn.setVisible(bool(text))
 
         if not self._attached:
             # Mettre à jour la hauteur estimée pour éviter les sauts de layout
@@ -1319,6 +1329,363 @@ class MessageWidget(QWidget):
         QGuiApplication.clipboard().setText(self._full_text)
         self._copy_btn.setText("✓")
         QTimer.singleShot(1500, lambda: self._copy_btn.setText("⎘"))
+
+    def _copy_rich(self):
+        """
+        Copie le contenu dans le presse-papiers avec mise en forme HTML.
+
+        Utilise QMimeData pour placer simultanément :
+          - text/html   → lu par Word, LibreOffice, Outlook, etc.
+          - text/plain  → repli si l'application cible ne supporte pas HTML
+
+        Le HTML généré est une version allégée (sans CSS Pygments/KaTeX/Mermaid)
+        adaptée au collage dans un traitement de texte : polices système standard,
+        tableaux, gras, italique, titres, listes, blocs de code inline.
+        """
+        if not self._full_text:
+            return
+
+        html_body = self._build_rich_html(self._full_text)
+
+        # Word attend un fragment HTML complet avec les balises CF_HTML standard.
+        # Qt gère automatiquement l'encapsulation CF_HTML sur Windows quand on
+        # passe du HTML via QMimeData.setHtml() — aucune manipulation manuelle
+        # du header CF_HTML n'est nécessaire.
+        mime = QMimeData()
+        mime.setHtml(html_body)
+        mime.setText(self._full_text)
+        QGuiApplication.clipboard().setMimeData(mime)
+
+        self._copy_rich_btn.setText("✓")
+        QTimer.singleShot(1500, lambda: self._copy_rich_btn.setText("📄"))
+
+    @staticmethod
+    def _build_rich_html(markdown_text: str) -> str:
+        """
+        Convertit du Markdown en HTML haute fidélité pour Word/LibreOffice.
+
+        Stratégie : styles inline sur chaque balise (Word ignore souvent <style>),
+        post-processing via html.parser, attributs natifs HTML sur les tableaux,
+        compatibilité CF_HTML maximale.
+
+        Éléments supportés
+        ──────────────────
+        • Titres h1-h3   → taille, gras, couleur, espacement, filet sous h1
+        • Paragraphes    → police Calibri 11pt, interligne 1.4
+        • Gras / italique / gras-italique
+        • Code inline    → Consolas 10pt, fond #F0F0F0, bordure légère
+        • Blocs de code  → fond #F8F8F8, bordure grise, police mono, wrap
+        • Listes ul/ol   → indentation, espacement inter-items
+        • Tableaux       → bordures 1px solid, en-têtes gris, alternance légère
+        • Blockquote     → filet gauche, italique, couleur atténuée
+        • Séparateurs hr → filet gris centré
+        • Blocs Mermaid  → note textuelle (non rendu dans un traitement de texte)
+        • LaTeX $$       → note textuelle
+
+        Exclusions
+        ──────────
+        • Images base64  → trop volumineuses pour CF_HTML (remplacées par note)
+        • CSS Pygments   → incompatible avec Word (remplacé par fond neutre)
+        • KaTeX/Mermaid JS → sans objet hors WebEngine
+        """
+        from html.parser import HTMLParser
+
+        # ── 1. Nettoyage du Markdown avant rendu ─────────────────────────────
+
+        text = markdown_text
+
+        # Blocs Mermaid → note textuelle
+        text = re.sub(
+            r'```mermaid\n.*?```',
+            '\n> *\\[Diagramme — non disponible en texte enrichi\\]*\n',
+            text, flags=re.DOTALL | re.IGNORECASE,
+        )
+
+        # LaTeX display $$ ... $$ → note (inline $...$ laissé tel quel)
+        text = re.sub(
+            r'\$\$(.*?)\$\$',
+            lambda m: f'\n> *\\[Formule : {m.group(1).strip()[:60]}\\]*\n',
+            text, flags=re.DOTALL,
+        )
+
+        # Images base64 → note avec alt-text
+        text = re.sub(
+            r'!\[([^\]]*)\]\(data:image/[^)]+\)',
+            lambda m: f'*\\[Image : {m.group(1) or "graphique"}\\]*',
+            text,
+        )
+
+        # Images URL distantes → lien texte cliquable conservé
+        # (Word affiche le alt-text ; l'URL devient un lien)
+        text = re.sub(
+            r'!\[([^\]]*)\]\((https?://[^)]+)\)',
+            lambda m: f'[{m.group(1) or "image"}]({m.group(2)})',
+            text,
+        )
+
+        # ── 2. Rendu Markdown → HTML brut ────────────────────────────────────
+
+        if _HAS_MD:
+            raw_body = md_lib.markdown(
+                text,
+                extensions=["tables", "nl2br", "sane_lists", "fenced_code"],
+            )
+        else:
+            raw_body = html.escape(text).replace("\n", "<br>")
+
+        # ── 3. Post-processing : injection de styles inline ───────────────────
+        #
+        # Word 2016+ lit correctement les styles inline mais ignore souvent
+        # les feuilles <style> lors d'un collage via CF_HTML.
+        # On réécrit chaque balise connue pour lui ajouter style="...".
+        #
+        # Palette et typographie
+        FONT_BODY   = 'Calibri, "Segoe UI", Arial, sans-serif'
+        FONT_MONO   = '"Consolas", "Courier New", monospace'
+        COLOR_TEXT  = '#1A1A1A'
+        COLOR_MUTED = '#555555'
+        COLOR_LINK  = '#1155CC'
+        COLOR_H1    = '#1F3864'   # bleu nuit Word-like
+        COLOR_H2    = '#2E4C7E'
+        COLOR_H3    = '#2E4C7E'
+        COLOR_CODE_BG   = '#F0F0F0'
+        COLOR_CODE_BD   = '#CCCCCC'
+        COLOR_PRE_BG    = '#F8F8F8'
+        COLOR_PRE_BD    = '#CCCCCC'
+        COLOR_TH_BG     = '#D9E1F2'  # bleu pâle (style Word Tableau)
+        COLOR_TD_ALT    = '#F2F5FB'  # alternance ligne
+        COLOR_BQ_BD     = '#7F7F7F'
+        COLOR_HR        = '#AAAAAA'
+
+        # Styles inline par balise (attributs style, plus attributs natifs séparés)
+        TAG_STYLES: dict[str, str] = {
+            'h1': (
+                f'font-family:{FONT_BODY};font-size:18pt;font-weight:bold;'
+                f'color:{COLOR_H1};margin:14pt 0 4pt 0;padding-bottom:4pt;'
+                f'border-bottom:1.5pt solid {COLOR_H1};line-height:1.2;'
+                f'mso-outline-level:1;'
+            ),
+            'h2': (
+                f'font-family:{FONT_BODY};font-size:14pt;font-weight:bold;'
+                f'color:{COLOR_H2};margin:12pt 0 3pt 0;line-height:1.3;'
+                f'mso-outline-level:2;'
+            ),
+            'h3': (
+                f'font-family:{FONT_BODY};font-size:12pt;font-weight:bold;'
+                f'color:{COLOR_H3};margin:10pt 0 2pt 0;line-height:1.3;'
+                f'mso-outline-level:3;'
+            ),
+            'p': (
+                f'font-family:{FONT_BODY};font-size:11pt;color:{COLOR_TEXT};'
+                f'margin:0 0 6pt 0;line-height:1.4;'
+            ),
+            'ul': (
+                f'font-family:{FONT_BODY};font-size:11pt;color:{COLOR_TEXT};'
+                f'margin:4pt 0 6pt 0;padding-left:20pt;line-height:1.4;'
+            ),
+            'ol': (
+                f'font-family:{FONT_BODY};font-size:11pt;color:{COLOR_TEXT};'
+                f'margin:4pt 0 6pt 0;padding-left:20pt;line-height:1.4;'
+            ),
+            'li': (
+                f'font-family:{FONT_BODY};font-size:11pt;color:{COLOR_TEXT};'
+                f'margin:2pt 0;line-height:1.4;'
+            ),
+            'blockquote': (
+                f'font-family:{FONT_BODY};font-size:11pt;font-style:italic;'
+                f'color:{COLOR_MUTED};margin:6pt 0 6pt 8pt;padding:4pt 12pt;'
+                f'border-left:3pt solid {COLOR_BQ_BD};'
+                f'background:#F7F7F7;'
+            ),
+            'pre': (
+                f'font-family:{FONT_MONO};font-size:10pt;color:{COLOR_TEXT};'
+                f'background:{COLOR_PRE_BG};border:1pt solid {COLOR_PRE_BD};'
+                f'padding:8pt 10pt;margin:6pt 0;'
+                f'white-space:pre-wrap;word-wrap:break-word;'
+                f'border-radius:3pt;'
+            ),
+            'code': (
+                f'font-family:{FONT_MONO};font-size:10pt;color:#C7254E;'
+                f'background:{COLOR_CODE_BG};border:0.5pt solid {COLOR_CODE_BD};'
+                f'padding:1pt 3pt;border-radius:2pt;'
+            ),
+            'table': (
+                f'font-family:{FONT_BODY};font-size:11pt;color:{COLOR_TEXT};'
+                f'border-collapse:collapse;width:100%;margin:8pt 0;'
+            ),
+            'th': (
+                f'font-family:{FONT_BODY};font-size:11pt;font-weight:bold;'
+                f'color:{COLOR_TEXT};background:{COLOR_TH_BG};'
+                f'border:1pt solid {COLOR_CODE_BD};padding:5pt 8pt;'
+                f'text-align:left;vertical-align:middle;'
+            ),
+            'td': (
+                f'font-family:{FONT_BODY};font-size:11pt;color:{COLOR_TEXT};'
+                f'border:1pt solid {COLOR_CODE_BD};padding:5pt 8pt;'
+                f'vertical-align:top;'
+            ),
+            'a': (
+                f'color:{COLOR_LINK};text-decoration:underline;'
+            ),
+            'strong': 'font-weight:bold;',
+            'em':     'font-style:italic;',
+            'hr':     (
+                f'border:none;border-top:1pt solid {COLOR_HR};'
+                f'margin:10pt 0;height:0;'
+            ),
+        }
+
+        # ── Parser HTML minimal pour injection de styles inline ───────────────
+
+        class _InlineStyler(HTMLParser):
+            """
+            Réécrit le HTML en injectant des attributs style= inline.
+
+            Gestion spéciale :
+            • <pre><code> → supprime le style code inline (fond/bordure hérite du pre)
+            • <tr> pair/impair → alternance de fond sur les <td>
+            • <code> enfant direct de <pre> → style neutre (fond transparent)
+            """
+
+            def __init__(self):
+                super().__init__(convert_charrefs=False)
+                self.out: list[str] = []
+                self._in_pre   = False   # True entre <pre> et </pre>
+                self._in_table = False
+                self._tr_index = 0       # compteur de lignes dans la table courante
+                self._tr_is_header = False  # True si la <tr> contient des <th>
+
+            # utilitaire : fusionne un style inline existant avec le nôtre
+            @staticmethod
+            def _merge(existing: str, new: str) -> str:
+                base = {
+                    k.strip(): v.strip()
+                    for part in existing.split(';')
+                    if ':' in part
+                    for k, v in [part.split(':', 1)]
+                }
+                for part in new.split(';'):
+                    if ':' in part:
+                        k, v = part.split(':', 1)
+                        base[k.strip()] = v.strip()
+                return ';'.join(f'{k}:{v}' for k, v in base.items() if v)
+
+            def handle_starttag(self, tag: str, attrs: list):
+                tag_l = tag.lower()
+                attr_dict = dict(attrs)
+
+                # ── Cas spéciaux ─────────────────────────────────────────
+                if tag_l == 'pre':
+                    self._in_pre = True
+
+                elif tag_l == 'code' and self._in_pre:
+                    # <code> dans un <pre> : fond transparent, pas de bordure
+                    neutral = (
+                        'font-family:inherit;font-size:inherit;'
+                        'background:transparent;border:none;padding:0;color:inherit;'
+                    )
+                    existing = attr_dict.get('style', '')
+                    attr_dict['style'] = self._merge(existing, neutral)
+                    self._emit_tag(tag, attr_dict)
+                    return
+
+                elif tag_l == 'table':
+                    self._in_table = True
+                    self._tr_index = 0
+
+                elif tag_l == 'tr':
+                    # Détecter les en-têtes (thead) vs données (tbody)
+                    # On ne peut pas savoir ici si la ligne contient des <th>
+                    # sans look-ahead ; on utilise le contexte parent (thead/tbody).
+                    # Simple heuristique : on initialise et on laisse handle_endtag
+                    # incrémenter le compteur.
+                    pass
+
+                elif tag_l == 'td' and self._in_table:
+                    # Alternance légère : lignes impaires légèrement colorées
+                    base_style = TAG_STYLES.get('td', '')
+                    if self._tr_index % 2 == 1:
+                        base_style += f'background:{COLOR_TD_ALT};'
+                    existing = attr_dict.get('style', '')
+                    attr_dict['style'] = self._merge(existing, base_style)
+                    self._emit_tag(tag, attr_dict)
+                    return
+
+                # ── Style générique ───────────────────────────────────────
+                if tag_l in TAG_STYLES:
+                    existing = attr_dict.get('style', '')
+                    attr_dict['style'] = self._merge(existing, TAG_STYLES[tag_l])
+
+                self._emit_tag(tag, attr_dict)
+
+            def handle_endtag(self, tag: str):
+                tag_l = tag.lower()
+                if tag_l == 'pre':
+                    self._in_pre = False
+                elif tag_l == 'table':
+                    self._in_table = False
+                    self._tr_index = 0
+                elif tag_l == 'tr' and self._in_table:
+                    self._tr_index += 1
+                self.out.append(f'</{tag}>')
+
+            def handle_data(self, data: str):
+                self.out.append(data)
+
+            def handle_entityref(self, name: str):
+                self.out.append(f'&{name};')
+
+            def handle_charref(self, name: str):
+                self.out.append(f'&#{name};')
+
+            def handle_comment(self, data: str):
+                self.out.append(f'<!--{data}-->')
+
+            def _emit_tag(self, tag: str, attr_dict: dict):
+                parts = [tag]
+                for k, v in attr_dict.items():
+                    parts.append(f'{k}="{html.escape(v, quote=True)}"')
+                self.out.append(f'<{" ".join(parts)}>')
+
+            def result(self) -> str:
+                return ''.join(self.out)
+
+        styler = _InlineStyler()
+        styler.feed(raw_body)
+        styled_body = styler.result()
+
+        # ── 4. Enveloppe HTML finale ──────────────────────────────────────────
+        #
+        # On conserve une <style> de secours pour les applications qui la lisent
+        # (LibreOffice, Outlook web) en plus des styles inline (Word natif).
+        css_fallback = f"""
+body {{
+    font-family: {FONT_BODY};
+    font-size: 11pt;
+    color: {COLOR_TEXT};
+    line-height: 1.4;
+    background: #ffffff;
+    margin: 0; padding: 8pt;
+}}
+pre code {{ background: transparent; border: none; padding: 0; }}
+tr:nth-child(even) td {{ background: {COLOR_TD_ALT}; }}
+"""
+
+        return (
+            '<!DOCTYPE html>'
+            '<html xmlns:o="urn:schemas-microsoft-com:office:office" '
+            'xmlns:w="urn:schemas-microsoft-com:office:word" '
+            'xmlns="http://www.w3.org/TR/REC-html40">'
+            '<head>'
+            '<meta charset="utf-8">'
+            '<meta name=ProgId content=Word.Document>'
+            '<meta name=Generator content=Promethee>'
+            f'<style>{css_fallback}</style>'
+            '</head>'
+            f'<body>{styled_body}</body>'
+            '</html>'
+        )
+
 
 
     # ── Téléchargement SVG Mermaid ────────────────────────────────────

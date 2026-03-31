@@ -1,4 +1,4 @@
-# 🔥 Prométhée AI v2.2.3
+# 🔥 Prométhée AI v2.2.4
 
 **Assistant IA desktop** — Interface PyQt6 connectée à un LLM (OpenAI-compatible, Albert API ou Ollama), avec outils intégrés, RAG, mémoire long terme et support Légifrance/Judilibre.
 **conçu principalement pour fonctionner avec l'API Albert de la DiNum**
@@ -6,6 +6,12 @@
 ---
 
 ## 📋 Changelog
+
+### v2.2.4
+- 📚 **Rajout de l'export structuré** du contenu de la réponse vers Word/LibreOffice. L'utilisateur peut choisir un copier/coller brut (markdown) ou riche (type RTF) depuis l'interface de chat.
+    Pratique pour faire de la récupération rapide de contenu sans passer par les outils d'export.
+- 🐛 Corrections de bugs sur des cas limites dans le RAG
+
 
 ### v2.2.3
 - 🐛 Corrections de bugs dans le rendu LaTeX et Mermaid
@@ -30,7 +36,7 @@
 
 - 💬 **Chat en streaming** avec historique chiffré (AES-GCM)
 - 🧠 **Mémoire long terme (LTM)** : résumés vectorisés des conversations passées via Qdrant, avec suppression possible depuis l'interface
-- 🔧 **Outils intégrés** : web, données, export (docx/pptx/pdf/xlsx), analyse de données, Python, SQL, OCR, météo, messagerie IMAP/SMTP, Légifrance, Judilibre, data.gouv.fr, génération automatique d'outils
+- 🔧 **Outils intégrés** : web, données, export (docx/pptx/pdf/xlsx), Grist, analyse de données, Python, SQL, OCR, météo, messagerie IMAP/SMTP, Légifrance, Judilibre, data.gouv.fr, génération automatique d'outils
 - 📚 **RAG** (Retrieval-Augmented Generation) via Qdrant et Albert API
 - 📊 **Outils collaboratifs** : intégration de l'API Grist
 - 🏛️ **APIs juridiques** : Légifrance et Judilibre via PISTE
