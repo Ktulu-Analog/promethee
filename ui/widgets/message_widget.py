@@ -1364,59 +1364,75 @@ class MessageWidget(QWidget):
         """
         Convertit du Markdown en HTML haute fidélité pour Word/LibreOffice.
 
-        Stratégie : styles inline sur chaque balise (Word ignore souvent <style>),
-        post-processing via html.parser, attributs natifs HTML sur les tableaux,
-        compatibilité CF_HTML maximale.
+        Stratégie
+        ─────────
+        • Styles inline sur chaque balise — Word ignore souvent <style> en
+          collage CF_HTML ; les styles inline sont la seule méthode fiable.
+        • Coloration syntaxique Pygments (inline spans) — Word interprète
+          correctement les <span style="color:..."> dans un <pre>.
+        • Parser html.parser en deux passes : (1) coloration Pygments sur les
+          blocs <code lang>, (2) injection inline sur toutes les balises.
+        • Alternance thead/tbody correctement séparée pour les tableaux.
+        • Alignement des colonnes préservé depuis les marqueurs Markdown
+          |:---|:---:|---:| via l'attribut align= généré par python-markdown.
+        • Listes ul/ol avec list-style-type explicite (Word peut l'ignorer sans).
+        • Enveloppe HTML avec namespaces Office pour collage Word natif.
 
         Éléments supportés
         ──────────────────
-        • Titres h1-h3   → taille, gras, couleur, espacement, filet sous h1
-        • Paragraphes    → police Calibri 11pt, interligne 1.4
-        • Gras / italique / gras-italique
-        • Code inline    → Consolas 10pt, fond #F0F0F0, bordure légère
-        • Blocs de code  → fond #F8F8F8, bordure grise, police mono, wrap
-        • Listes ul/ol   → indentation, espacement inter-items
-        • Tableaux       → bordures 1px solid, en-têtes gris, alternance légère
-        • Blockquote     → filet gauche, italique, couleur atténuée
-        • Séparateurs hr → filet gris centré
-        • Blocs Mermaid  → note textuelle (non rendu dans un traitement de texte)
-        • LaTeX $$       → note textuelle
+        h1-h3 · p · strong/em · code inline · pre+code (coloré) · ul/ol/li
+        table (thead/tbody, alternance, alignement) · blockquote · hr · a
+        Mermaid → note · LaTeX $$ → note · images base64 → note · img URL → lien
 
-        Exclusions
-        ──────────
-        • Images base64  → trop volumineuses pour CF_HTML (remplacées par note)
-        • CSS Pygments   → incompatible avec Word (remplacé par fond neutre)
-        • KaTeX/Mermaid JS → sans objet hors WebEngine
+        Dépendances optionnelles
+        ────────────────────────
+        markdown   (pip install markdown)    — requis pour rendu Markdown
+        pygments   (pip install pygments)    — coloration syntaxique blocs code
         """
         from html.parser import HTMLParser
 
-        # ── 1. Nettoyage du Markdown avant rendu ─────────────────────────────
+        # ── Palette et typographie ────────────────────────────────────────────
+        FONT_BODY  = 'Calibri, "Segoe UI", Arial, sans-serif'
+        FONT_MONO  = '"Consolas", "Courier New", monospace'
+        C_TEXT     = '#1A1A1A'
+        C_MUTED    = '#555555'
+        C_LINK     = '#1155CC'
+        C_H1       = '#1F3864'
+        C_H2       = '#2E4C7E'
+        C_H3       = '#2E4C7E'
+        C_CODE_FG  = '#C7254E'   # rouge discret pour code inline
+        C_CODE_BG  = '#F0F0F0'
+        C_CODE_BD  = '#CCCCCC'
+        C_PRE_BG   = '#F2F2F2'
+        C_PRE_BD   = '#C8C8C8'
+        C_TH_BG    = '#D9E1F2'   # bleu pâle style Word
+        C_TD_ALT   = '#EEF2FA'   # alternance paire
+        C_BQ_BD    = '#7F7F7F'
+        C_HR       = '#AAAAAA'
+
+        # ── 1. Pré-nettoyage du Markdown ─────────────────────────────────────
 
         text = markdown_text
 
-        # Blocs Mermaid → note textuelle
+        # Blocs Mermaid → note (non rendus dans un traitement de texte)
         text = re.sub(
             r'```mermaid\n.*?```',
             '\n> *\\[Diagramme — non disponible en texte enrichi\\]*\n',
             text, flags=re.DOTALL | re.IGNORECASE,
         )
-
-        # LaTeX display $$ ... $$ → note (inline $...$ laissé tel quel)
+        # LaTeX display $$ → note (inline $...$ conservé)
         text = re.sub(
             r'\$\$(.*?)\$\$',
             lambda m: f'\n> *\\[Formule : {m.group(1).strip()[:60]}\\]*\n',
             text, flags=re.DOTALL,
         )
-
-        # Images base64 → note avec alt-text
+        # Images base64 → note
         text = re.sub(
             r'!\[([^\]]*)\]\(data:image/[^)]+\)',
             lambda m: f'*\\[Image : {m.group(1) or "graphique"}\\]*',
             text,
         )
-
-        # Images URL distantes → lien texte cliquable conservé
-        # (Word affiche le alt-text ; l'URL devient un lien)
+        # Images URL distantes → lien texte
         text = re.sub(
             r'!\[([^\]]*)\]\((https?://[^)]+)\)',
             lambda m: f'[{m.group(1) or "image"}]({m.group(2)})',
@@ -1433,219 +1449,276 @@ class MessageWidget(QWidget):
         else:
             raw_body = html.escape(text).replace("\n", "<br>")
 
-        # ── 3. Post-processing : injection de styles inline ───────────────────
+        # ── 3. Coloration syntaxique Pygments (inline spans) ─────────────────
         #
-        # Word 2016+ lit correctement les styles inline mais ignore souvent
-        # les feuilles <style> lors d'un collage via CF_HTML.
-        # On réécrit chaque balise connue pour lui ajouter style="...".
+        # Pygments HtmlFormatter(nowrap=True, inline_styles=True) produit des
+        # <span style="color:..."> directement sur le texte, sans classes CSS.
+        # Word lit ces spans correctement → coloration préservée au collage.
         #
-        # Palette et typographie
-        FONT_BODY   = 'Calibri, "Segoe UI", Arial, sans-serif'
-        FONT_MONO   = '"Consolas", "Courier New", monospace'
-        COLOR_TEXT  = '#1A1A1A'
-        COLOR_MUTED = '#555555'
-        COLOR_LINK  = '#1155CC'
-        COLOR_H1    = '#1F3864'   # bleu nuit Word-like
-        COLOR_H2    = '#2E4C7E'
-        COLOR_H3    = '#2E4C7E'
-        COLOR_CODE_BG   = '#F0F0F0'
-        COLOR_CODE_BD   = '#CCCCCC'
-        COLOR_PRE_BG    = '#F8F8F8'
-        COLOR_PRE_BD    = '#CCCCCC'
-        COLOR_TH_BG     = '#D9E1F2'  # bleu pâle (style Word Tableau)
-        COLOR_TD_ALT    = '#F2F5FB'  # alternance ligne
-        COLOR_BQ_BD     = '#7F7F7F'
-        COLOR_HR        = '#AAAAAA'
+        # On remplace chaque <code class="language-XXX">...</code> dans un <pre>
+        # par le HTML coloré de Pygments.
 
-        # Styles inline par balise (attributs style, plus attributs natifs séparés)
+        if _HAS_PYGMENTS:
+            def _pygmentize_pre(m: re.Match) -> str:
+                lang_attr = m.group(1) or ''
+                code_text = m.group(2)
+
+                # Extraire le nom de langage depuis class="language-python" ou "python"
+                lang_m = re.search(r'language-(\w+)', lang_attr)
+                lang   = lang_m.group(1) if lang_m else lang_attr.strip().strip('"\'')
+
+                # Dé-échapper les entités HTML dans le code source
+                code_src = (
+                    code_text
+                    .replace('&amp;',  '&')
+                    .replace('&lt;',   '<')
+                    .replace('&gt;',   '>')
+                    .replace('&quot;', '"')
+                    .replace('&#39;',  "'")
+                )
+
+                try:
+                    lexer = get_lexer_by_name(lang, stripall=True) if lang else TextLexer()
+                except Exception:
+                    lexer = TextLexer()
+
+                fmt = HtmlFormatter(
+                    nowrap=True,
+                    noclasses=True,     # convertit class= en style= inline (Word-compatible)
+                    style='friendly',   # palette claire, lisible sur fond blanc
+                )
+                colored = highlight(code_src, lexer, fmt).rstrip('\n')
+
+                pre_style = (
+                    f'font-family:{FONT_MONO};font-size:10pt;'
+                    f'background:{C_PRE_BG};border:1pt solid {C_PRE_BD};'
+                    f'padding:8pt 10pt;margin:6pt 0;'
+                    f'white-space:pre-wrap;word-wrap:break-word;'
+                    f'line-height:1.45;border-radius:3pt;'
+                )
+                return f'<pre style="{pre_style}">{colored}</pre>'
+
+            # Cibler <pre><code class="...">...</code></pre> ou <pre><code>...</code></pre>
+            raw_body = re.sub(
+                r'<pre><code([^>]*)>(.*?)</code></pre>',
+                _pygmentize_pre,
+                raw_body,
+                flags=re.DOTALL,
+            )
+
+        # ── 4. Styles inline par balise ───────────────────────────────────────
+
         TAG_STYLES: dict[str, str] = {
             'h1': (
                 f'font-family:{FONT_BODY};font-size:18pt;font-weight:bold;'
-                f'color:{COLOR_H1};margin:14pt 0 4pt 0;padding-bottom:4pt;'
-                f'border-bottom:1.5pt solid {COLOR_H1};line-height:1.2;'
+                f'color:{C_H1};margin:14pt 0 4pt 0;padding-bottom:4pt;'
+                f'border-bottom:1.5pt solid {C_H1};line-height:1.2;'
                 f'mso-outline-level:1;'
             ),
             'h2': (
                 f'font-family:{FONT_BODY};font-size:14pt;font-weight:bold;'
-                f'color:{COLOR_H2};margin:12pt 0 3pt 0;line-height:1.3;'
+                f'color:{C_H2};margin:12pt 0 3pt 0;line-height:1.3;'
                 f'mso-outline-level:2;'
             ),
             'h3': (
                 f'font-family:{FONT_BODY};font-size:12pt;font-weight:bold;'
-                f'color:{COLOR_H3};margin:10pt 0 2pt 0;line-height:1.3;'
+                f'color:{C_H3};margin:10pt 0 2pt 0;line-height:1.3;'
                 f'mso-outline-level:3;'
             ),
             'p': (
-                f'font-family:{FONT_BODY};font-size:11pt;color:{COLOR_TEXT};'
+                f'font-family:{FONT_BODY};font-size:11pt;color:{C_TEXT};'
                 f'margin:0 0 6pt 0;line-height:1.4;'
             ),
             'ul': (
-                f'font-family:{FONT_BODY};font-size:11pt;color:{COLOR_TEXT};'
-                f'margin:4pt 0 6pt 0;padding-left:20pt;line-height:1.4;'
+                f'font-family:{FONT_BODY};font-size:11pt;color:{C_TEXT};'
+                f'list-style-type:disc;margin:4pt 0 6pt 0;'
+                f'padding-left:22pt;line-height:1.4;'
             ),
             'ol': (
-                f'font-family:{FONT_BODY};font-size:11pt;color:{COLOR_TEXT};'
-                f'margin:4pt 0 6pt 0;padding-left:20pt;line-height:1.4;'
+                f'font-family:{FONT_BODY};font-size:11pt;color:{C_TEXT};'
+                f'list-style-type:decimal;margin:4pt 0 6pt 0;'
+                f'padding-left:22pt;line-height:1.4;'
             ),
             'li': (
-                f'font-family:{FONT_BODY};font-size:11pt;color:{COLOR_TEXT};'
+                f'font-family:{FONT_BODY};font-size:11pt;color:{C_TEXT};'
                 f'margin:2pt 0;line-height:1.4;'
             ),
             'blockquote': (
                 f'font-family:{FONT_BODY};font-size:11pt;font-style:italic;'
-                f'color:{COLOR_MUTED};margin:6pt 0 6pt 8pt;padding:4pt 12pt;'
-                f'border-left:3pt solid {COLOR_BQ_BD};'
-                f'background:#F7F7F7;'
+                f'color:{C_MUTED};margin:6pt 0 6pt 8pt;padding:6pt 14pt;'
+                f'border-left:3pt solid {C_BQ_BD};background:#F7F7F7;'
             ),
+            # <pre> sans Pygments : bloc monospace neutre
             'pre': (
-                f'font-family:{FONT_MONO};font-size:10pt;color:{COLOR_TEXT};'
-                f'background:{COLOR_PRE_BG};border:1pt solid {COLOR_PRE_BD};'
+                f'font-family:{FONT_MONO};font-size:10pt;color:{C_TEXT};'
+                f'background:{C_PRE_BG};border:1pt solid {C_PRE_BD};'
                 f'padding:8pt 10pt;margin:6pt 0;'
                 f'white-space:pre-wrap;word-wrap:break-word;'
-                f'border-radius:3pt;'
+                f'line-height:1.45;border-radius:3pt;'
             ),
+            # <code> inline (hors <pre>) uniquement
             'code': (
-                f'font-family:{FONT_MONO};font-size:10pt;color:#C7254E;'
-                f'background:{COLOR_CODE_BG};border:0.5pt solid {COLOR_CODE_BD};'
-                f'padding:1pt 3pt;border-radius:2pt;'
+                f'font-family:{FONT_MONO};font-size:10pt;color:{C_CODE_FG};'
+                f'background:{C_CODE_BG};border:0.5pt solid {C_CODE_BD};'
+                f'padding:1pt 4pt;border-radius:2pt;'
             ),
             'table': (
-                f'font-family:{FONT_BODY};font-size:11pt;color:{COLOR_TEXT};'
+                f'font-family:{FONT_BODY};font-size:11pt;color:{C_TEXT};'
                 f'border-collapse:collapse;width:100%;margin:8pt 0;'
             ),
             'th': (
                 f'font-family:{FONT_BODY};font-size:11pt;font-weight:bold;'
-                f'color:{COLOR_TEXT};background:{COLOR_TH_BG};'
-                f'border:1pt solid {COLOR_CODE_BD};padding:5pt 8pt;'
+                f'color:{C_TEXT};background:{C_TH_BG};'
+                f'border:1pt solid {C_CODE_BD};padding:5pt 8pt;'
                 f'text-align:left;vertical-align:middle;'
             ),
             'td': (
-                f'font-family:{FONT_BODY};font-size:11pt;color:{COLOR_TEXT};'
-                f'border:1pt solid {COLOR_CODE_BD};padding:5pt 8pt;'
+                f'font-family:{FONT_BODY};font-size:11pt;color:{C_TEXT};'
+                f'border:1pt solid {C_CODE_BD};padding:5pt 8pt;'
                 f'vertical-align:top;'
             ),
-            'a': (
-                f'color:{COLOR_LINK};text-decoration:underline;'
-            ),
+            'a':      f'color:{C_LINK};text-decoration:underline;',
             'strong': 'font-weight:bold;',
             'em':     'font-style:italic;',
-            'hr':     (
-                f'border:none;border-top:1pt solid {COLOR_HR};'
+            'hr': (
+                f'border:none;border-top:1.5pt solid {C_HR};'
                 f'margin:10pt 0;height:0;'
             ),
         }
 
-        # ── Parser HTML minimal pour injection de styles inline ───────────────
+        # ── 5. Parser HTML : injection de styles inline ───────────────────────
 
         class _InlineStyler(HTMLParser):
             """
-            Réécrit le HTML en injectant des attributs style= inline.
+            Réécrit le HTML Markdown en injectant style= inline sur chaque balise.
 
-            Gestion spéciale :
-            • <pre><code> → supprime le style code inline (fond/bordure hérite du pre)
-            • <tr> pair/impair → alternance de fond sur les <td>
-            • <code> enfant direct de <pre> → style neutre (fond transparent)
+            Points clés
+            ───────────
+            • <pre> déjà stylé par Pygments → skip (style déjà injecté en étape 3)
+            • <code> dans <pre> sans Pygments → fond transparent, pas de bordure
+            • Tableaux : compteur de lignes séparé pour thead (jamais alterné)
+              et tbody (alternance paire/impaire)
+            • <td align="..."> généré par python-markdown → préservé et fusionné
+            • Listes imbriquées : le style ul/ol est hérité, on ne l'écrase pas
             """
 
             def __init__(self):
                 super().__init__(convert_charrefs=False)
                 self.out: list[str] = []
-                self._in_pre   = False   # True entre <pre> et </pre>
-                self._in_table = False
-                self._tr_index = 0       # compteur de lignes dans la table courante
-                self._tr_is_header = False  # True si la <tr> contient des <th>
+                self._in_pre        = False
+                self._pre_styled    = False   # True si le <pre> porte déjà un style
+                self._in_table      = False
+                self._in_thead      = False   # True entre <thead> et </thead>
+                self._tbody_tr_idx  = 0       # compteur de <tr> dans <tbody>
 
-            # utilitaire : fusionne un style inline existant avec le nôtre
             @staticmethod
             def _merge(existing: str, new: str) -> str:
-                base = {
-                    k.strip(): v.strip()
-                    for part in existing.split(';')
-                    if ':' in part
-                    for k, v in [part.split(':', 1)]
-                }
+                """Fusionne deux chaînes de style CSS (new prend la priorité)."""
+                base: dict[str, str] = {}
+                for part in existing.split(';'):
+                    if ':' in part:
+                        k, _, v = part.partition(':')
+                        base[k.strip()] = v.strip()
                 for part in new.split(';'):
                     if ':' in part:
-                        k, v = part.split(':', 1)
+                        k, _, v = part.partition(':')
                         base[k.strip()] = v.strip()
                 return ';'.join(f'{k}:{v}' for k, v in base.items() if v)
 
-            def handle_starttag(self, tag: str, attrs: list):
-                tag_l = tag.lower()
-                attr_dict = dict(attrs)
+            def _emit(self, tag: str, attrs: dict, self_closing: bool = False) -> None:
+                parts = [tag]
+                for k, v in attrs.items():
+                    parts.append(f'{k}="{html.escape(str(v), quote=True)}"')
+                tail = ' /' if self_closing else ''
+                self.out.append(f'<{" ".join(parts)}{tail}>')
 
-                # ── Cas spéciaux ─────────────────────────────────────────
+            def handle_starttag(self, tag: str, attrs: list) -> None:
+                tag_l  = tag.lower()
+                adict  = dict(attrs)
+
+                # ── <pre> ────────────────────────────────────────────────────
                 if tag_l == 'pre':
                     self._in_pre = True
+                    # Si Pygments a déjà injecté style= sur ce <pre>, on le
+                    # conserve tel quel sans écraser.
+                    if 'style' in adict and 'font-family' in adict['style']:
+                        self._pre_styled = True
+                    else:
+                        self._pre_styled = False
+                        adict['style'] = self._merge(
+                            adict.get('style', ''), TAG_STYLES['pre']
+                        )
+                    self._emit(tag, adict)
+                    return
 
-                elif tag_l == 'code' and self._in_pre:
-                    # <code> dans un <pre> : fond transparent, pas de bordure
+                # ── <code> dans <pre> ────────────────────────────────────────
+                if tag_l == 'code' and self._in_pre:
+                    # Fond transparent : le <pre> porte déjà le fond coloré
                     neutral = (
                         'font-family:inherit;font-size:inherit;'
                         'background:transparent;border:none;padding:0;color:inherit;'
                     )
-                    existing = attr_dict.get('style', '')
-                    attr_dict['style'] = self._merge(existing, neutral)
-                    self._emit_tag(tag, attr_dict)
+                    adict['style'] = self._merge(adict.get('style', ''), neutral)
+                    self._emit(tag, adict)
                     return
 
-                elif tag_l == 'table':
-                    self._in_table = True
-                    self._tr_index = 0
+                # ── Tableaux ─────────────────────────────────────────────────
+                if tag_l == 'table':
+                    self._in_table     = True
+                    self._in_thead     = False
+                    self._tbody_tr_idx = 0
 
-                elif tag_l == 'tr':
-                    # Détecter les en-têtes (thead) vs données (tbody)
-                    # On ne peut pas savoir ici si la ligne contient des <th>
-                    # sans look-ahead ; on utilise le contexte parent (thead/tbody).
-                    # Simple heuristique : on initialise et on laisse handle_endtag
-                    # incrémenter le compteur.
-                    pass
+                elif tag_l == 'thead':
+                    self._in_thead = True
+
+                elif tag_l == 'tbody':
+                    self._in_thead     = False
+                    self._tbody_tr_idx = 0
 
                 elif tag_l == 'td' and self._in_table:
-                    # Alternance légère : lignes impaires légèrement colorées
-                    base_style = TAG_STYLES.get('td', '')
-                    if self._tr_index % 2 == 1:
-                        base_style += f'background:{COLOR_TD_ALT};'
-                    existing = attr_dict.get('style', '')
-                    attr_dict['style'] = self._merge(existing, base_style)
-                    self._emit_tag(tag, attr_dict)
+                    base = TAG_STYLES['td']
+                    # Alternance uniquement dans tbody
+                    if not self._in_thead and self._tbody_tr_idx % 2 == 1:
+                        base += f'background:{C_TD_ALT};'
+                    # python-markdown émet style="text-align: ..." sur les <td>/<th>
+                    # _merge() préserve cet alignement en le fusionnant avec notre base
+                    adict['style'] = self._merge(adict.get('style', ''), base)
+                    self._emit(tag, adict)
                     return
 
-                # ── Style générique ───────────────────────────────────────
+                elif tag_l == 'th' and self._in_table:
+                    base  = TAG_STYLES['th']
+                    adict['style'] = self._merge(adict.get('style', ''), base)
+                    self._emit(tag, adict)
+                    return
+
+                # ── Style générique ───────────────────────────────────────────
                 if tag_l in TAG_STYLES:
-                    existing = attr_dict.get('style', '')
-                    attr_dict['style'] = self._merge(existing, TAG_STYLES[tag_l])
+                    adict['style'] = self._merge(
+                        adict.get('style', ''), TAG_STYLES[tag_l]
+                    )
 
-                self._emit_tag(tag, attr_dict)
+                self._emit(tag, adict)
 
-            def handle_endtag(self, tag: str):
+            def handle_endtag(self, tag: str) -> None:
                 tag_l = tag.lower()
                 if tag_l == 'pre':
-                    self._in_pre = False
+                    self._in_pre     = False
+                    self._pre_styled = False
                 elif tag_l == 'table':
                     self._in_table = False
-                    self._tr_index = 0
-                elif tag_l == 'tr' and self._in_table:
-                    self._tr_index += 1
+                elif tag_l == 'thead':
+                    self._in_thead = False
+                elif tag_l == 'tbody':
+                    self._tbody_tr_idx = 0
+                elif tag_l == 'tr' and self._in_table and not self._in_thead:
+                    self._tbody_tr_idx += 1
                 self.out.append(f'</{tag}>')
 
-            def handle_data(self, data: str):
-                self.out.append(data)
-
-            def handle_entityref(self, name: str):
-                self.out.append(f'&{name};')
-
-            def handle_charref(self, name: str):
-                self.out.append(f'&#{name};')
-
-            def handle_comment(self, data: str):
-                self.out.append(f'<!--{data}-->')
-
-            def _emit_tag(self, tag: str, attr_dict: dict):
-                parts = [tag]
-                for k, v in attr_dict.items():
-                    parts.append(f'{k}="{html.escape(v, quote=True)}"')
-                self.out.append(f'<{" ".join(parts)}>')
+            def handle_data(self, data: str)         -> None: self.out.append(data)
+            def handle_entityref(self, name: str)    -> None: self.out.append(f'&{name};')
+            def handle_charref(self, name: str)      -> None: self.out.append(f'&#{name};')
+            def handle_comment(self, data: str)      -> None: self.out.append(f'<!--{data}-->')
 
             def result(self) -> str:
                 return ''.join(self.out)
@@ -1654,28 +1727,36 @@ class MessageWidget(QWidget):
         styler.feed(raw_body)
         styled_body = styler.result()
 
-        # ── 4. Enveloppe HTML finale ──────────────────────────────────────────
+        # ── 6. Enveloppe HTML finale ──────────────────────────────────────────
         #
-        # On conserve une <style> de secours pour les applications qui la lisent
-        # (LibreOffice, Outlook web) en plus des styles inline (Word natif).
+        # Namespaces Office → Word reconnaît le fragment comme natif et préserve
+        # mieux la mise en forme (plans, tableaux, styles de titre).
+        # La feuille <style> de secours bénéficie à LibreOffice et Outlook web.
+
         css_fallback = f"""
 body {{
     font-family: {FONT_BODY};
     font-size: 11pt;
-    color: {COLOR_TEXT};
+    color: {C_TEXT};
     line-height: 1.4;
     background: #ffffff;
-    margin: 0; padding: 8pt;
+    margin: 0;
+    padding: 8pt;
 }}
-pre code {{ background: transparent; border: none; padding: 0; }}
-tr:nth-child(even) td {{ background: {COLOR_TD_ALT}; }}
+pre code {{
+    background: transparent;
+    border: none;
+    padding: 0;
+}}
+tbody tr:nth-child(even) td {{
+    background: {C_TD_ALT};
+}}
 """
-
         return (
             '<!DOCTYPE html>'
-            '<html xmlns:o="urn:schemas-microsoft-com:office:office" '
-            'xmlns:w="urn:schemas-microsoft-com:office:word" '
-            'xmlns="http://www.w3.org/TR/REC-html40">'
+            '<html xmlns:o="urn:schemas-microsoft-com:office:office"'
+            ' xmlns:w="urn:schemas-microsoft-com:office:word"'
+            ' xmlns="http://www.w3.org/TR/REC-html40">'
             '<head>'
             '<meta charset="utf-8">'
             '<meta name=ProgId content=Word.Document>'

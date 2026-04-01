@@ -342,13 +342,30 @@ class RagPanel(QWidget):
 
     # ── Liste depuis Qdrant ───────────────────────────────────────────
 
+    def _is_session_collection(self, collection_name: str | None) -> bool:
+        """Retourne True si la collection est interne (promethee_*) ou None (collection par défaut)."""
+        if collection_name is None:
+            return True
+        return (
+            collection_name.startswith("promethee_")
+            or collection_name == Config.QDRANT_COLLECTION
+        )
+
     def _refresh_doc_list(self):
-        """Affiche les documents de la conversation courante uniquement."""
+        """Affiche les documents de la conversation courante (collections internes uniquement).
+
+        Pour les collections externes (Albert ou Qdrant tiers), la liste reste vide
+        afin d'éviter un scroll complet qui bloquerait l'UI.
+        """
         self._doc_list.clear()
+
+        if not self._is_session_collection(self.selected_collection):
+            return
+
         if not rag_engine.is_available():
             return
 
-        # Afficher uniquement les documents de cette conversation
+        # Afficher uniquement les documents de cette conversation (collection interne)
         for entry in rag_engine.list_sources(self.conv_id, collection_name=self.selected_collection):
             badge = "🌐" if entry["scope"] == "global" else "💬"
             label = f"{badge} {entry['source']}  ({entry['count']} chunks)"
