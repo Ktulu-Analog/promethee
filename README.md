@@ -50,7 +50,7 @@
 - 💬 **Chat en streaming** avec historique chiffré (AES-GCM)
 - 🧠 **Mémoire long terme (LTM)** : résumés vectorisés des conversations passées via Qdrant, avec suppression possible depuis l'interface
 - 🔧 **Outils intégrés** : web, données, export (docx/pptx/pdf/xlsx), Grist, analyse de données, Python, SQL, OCR, météo, messagerie IMAP/SMTP, Légifrance, Judilibre, data.gouv.fr, génération automatique d'outils
-- 🗂️ **Système de fichiers virtuel (VFS)** : le LLM travaille dans un espace de fichiers isolé par utilisateur, stocké en SQLite — aucune écriture sur le disque réel du serveur
+- 🗂️ **Système de fichiers virtuel (VFS)** : le LLM travaille dans un espace de fichiers isolé par utilisateur, stocké avec Garage (S3) — aucune écriture sur le disque réel du serveur
 - 📚 **RAG** (Retrieval-Augmented Generation) via Qdrant et Albert API
 - 📊 **Outils collaboratifs** : intégration de l'API Grist
 - 🏛️ **APIs juridiques** : Légifrance et Judilibre via PISTE
