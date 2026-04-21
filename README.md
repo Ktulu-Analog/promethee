@@ -1,5 +1,9 @@
 # 🔥 Prométhée AI v3.0
 
+
+![Ecran de connexion](assets/git-0.png)
+
+
 - **Assistant IA web** — Interface FastAPI + React connectée à un LLM (Albert API, OpenAI-compatible), avec outils intégrés, RAG, mémoire long terme et support Légifrance/Judilibre.
 - **Système de fichiers virtuel** - les utilisateurs disposent d'un espace de stockage (utilisé par le LLM et les outils) compatible S3 via Garage.
 - **Conçu principalement pour fonctionner avec l'API Albert de la DiNum**
