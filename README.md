@@ -9,7 +9,7 @@
 ## 📋 Changelog
 
 ### v3.0
-- 📚 Application multi-utilisateur FastAPI-React (suppression du mode desktop mono-utilisateur)
+- 📚 Application multi-utilisateurs FastAPI-React (suppression du mode desktop mono-utilisateur)
 - 📚 VFS avec Garage (stockage compatible S3)
 - 📊 Rendu de graphiques avec echarts (typiquement depuis un fichier .csv ou tableur)
 - 🐛 Corrections de bugs dans les outils (encore pas mal de travail pour Légifrance)
