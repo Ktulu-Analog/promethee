@@ -1,7 +1,7 @@
 # ============================================================================
-# Prométhée — Assistant IA desktop
+# Prométhée — Assistant IA avancé
 # ============================================================================
-# Auteur  : Pierre COUGET
+# Auteur  : Pierre COUGET ktulu.analog@gmail.com
 # Licence : GNU Affero General Public License v3.0 (AGPL-3.0)
 #           https://www.gnu.org/licenses/agpl-3.0.html
 # Année   : 2026
@@ -364,8 +364,8 @@ def _search(
         "Effectue une recherche web multi-moteurs (DuckDuckGo ou SearXNG auto-hébergé) "
         "et retourne les résultats (titre, URL, extrait). "
         "Pour lire le contenu complet d'un résultat, utiliser web_fetch avec l'URL. "
-        "Exemples de requêtes : 'loi n° 2023-22 legifrance', "
-        "'pandas read_csv documentation', 'actualité IA France 2024'."
+        "Exemples de requêtes : 'loi n° 2026-22 legifrance', "
+        "'pandas read_csv documentation', 'actualité IA France 2026'."
     ),
     parameters={
         "type": "object",
@@ -459,7 +459,7 @@ def web_search(
         "properties": {
             "requete": {
                 "type": "string",
-                "description": "Sujet à rechercher (ex: 'RGPD actualité 2024', 'Python 3.13 release').",
+                "description": "Sujet à rechercher (ex: 'RGPD actualité 2026', 'Python 3.14 release').",
             },
             "periode": {
                 "type": "string",
@@ -1215,9 +1215,9 @@ def web_rss(
             "destination": {
                 "type": "string",
                 "description": (
-                    "Dossier ou chemin complet de destination. "
-                    "Si dossier, le nom de fichier est déduit de l'URL. "
-                    "Défaut : ~/Téléchargements/ ou ~/Downloads/"
+                    "Chemin VFS de destination (ex: /documents/rapport.pdf). "
+                    "Si c'est un dossier (sans extension), le nom de fichier est déduit de l'URL. "
+                    "Défaut : /downloads/<nom_fichier>"
                 ),
             },
             "timeout": {
@@ -1238,20 +1238,13 @@ def web_download_file(
     timeout: int = 60,
     taille_max_mo: int = 100,
 ) -> dict:
+    import io as _io
+    from core.virtual_fs import get_vfs
+
     taille_max = taille_max_mo * 1024 * 1024
 
-    if destination:
-        dest_path = Path(destination).expanduser()
-    else:
-        for candidate in (Path.home() / "Téléchargements", Path.home() / "Downloads"):
-            if candidate.exists():
-                dest_path = candidate
-                break
-        else:
-            dest_path = Path.home() / "Downloads"
-            dest_path.mkdir(exist_ok=True)
-
     try:
+        # ── Vérification optionnelle de la taille via HEAD ─────────────────
         try:
             head = requests.head(url, headers=_DEFAULT_HEADERS,
                                  timeout=10, allow_redirects=True)
@@ -1265,16 +1258,17 @@ def web_download_file(
                     ),
                 }
         except Exception:
-            pass
+            pass  # HEAD non supporté ou timeout → on tente quand même
 
         resp = requests.get(url, headers=_DEFAULT_HEADERS,
                             timeout=timeout, stream=True, allow_redirects=True)
         resp.raise_for_status()
 
+        # ── Déduire le nom de fichier ──────────────────────────────────────
         filename = ""
         cd = resp.headers.get("Content-Disposition", "")
         if "filename=" in cd:
-            m = re.search(r'filename[^;=\n]*=[\'""]?([^\'""\n;]+)', cd)
+            m = re.search(r'filename[^;=\n]*=[\'\"]?([^\'\"\n;]+)', cd)
             if m:
                 filename = m.group(1).strip()
 
@@ -1286,44 +1280,55 @@ def web_download_file(
                 ext = mimetypes.guess_extension(ct) or ""
                 filename += ext
 
-        if dest_path.is_dir():
-            file_path = dest_path / filename
+        # ── Déterminer le chemin VFS de destination ────────────────────────
+        if destination:
+            vfs_dest = destination if destination.startswith("/") else f"/{destination}"
+            # Si la destination est un dossier (pas d'extension), y ajouter le nom
+            if not Path(vfs_dest).suffix:
+                vfs_dest = f"{vfs_dest.rstrip('/')}/{filename}"
         else:
-            file_path = dest_path
-            file_path.parent.mkdir(parents=True, exist_ok=True)
+            vfs_dest = f"/downloads/{filename}"
 
-        if file_path.exists():
-            stem = file_path.stem
-            suffix = file_path.suffix
-            file_path = file_path.with_name(f"{stem}_{int(time.time())}{suffix}")
-
+        # ── Télécharger en mémoire avec contrôle de taille ────────────────
+        buf = _io.BytesIO()
         total = 0
-        with open(file_path, "wb") as f:
-            for chunk in resp.iter_content(chunk_size=8192):
-                total += len(chunk)
-                if total > taille_max:
-                    f.close()
-                    file_path.unlink(missing_ok=True)
-                    return {
-                        "status": "error",
-                        "error": f"Fichier trop volumineux (dépasse {taille_max_mo} Mo pendant le téléchargement).",
-                    }
-                f.write(chunk)
+        for chunk in resp.iter_content(chunk_size=8192):
+            total += len(chunk)
+            if total > taille_max:
+                return {
+                    "status": "error",
+                    "error": f"Fichier trop volumineux (dépasse {taille_max_mo} Mo pendant le téléchargement).",
+                }
+            buf.write(chunk)
+
+        # ── Ingérer dans le VFS ────────────────────────────────────────────
+        data = buf.getvalue()
+        mime_type = resp.headers.get("Content-Type", "").split(";")[0].strip()
+        if not mime_type or mime_type == "*/*":
+            mime_type, _ = mimetypes.guess_type(filename)
+            mime_type = mime_type or "application/octet-stream"
+
+        vfs = get_vfs()
+        vfs.write_bytes(vfs_dest, data, mime_type=mime_type, overwrite=True)
+
+        taille_str = (
+            f"{total / 1024:.1f} Ko" if total < 1024 * 1024
+            else f"{total / 1024 / 1024:.2f} Mo"
+        )
 
         return {
             "status":    "success",
             "url":       resp.url,
-            "fichier":   str(file_path),
-            "nom":       file_path.name,
-            "taille":    f"{total / 1024:.1f} Ko" if total < 1024 * 1024 else f"{total / 1024 / 1024:.2f} Mo",
-            "type_mime": resp.headers.get("Content-Type", "inconnu").split(";")[0],
+            "fichier":   vfs_dest,
+            "vfs":       True,
+            "nom":       filename,
+            "taille":    taille_str,
+            "type_mime": mime_type,
         }
 
     except requests.exceptions.Timeout:
         return {"status": "error", "error": f"Timeout après {timeout}s"}
     except requests.exceptions.HTTPError as e:
         return {"status": "error", "error": f"Erreur HTTP {e.response.status_code}"}
-    except PermissionError:
-        return {"status": "error", "error": f"Permission refusée pour écrire dans : {dest_path}"}
     except Exception as e:
         return {"status": "error", "error": f"Erreur téléchargement : {e}"}

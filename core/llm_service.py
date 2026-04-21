@@ -1,7 +1,8 @@
 # ============================================================================
-# Prométhée — Assistant IA desktop
 # ============================================================================
-# Auteur  : Pierre COUGET
+# Prométhée — Assistant IA avancé
+# ============================================================================
+# Auteur  : Pierre COUGET ktulu.analog@gmail.com
 # Licence : GNU Affero General Public License v3.0 (AGPL-3.0)
 #           https://www.gnu.org/licenses/agpl-3.0.html
 # Année   : 2026
@@ -96,7 +97,7 @@ _log = logging.getLogger(__name__)
 # core.llm_service sans modification, même si les symboles ont migré.
 
 # Callbacks (workers.py les importe via llm_service.set_*_callback)
-from .llm_events import (                                    # noqa: F401
+from .llm_events import (
     set_context_event_callback,
     set_compression_stats_callback,
     set_memory_event_callback,
@@ -105,9 +106,8 @@ from .llm_events import (                                    # noqa: F401
 )
 
 # Clients (tool_creator_tools.py et rag_engine.py importent build_family_client)
-from .llm_clients import (                                   # noqa: F401
+from .llm_clients import (
     build_specialist_client,
-    list_local_models,
     list_remote_models,
 )
 
@@ -407,20 +407,104 @@ def agent_loop(
                     if len(re_trimmed) < len(msgs):
                         msgs = re_trimmed
 
+            # ── Garde-fou anti-boucle : signal d'arrêt avant-dernière itération ──
+            # Si le LLM n'a pas encore produit de texte et approche la limite,
+            # on lui injecte un avertissement explicite pour qu'il synthétise
+            # au lieu de continuer à appeler des outils indéfiniment.
+            #
+            # IMPORTANT — contraintes Albert/vLLM sur l'ordre des rôles :
+            #   • role=system  interdit après role=tool  → HTTP 400
+            #   • role=user    interdit après role=tool  → HTTP 400
+            #   • role=assistant interdit en dernier     → HTTP 400
+            # Solution : si le dernier message est un tool, on intercale un
+            # assistant vide pour "fermer" le bloc, puis on injecte le signal
+            # en user. La séquence tool → assistant → user est universellement
+            # acceptée par Albert/vLLM.
+            if iteration == max_iterations - 2 and not final_text:
+                if msgs and msgs[-1].get("role") == "tool":
+                    msgs.append({"role": "assistant", "content": ""})
+                msgs.append({
+                    "role": "user",
+                    "content": (
+                        "[Garde-fou] L'agent a effectué de nombreux appels d'outils sans "
+                        "produire de réponse. À partir de maintenant, NE PAS appeler d'autres "
+                        "outils. Rédiger immédiatement la réponse finale en texte en synthétisant "
+                        "les résultats déjà obtenus."
+                    ),
+                })
+
             # ── Appel LLM (décision) ──────────────────────────────────────────
             api_msgs = memory.strip_internal_markers(msgs)
+
+            if not tools:
+                # Sans outils : streaming direct token par token vers l'UI.
+                stream_resp = client.chat.completions.create(
+                    model=active_model,
+                    messages=api_msgs,
+                    temperature=0.7,
+                    stream=True,
+                    max_tokens=Config.MAX_CONTEXT_TOKENS,
+                    stream_options={"include_usage": True},
+                )
+                final_text, _, _ = _stream_response(
+                    stream_resp, usage, on_token, on_usage,
+                    log_context="agent_loop/direct_stream",
+                    emit_usage_as="final",
+                    model_name=active_model,
+                )
+                return final_text
+
+            # Avec outils : stream=False obligatoire pour détecter les tool_calls
+            # avant d'accumuler les tokens (l'API stream ne permet pas de rollback).
+            #
+            # CORRECTION BUG 2 — Politique tool_choice par itération :
+            #
+            #   iteration == 0            → "required"
+            #     Force le LLM à appeler au moins un outil sur le premier tour.
+            #     Évite la hallucination "j'enregistre le fichier" sans appel réel.
+            #
+            #   0 < iteration < max-1     → "auto"
+            #     Après le premier outil, le LLM choisit librement : chaîner
+            #     d'autres appels ou synthétiser. Comportement agent normal.
+            #
+            #   iteration == max-1        → "none"
+            #     Garde-fou : bloque tout nouvel appel et force la réponse finale.
+            #
+            # Note : "required" est supporté par OpenAI et les backends vLLM/Albert
+            # compatibles. Si le backend renvoie une erreur 400, passer
+            # disable_context_management=True pour forcer "auto" partout.
+            if iteration == max_iterations - 1:
+                _tool_choice = "none"
+            elif iteration == 0:
+                _tool_choice = "required"
+            else:
+                _tool_choice = "auto"
+
             kw: dict = dict(
                 model=active_model,
                 messages=api_msgs,
                 temperature=0.7,
                 stream=False,
                 max_tokens=Config.MAX_CONTEXT_TOKENS,
+                tools=tools,
+                tool_choice=_tool_choice,
             )
-            if tools:
-                kw["tools"]       = tools
-                kw["tool_choice"] = "auto"
 
             resp          = client.chat.completions.create(**kw)
+
+            # Certains backends (Albert/vLLM) renvoient HTTP 200 mais avec
+            # choices=null ou choices=[] quand ils sont surchargés ou qu'une
+            # erreur interne silencieuse s'est produite côté serveur.
+            # On lève une exception explicite plutôt que de laisser crasher
+            # sur TypeError: 'NoneType' object is not subscriptable.
+            if not resp.choices:
+                raise RuntimeError(
+                    f"[agent_loop] Le backend a renvoyé une réponse vide "
+                    f"(choices={resp.choices!r}) à l'itération {iteration}. "
+                    f"Modèle: {active_model}. "
+                    f"Vérifiez la charge du serveur Albert ou la validité de la requête."
+                )
+
             choice        = resp.choices[0]
             msg           = choice.message
             finish_reason = choice.finish_reason  # "stop", "tool_calls", "length", None
@@ -542,28 +626,26 @@ def agent_loop(
                     _called_this_turn, client, model
                 )
 
-            # ── Réponse finale ────────────────────────────────────────────────
+            # ── Réponse finale (après tool_calls) ────────────────────────────
+            # Le modèle a terminé ses appels d'outils et doit maintenant
+            # synthétiser une réponse. On stream pour un affichage progressif.
             else:
-                # Cas A : le modèle a fourni du contenu texte dans cette réponse
-                if msg.content:
-                    final_text = msg.content
-                    if on_token:
-                        on_token(final_text)
-                    if hasattr(resp, "usage") and resp.usage:
-                        emit_model_usage(
-                            model=_final_model,
-                            prompt=0,
-                            completion=getattr(resp.usage, "completion_tokens", 0) or 0,
-                            role="final",
-                        )
-                    return final_text
-
-                # Cas B : pas de contenu texte → streaming pour obtenir la synthèse.
-                # Utilise _final_client/_final_model si une famille dominante a été
-                # résolue lors du dernier tour avec tool_calls.
+                # Vérifier l'annulation AVANT d'ouvrir le stream : si le client
+                # WebSocket s'est déconnecté pendant l'exécution des outils,
+                # is_cancelled() est déjà True. Ouvrir le stream quand même
+                # provoquerait un GeneratorExit immédiat par GC côté Albert.
+                if is_cancelled():
+                    return final_text or ""
+                _final_msgs = memory.strip_internal_markers(msgs)
+                # Si le LLM de synthèse est différent du LLM principal,
+                # certains backends (vLLM/Albert) rejettent role=system quand
+                # l'historique se termine par role=tool → HTTP 400.
+                # On réécrit le contexte pour éliminer ce cas.
+                if _final_client is not client:
+                    _final_msgs = _sanitize_msgs_for_secondary_backend(_final_msgs)
                 stream_resp = _final_client.chat.completions.create(
                     model=_final_model,
-                    messages=memory.strip_internal_markers(msgs),
+                    messages=_final_msgs,
                     temperature=0.7,
                     stream=True,
                     max_tokens=Config.MAX_CONTEXT_TOKENS,
@@ -581,14 +663,22 @@ def agent_loop(
 
         # ── Max itérations atteint : synthèse forcée ──────────────────────────
         if not final_text:
+            # Même garde : ne pas ouvrir un stream si le client est déjà parti.
+            if is_cancelled():
+                return ""
             try:
                 msgs.append({
                     "role":    "user",
                     "content": "Résume les résultats obtenus et réponds à la question initiale.",
                 })
+                _final_msgs = memory.strip_internal_markers(msgs)
+                # Même correction que pour la réponse finale normale :
+                # le backend secondaire rejette role=system avant role=tool.
+                if _final_client is not client:
+                    _final_msgs = _sanitize_msgs_for_secondary_backend(_final_msgs)
                 stream_resp = _final_client.chat.completions.create(
                     model=_final_model,
-                    messages=memory.strip_internal_markers(msgs),
+                    messages=_final_msgs,
                     temperature=0.7,
                     stream=True,
                     max_tokens=Config.MAX_CONTEXT_TOKENS,
@@ -599,8 +689,13 @@ def agent_loop(
                     emit_usage_as="stream",
                     model_name=_final_model,
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                _log.error(
+                    "[agent_loop] Synthèse forcée échouée (max_iterations=%d, modèle=%s) : %s",
+                    max_iterations, _final_model, e,
+                )
+                if on_error:
+                    on_error(f"Erreur lors de la synthèse finale : {e}")
 
         usage.log("agent_loop/max_iter")
         if on_usage:
@@ -611,6 +706,56 @@ def agent_loop(
         if on_error:
             on_error(str(e))
         raise
+
+
+# ── Helper privé : nettoyage du contexte pour backend secondaire ─────────────
+
+
+def _sanitize_msgs_for_secondary_backend(msgs: list[dict]) -> list[dict]:
+    """
+    Réécrit l'historique pour les backends secondaires (LLM de famille) qui
+    rejettent role=system lorsque l'historique se termine par role=tool.
+
+    Certains backends vLLM/Albert appliquent une contrainte stricte sur l'ordre
+    des rôles. En particulier, un message role=system présent n'importe où dans
+    l'historique est rejeté avec HTTP 400 "Unexpected role 'system' after role
+    'tool'" dès lors que le dernier message est un role=tool.
+
+    Stratégie : extraire tous les messages role=system, concaténer leur contenu,
+    et le réinjecter comme une paire user/assistant en tête de l'historique.
+    Cela préserve le prompt système tout en respectant l'alternance attendue.
+
+    Parameters
+    ----------
+    msgs : list[dict]
+        Historique au format OpenAI, potentiellement terminé par role=tool.
+
+    Returns
+    -------
+    list[dict]
+        Historique sans role=system, avec le contenu système réinjecté en tête
+        sous forme de paire user/assistant si nécessaire.
+    """
+    system_parts: list[str] = []
+    non_system: list[dict]  = []
+
+    for m in msgs:
+        if m.get("role") == "system":
+            content = m.get("content", "")
+            if content:
+                system_parts.append(content)
+        else:
+            non_system.append(m)
+
+    if not system_parts:
+        return msgs  # Rien à réécrire
+
+    result: list[dict] = [
+        {"role": "user",      "content": "\n\n".join(system_parts)},
+        {"role": "assistant", "content": "Compris."},
+    ]
+    result.extend(non_system)
+    return result
 
 
 # ── Helper privé : résolution du modèle de famille ───────────────────────────

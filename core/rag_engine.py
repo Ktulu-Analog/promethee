@@ -1,7 +1,7 @@
 # ============================================================================
-# Prométhée — Assistant IA desktop
+# Prométhée — Assistant IA avancé
 # ============================================================================
-# Auteur  : Pierre COUGET
+# Auteur  : Pierre COUGET ktulu.analog@gmail.com
 # Licence : GNU Affero General Public License v3.0 (AGPL-3.0)
 #           https://www.gnu.org/licenses/agpl-3.0.html
 # Année   : 2026
@@ -32,7 +32,8 @@ import uuid
 import re
 from pathlib import Path
 from typing import Optional
-from .config import Config, get_safe_user_id
+from .config import Config
+from . import request_context as _req_ctx
 
 _log = logging.getLogger(__name__)
 
@@ -82,17 +83,23 @@ import json as _json
 
 
 def _albert_base_url() -> str:
-    """Retourne l'URL de base de l'API Albert, sans le suffixe /v1.
+    """Retourne l'URL de base de l'API Albert pour l'utilisateur courant.
 
-    OPENAI_API_BASE est typiquement "https://albert.api.etalab.gouv.fr/v1".
-    Les endpoints non-standard (/v1/search, /v1/rerank, /v1/collections) sont
-    appelés via le client OpenAI qui ajoute lui-même le préfixe /v1.
-    On retire donc le /v1 final pour éviter le doublon /v1/v1/…
+    Lit depuis le request_context (clé personnelle) avec fallback sur Config.
+    Retire le /v1 final pour éviter les doublons /v1/v1/…
     """
-    base = Config.OPENAI_API_BASE.rstrip("/")
+    ucfg = _req_ctx.get_user_config()
+    raw = (ucfg.OPENAI_API_BASE if ucfg else None) or Config.OPENAI_API_BASE
+    base = raw.rstrip("/")
     if base.endswith("/v1"):
         base = base[:-3]
     return base
+
+
+def _albert_api_key() -> str:
+    """Retourne la clé API Albert pour l'utilisateur courant."""
+    ucfg = _req_ctx.get_user_config()
+    return (ucfg.OPENAI_API_KEY if ucfg else None) or Config.OPENAI_API_KEY
 
 
 def _get_openai_client():
@@ -105,7 +112,7 @@ def _get_openai_client():
         return _embedder
     # Tentative de création à la volée si les credentials sont disponibles
     base = _albert_base_url()
-    key  = Config.OPENAI_API_KEY
+    key  = _albert_api_key()
     if base and key:
         try:
             from openai import OpenAI
@@ -144,7 +151,7 @@ def _albert_request(method: str, path: str, **kwargs) -> dict | None:
             if rel_path.startswith("v1/"):
                 rel_path = rel_path[3:]
 
-            headers = {"Authorization": f"Bearer {Config.OPENAI_API_KEY}"}
+            headers = {"Authorization": f"Bearer {_albert_api_key()}"}
 
             if method == "GET":
                 resp = oa_client._client.request(
@@ -180,7 +187,7 @@ def _albert_request(method: str, path: str, **kwargs) -> dict | None:
     url = f"{base}{path}"  # base est sans /v1, path contient /v1/...
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {Config.OPENAI_API_KEY}",
+        "Authorization": f"Bearer {_albert_api_key()}",
     }
 
     try:
@@ -414,7 +421,7 @@ def _qdrant_rerank(
         data = _json.dumps(payload).encode("utf-8")
         headers = {
             "Content-Type":  "application/json",
-            "Authorization": f"Bearer {Config.OPENAI_API_KEY}",
+            "Authorization": f"Bearer {_albert_api_key()}",
         }
         req  = urllib.request.Request(url, data=data, headers=headers, method="POST")
         with urllib.request.urlopen(req, timeout=30) as resp:
@@ -567,7 +574,7 @@ def _init_embedder():
             from openai import OpenAI
             _embedder = OpenAI(
                 base_url=Config.EMBEDDING_API_BASE,
-                api_key=Config.OPENAI_API_KEY or "none",
+                api_key  = _albert_api_key() or "none",
             )
             _embedder_type = "api"
             EMBED_OK = True
@@ -576,32 +583,35 @@ def _init_embedder():
             _log.error("[RAG] OpenAI non disponible pour embeddings API")
             EMBED_OK = False
     else:
-        # Mode local : utiliser sentence-transformers
-        try:
-            from sentence_transformers import SentenceTransformer
-            _embedder = SentenceTransformer(Config.EMBEDDING_MODEL)
-            _embedder_type = "local"
-            EMBED_OK = True
-            _log.info("[RAG] Embeddings local initialisé : %s", Config.EMBEDDING_MODEL)
-        except ImportError:
-            _log.error("[RAG] sentence-transformers non disponible")
-            EMBED_OK = False
+        _log.error("[RAG] EMBEDDING_MODE '%s' non supporté (seul 'api' est disponible)", Config.EMBEDDING_MODE)
+        EMBED_OK = False
 
 
 def _get_embeddings(texts: list[str]) -> list[list[float]]:
-    """Génère les embeddings pour une liste de textes."""
+    """Génère les embeddings pour une liste de textes.
+
+    En mode API, utilise la clé de l'utilisateur courant (request_context)
+    avec fallback sur Config — ce qui permet à chaque utilisateur d'avoir
+    sa propre clé Albert pour les embeddings.
+    """
     if not EMBED_OK or _embedder is None:
         return []
 
     if _embedder_type == "api":
         try:
+            from openai import OpenAI
+            ucfg = _req_ctx.get_user_config()
+            api_key  = (ucfg.OPENAI_API_KEY  if ucfg else None) or Config.OPENAI_API_KEY or "none"
+            api_base = (ucfg.EMBEDDING_API_BASE if ucfg else None) or Config.EMBEDDING_API_BASE
+            model    = (ucfg.EMBEDDING_MODEL if ucfg else None) or Config.EMBEDDING_MODEL
+            client   = OpenAI(base_url=api_base, api_key=api_key)
             batch_size = 64
             all_embeddings = []
             for i in range(0, len(texts), batch_size):
                 batch = texts[i : i + batch_size]
-                response = _embedder.embeddings.create(
+                response = client.embeddings.create(
                     input=batch,
-                    model=Config.EMBEDDING_MODEL,
+                    model=model,
                     encoding_format="float",
                 )
                 all_embeddings.extend(item.embedding for item in response.data)
@@ -610,13 +620,8 @@ def _get_embeddings(texts: list[str]) -> list[list[float]]:
             _log.error("[RAG] Erreur embeddings API : %s", e)
             return []
     else:
-        # Embeddings local avec sentence-transformers
-        try:
-            embeddings = _embedder.encode(texts, show_progress_bar=False)
-            return embeddings.tolist()
-        except Exception as e:
-            _log.error("[RAG] Erreur embeddings local : %s", e)
-            return []
+        _log.error("[RAG] _embedder_type '%s' non supporté", _embedder_type)
+        return []
 
 
 # Initialiser l'embedder au chargement du module
@@ -784,7 +789,8 @@ def _client() -> "QdrantClient":
     global _qdrant_client, _qdrant_url
     current_url = Config.QDRANT_URL
     if _qdrant_client is None or _qdrant_url != current_url:
-        _qdrant_client = QdrantClient(url=current_url)
+        api_key = Config.QDRANT_API_KEY or None
+        _qdrant_client = QdrantClient(url=current_url, api_key=api_key)
         _qdrant_url = current_url
         _log.info("[RAG] QdrantClient initialisé → %s", current_url)
     return _qdrant_client
@@ -807,7 +813,7 @@ def ensure_collection(collection_name: str = None):
     """
     if not QDRANT_OK:
         return False
-    target = collection_name or Config.QDRANT_COLLECTION
+    target = collection_name or _default_collection()
     try:
         qc = _client()
         cols = {c.name: c for c in qc.get_collections().collections}
@@ -1044,7 +1050,7 @@ def ingest_text(text: str, source: str = "manuel", conversation_id: str = None,
     if not QDRANT_OK or not EMBED_OK:
         return 0
 
-    target = collection_name or Config.QDRANT_COLLECTION
+    target = collection_name or _default_collection()
 
     # Protection : on n'écrit jamais dans une collection d'un autre utilisateur
     if not _is_own_collection(target):
@@ -1137,27 +1143,32 @@ def _make_scope_filter(conversation_id: str = None):
     return Filter(should=[global_cond, conv_cond])
 
 
+def _default_collection() -> str:
+    """Collection RAG de l'utilisateur courant (request_context)."""
+    ucfg = _req_ctx.get_user_config()
+    if ucfg is None:
+        raise RuntimeError(
+            "[rag_engine] Aucun UserConfig dans le request_context. "
+            "La route FastAPI doit appeler set_user_config(user_cfg) avant to_thread()."
+        )
+    return ucfg.QDRANT_COLLECTION
+
+
+def _default_ltm_collection() -> str:
+    """Collection LTM de l'utilisateur courant (request_context)."""
+    ucfg = _req_ctx.get_user_config()
+    if ucfg is None:
+        raise RuntimeError("[rag_engine] Aucun UserConfig dans le request_context.")
+    return ucfg.LTM_COLLECTION
+
+
 def _is_own_collection(collection_name: str) -> bool:
-    """Vérifie que la collection appartient à l'utilisateur courant.
+    """Vérifie que la collection appartient à l'utilisateur courant."""
+    ucfg = _req_ctx.get_user_config()
+    if ucfg is None:
+        return False
+    return collection_name in (ucfg.QDRANT_COLLECTION, ucfg.LTM_COLLECTION)
 
-    Une collection est considérée comme appartenant à l'utilisateur si :
-      - c'est sa collection RAG documentaire (Config.QDRANT_COLLECTION), ou
-      - c'est sa collection LTM (Config.LTM_COLLECTION), ou
-      - son nom est exactement "promethee_<user_id>" ou
-        "promethee_memory_<user_id>" (nommage automatique).
-
-    Les collections d'autres utilisateurs (promethee_marie quand on est pierre)
-    et les collections externes (sans préfixe promethee_) sont refusées.
-    """
-    # Correspondance directe avec les collections configurées
-    if collection_name in (Config.QDRANT_COLLECTION, Config.LTM_COLLECTION):
-        return True
-
-    # Reconstruire les deux noms attendus depuis le user_id.
-    # get_safe_user_id() est la source unique de vérité (définie dans config.py) ;
-    # on évite ainsi de dupliquer ici la logique de résolution RAG_USER_ID / getuser().
-    safe = get_safe_user_id()
-    return collection_name in (f"promethee_{safe}", f"promethee_memory_{safe}")
 
 
 def search(query: str, top_k: int = 5, conversation_id: str = None, collection_name: str = None) -> list[dict]:
@@ -1173,7 +1184,7 @@ def search(query: str, top_k: int = 5, conversation_id: str = None, collection_n
 
     # Utiliser la collection spécifiée ou celle par défaut
     if collection_name is None:
-        collection_name = Config.QDRANT_COLLECTION
+        collection_name = _default_collection()
         _log.debug("[RAG] collection par défaut : %r", collection_name)
 
     # Vérifier que la collection appartient à l'utilisateur courant.
@@ -1253,7 +1264,6 @@ def search(query: str, top_k: int = 5, conversation_id: str = None, collection_n
         # configurée (QDRANT_COLLECTION forcé via .env).
         is_internal = (
             collection_name.startswith("promethee_")
-            or collection_name == Config.QDRANT_COLLECTION
         )
         if is_internal:
             kwargs["query_filter"] = _make_scope_filter(conversation_id)
@@ -1294,7 +1304,7 @@ def list_sources(conversation_id: str = None, collection_name: str = None) -> li
     if not QDRANT_OK or not EMBED_OK:
         return []
 
-    target = collection_name or Config.QDRANT_COLLECTION
+    target = collection_name or _default_collection()
 
     if not ensure_collection(target):
         return []
@@ -1308,10 +1318,7 @@ def list_sources(conversation_id: str = None, collection_name: str = None) -> li
 
         # Pour les collections externes, pas de filtre de scope
         # (leur payload n'a pas de champ conversation_id)
-        is_internal = (
-            target.startswith("promethee_")
-            or target == Config.QDRANT_COLLECTION
-        )
+        is_internal = target.startswith("promethee_")
         scroll_filter = _make_scope_filter(conversation_id) if is_internal else None
 
         # Agrégation : source → (count, scope)
@@ -1360,7 +1367,7 @@ def delete_by_source(source: str, conversation_id: str = None,
     """
     if not QDRANT_OK:
         return 0
-    target = collection_name or Config.QDRANT_COLLECTION
+    target = collection_name or _default_collection()
     if not ensure_collection(target):
         return 0
     if not _is_own_collection(target):

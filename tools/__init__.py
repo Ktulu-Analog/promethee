@@ -1,7 +1,7 @@
 # ============================================================================
-# Prométhée — Assistant IA desktop
+# Prométhée — Assistant IA avancé
 # ============================================================================
-# Auteur  : Pierre COUGET
+# Auteur  : Pierre COUGET ktulu.analog@gmail.com
 # Licence : GNU Affero General Public License v3.0 (AGPL-3.0)
 #           https://www.gnu.org/licenses/agpl-3.0.html
 # Année   : 2026
@@ -26,22 +26,22 @@ Pour activer uniquement certains modules :
     import tools.python_tools
     import tools.web_tools
 
+Système de fichiers :
+    vfs_tools (actif par défaut) — espace de fichiers virtuel par utilisateur,
+    stocké en SQLite. Le LLM n'accède jamais au disque réel du serveur.
+
 Prérequis pour web_tools :
     pip install requests beautifulsoup4 lxml markdownify
 
-Prérequis pour legifrance_tools (.env) (obtenir les clés via Piste):
+Prérequis pour legifrance_tools (obtenir les clés via Piste):
     LEGIFRANCE_CLIENT_ID=votre_client_id
     LEGIFRANCE_CLIENT_SECRET=votre_client_secret
-
-Prérequis pour thunderbird_tools :
-    Thunderbird doit avoir été lancé au moins une fois (création du profil).
-    Variable optionnelle : TB_PROFILE_PATH=/chemin/vers/profil
 
 Note sur python_tools :
     Crée automatiquement un environnement virtuel dans ~/.promethee_python_env/
     où les packages peuvent être installés et le code exécuté en toute sécurité.
 
-Prérequis pour grist_tools (.env) :
+Prérequis pour grist_tools :
     GRIST_API_KEY=votre_clé_api_grist
     GRIST_BASE_URL=https://votre-instance.grist.com   # défaut: https://docs.getgrist.com
 """
@@ -49,14 +49,14 @@ Prérequis pour grist_tools (.env) :
 
 def register_all() -> None:
     """Importe tous les modules d'outils pour les enregistrer dans tools_engine."""
-    from tools import system_tools
+    from tools import vfs_tools
     from tools import export_tools
     from tools import export_template_tools
     from tools import reformulation_tools
-    from tools import python_tools
+#    from tools import python_tools         # retiré de la version 3.0 en attendant sa réécriture sécurisée avec gVisor
     from tools import data_tools
     from tools import data_file_tools
-    from tools import sql_tools
+#    from tools import sql_tools            # retiré de la version 3.0 en attendant sa réécriture sécurisée
     from tools import ocr_tools
     from tools import web_tools
     from tools import legifrance_tools
@@ -64,6 +64,7 @@ def register_all() -> None:
     from tools import datagouv_tools
     from tools import imap_tools
     from tools import skill_tools
+    from tools import docs_tools
     from tools import grist_tools
     from tools import tool_creator_tools
     from tools import meteo_tools

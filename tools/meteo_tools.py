@@ -1,9 +1,14 @@
 # ============================================================================
-# Prométhée — Assistant IA desktop
+# Prométhée — Assistant IA avancé
 # ============================================================================
-# Auteur  : IA‑Assistant
+# Auteur  : Pierre COUGET ktulu.analog@gmail.com
 # Licence : GNU Affero General Public License v3.0 (AGPL-3.0)
+#           https://www.gnu.org/licenses/agpl-3.0.html
 # Année   : 2026
+# ----------------------------------------------------------------------------
+# Ce fichier fait partie du projet Prométhée.
+# Vous pouvez le redistribuer et/ou le modifier selon les termes de la
+# licence AGPL-3.0 publiée par la Free Software Foundation.
 # ============================================================================
 
 """
@@ -11,8 +16,8 @@ tools/open_meteo_tools.py — Interface Open‑Meteo
 ================================================
 
 Outils exposés (2) :
-  - météo_actuelle      : météo actuelle d’un point géographique
-  - prévision_météo_7j : prévisions météo sur 7 jours (ou un nombre de jours)
+  - meteo_actuelle      : météo actuelle d’un point géographique
+  - prevision_meteo_7j : prévisions météo sur 7 jours (ou un nombre de jours)
 
 Ce module interroge l’API publique **Open‑Meteo** (https://open-meteo.com/).
 Il accepte soit des coordonnées latitude/longitude, soit un nom de lieu
@@ -177,7 +182,7 @@ def _prepare_coordinates(
 # ---------------------------------------------------------------------------
 
 @tool(
-    name="météo_actuelle",
+    name="meteo_actuelle",
     description=(
         "Renvoie la météo actuelle (température, vent, condition) d’un point géographique. "
         "Accepte latitude/longitude ou le nom d’une ville. "
@@ -206,7 +211,7 @@ def _prepare_coordinates(
         "required": [],
     },
 )
-def météo_actuelle(
+def meteo_actuelle(
     latitude: Optional[float] = None,
     longitude: Optional[float] = None,
     city: Optional[str] = None,
@@ -251,7 +256,7 @@ def météo_actuelle(
 
 
 @tool(
-    name="prévision_météo_7j",
+    name="prevision_meteo_7j",
     description=(
         "Renvoie les prévisions météo journalières (température min/max, code météo) "
         "pour un nombre de jours (par défaut 7) à partir d’un point géographique. "
@@ -286,7 +291,7 @@ def météo_actuelle(
         "required": [],
     },
 )
-def prévision_météo_7j(
+def prevision_meteo_7j(
     latitude: Optional[float] = None,
     longitude: Optional[float] = None,
     city: Optional[str] = None,

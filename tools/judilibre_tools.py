@@ -1,7 +1,7 @@
 # ============================================================================
-# Prométhée — Assistant IA desktop
+# Prométhée — Assistant IA avancé
 # ============================================================================
-# Auteur  : Pierre COUGET
+# Auteur  : Pierre COUGET ktulu.analog@gmail.com
 # Licence : GNU Affero General Public License v3.0 (AGPL-3.0)
 #           https://www.gnu.org/licenses/agpl-3.0.html
 # Année   : 2026
@@ -91,10 +91,24 @@ class _JudiLibreClient:
 
     @property
     def client_id(self) -> Optional[str]:
+        try:
+            from core.request_context import get_user_config
+            uc = get_user_config()
+            if uc:
+                return uc.JUDILIBRE_CLIENT_ID or os.getenv("JUDILIBRE_CLIENT_ID")
+        except ImportError:
+            pass
         return os.getenv("JUDILIBRE_CLIENT_ID")
 
     @property
     def client_secret(self) -> Optional[str]:
+        try:
+            from core.request_context import get_user_config
+            uc = get_user_config()
+            if uc:
+                return uc.JUDILIBRE_CLIENT_SECRET or os.getenv("JUDILIBRE_CLIENT_SECRET")
+        except ImportError:
+            pass
         return os.getenv("JUDILIBRE_CLIENT_SECRET")
 
     def _check_credentials(self):

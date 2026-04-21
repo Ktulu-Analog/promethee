@@ -1,0 +1,41 @@
+# =============================================================================
+#  Garage — Configuration nœud unique (mode développement / auto-hébergé)
+# =============================================================================
+#
+#  Ce fichier configure Garage en mode nœud unique pour un déploiement Docker
+#  local. Pour un déploiement multi-nœuds en production, consulter :
+#  https://garagehq.deuxfleurs.fr/documentation/quick-start/
+#
+# =============================================================================
+
+metadata_dir = "/var/lib/garage/meta"
+data_dir     = "/var/lib/garage/data"
+
+# Clé partagée entre tous les nœuds du cluster (doit correspondre à
+# GARAGE_RPC_SECRET dans docker-compose.yml)
+rpc_secret = "__GARAGE_RPC_SECRET__"   # remplacé par la variable d'env au runtime
+
+# Adresse d'écoute interne du RPC (communication inter-nœuds)
+rpc_bind_addr = "0.0.0.0:3901"
+
+# Adresse publique annoncée aux autres nœuds
+rpc_public_addr = "garage:3901"
+
+# Réplication : 1 = pas de réplication (nœud unique)
+replication_factor = 1
+
+[s3_api]
+# Port de l'API S3 compatible (utilisé par l'application via boto3/aiobotocore)
+api_bind_addr     = "0.0.0.0:3900"
+# Désactivation du path-style automatique (force path-style pour compatibilité boto3)
+s3_region         = "garage"
+root_domain       = ""
+
+[s3_web]
+bind_addr = "0.0.0.0:3902"
+root_domain = ".web.garage"
+index = "index.html"
+error_document = "404.html"
+
+[admin]
+api_bind_addr = "0.0.0.0:3903"

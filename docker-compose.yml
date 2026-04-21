@@ -1,0 +1,194 @@
+# =============================================================================
+#  Prométhée AI — Stack complète
+# =============================================================================
+#  Services :
+#    - promethee      : application FastAPI + React (port 8000)
+#    - qdrant         : base vectorielle (port 6333)
+#    - garage-config  : génère garage.toml depuis le template (one-shot Alpine)
+#    - garage         : stockage objets VFS compatible S3 (port 3900)
+#    - garage-init    : configure le nœud et crée le bucket (one-shot)
+#
+#  Démarrage :
+#      cp .env.example .env   # puis éditer au minimum PROMETHEE_SECRET_KEY
+#      docker compose up -d --build
+#
+#  Accès :
+#      Application   → http://localhost:8000
+#      Garage S3 API → http://localhost:3900
+#      Qdrant UI     → http://localhost:6333/dashboard
+#
+#  Note sur l'image garage (dxflrs/garage) :
+#    C'est une image distroless — pas de shell. On contourne avec :
+#      - garage-config : Alpine fait le sed et écrit garage.toml dans un volume
+#      - garage-init   : image construite via Dockerfile.garage-init qui ajoute
+#                        busybox (shell + awk) à l'image garage distroless
+# =============================================================================
+
+services:
+
+  # ── Qdrant — base vectorielle ───────────────────────────────────────────────
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: promethee-qdrant
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:6334:6334"
+    environment:
+      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY}
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      disable: true
+    networks:
+      - promethee-net
+
+  # ── Garage Config — substitue GARAGE_RPC_SECRET dans le template ────────────
+  # Alpine a un shell ; il fait le sed et écrit le résultat dans le volume
+  # `garage_config` que le service garage monte en lecture seule.
+  garage-config:
+    image: alpine:3.19
+    container_name: promethee-garage-config
+    restart: "no"
+    environment:
+      GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET:-changez-moi-en-production}
+    volumes:
+      - ./garage.toml:/etc/garage.toml.tpl:ro
+      - garage_config:/etc/garage
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        sed 's/__GARAGE_RPC_SECRET__/'$$GARAGE_RPC_SECRET'/g' /etc/garage.toml.tpl > /etc/garage/garage.toml &&
+        echo 'garage.toml généré.' &&
+        grep rpc_secret /etc/garage/garage.toml
+
+  # ── Garage — stockage objets compatible S3 (VFS) ────────────────────────────
+  garage:
+    image: dxflrs/garage:v1.0.1
+    container_name: promethee-garage
+    restart: unless-stopped
+    depends_on:
+      garage-config:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:3900:3900"
+      - "127.0.0.1:3901:3901"
+    volumes:
+      - garage_data:/var/lib/garage/data
+      - garage_meta:/var/lib/garage/meta
+      - garage_config:/etc/garage:ro
+    command: ["/garage", "-c", "/etc/garage/garage.toml", "server"]
+    healthcheck:
+      test: ["CMD", "/garage", "-c", "/etc/garage/garage.toml", "status"]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 10
+    networks:
+      - promethee-net
+
+  # ── Garage Init — configure le nœud et crée le bucket (one-shot) ────────────
+  # Construit depuis Dockerfile.garage-init : image garage + Alpine (shell+awk).
+  # Peut donc exécuter /garage en mode CLI avec des scripts shell.
+  garage-init:
+    build:
+      context: .
+      dockerfile: Dockerfile.garage-init
+    container_name: promethee-garage-init
+    restart: "no"
+    depends_on:
+      garage:
+        condition: service_healthy
+    environment:
+      GARAGE_NODE_ID:    ${GARAGE_NODE_ID:-}
+      GARAGE_ACCESS_KEY: ${GARAGE_ACCESS_KEY:-garagekeyid}
+      GARAGE_SECRET_KEY: ${GARAGE_SECRET_KEY:-garagesecretkey}
+      GARAGE_BUCKET:     ${GARAGE_BUCKET:-promethee-vfs}
+    volumes:
+      - garage_config:/etc/garage:ro
+      - garage_meta:/var/lib/garage/meta:ro
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+
+        if [ -z "$$GARAGE_NODE_ID" ]; then
+          echo "ERREUR : GARAGE_NODE_ID n'est pas défini dans votre .env."
+          echo "Suivez l'étape 1 du README :"
+          echo "  docker exec promethee-garage /garage -c /etc/garage/garage.toml node id"
+          echo "Puis renseignez GARAGE_NODE_ID dans votre .env et relancez."
+          exit 1
+        fi
+
+        echo '=== Application de la layout ==='
+        garage -c /etc/garage/garage.toml layout assign -z dc1 -c 1G $$GARAGE_NODE_ID || true
+        LAYOUT_VERSION=$$(garage -c /etc/garage/garage.toml layout show 2>/dev/null | grep 'Current cluster layout version' | awk '{print $$NF+1}')
+        if [ -z "$$LAYOUT_VERSION" ]; then LAYOUT_VERSION=1; fi
+        garage -c /etc/garage/garage.toml layout apply --version $$LAYOUT_VERSION || true
+
+        echo '=== Import de la clé d accès ==='
+        garage -c /etc/garage/garage.toml key import --yes -n promethee-key $$GARAGE_ACCESS_KEY $$GARAGE_SECRET_KEY
+
+        echo '=== Création du bucket ==='
+        garage -c /etc/garage/garage.toml bucket create $$GARAGE_BUCKET || true
+        garage -c /etc/garage/garage.toml bucket allow --read --write --owner $$GARAGE_BUCKET --key $$GARAGE_ACCESS_KEY
+        echo "Bucket $$GARAGE_BUCKET prêt."
+    networks:
+      - promethee-net
+
+  # ── Prométhée — application principale ─────────────────────────────────────
+  promethee:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: promethee-app
+    restart: unless-stopped
+    depends_on:
+      qdrant:
+        condition: service_started
+      garage:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      QDRANT_URL:      http://qdrant:6333
+      QDRANT_API_KEY:  ${QDRANT_API_KEY}
+      GARAGE_ENDPOINT: http://garage:3900
+      GARAGE_REGION:   "garage"
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-["http://localhost:8000"]}
+    ports:
+      - "${SERVER_PORT:-8000}:8000"
+    volumes:
+      - promethee_data:/app/data
+      - promethee_logs:/app/logs
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      # start_period laisse le temps à uvicorn + tools + Garage de démarrer
+      # avant que les échecs ne soient comptabilisés.
+      start_period: 60s
+      retries: 3
+    networks:
+      - promethee-net
+
+# ── Réseau interne ─────────────────────────────────────────────────────────────
+networks:
+  promethee-net:
+    driver: bridge
+
+# ── Volumes persistants ────────────────────────────────────────────────────────
+volumes:
+  qdrant_data:
+    driver: local
+  garage_config:    # garage.toml généré par garage-config
+    driver: local
+  garage_data:
+    driver: local
+  garage_meta:
+    driver: local
+  promethee_data:
+    driver: local
+  promethee_logs:
+    driver: local

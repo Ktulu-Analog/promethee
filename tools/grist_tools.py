@@ -1,7 +1,7 @@
 # ============================================================================
-# Prométhée — Assistant IA desktop
+# Prométhée — Assistant IA avancé
 # ============================================================================
-# Auteur  : Pierre COUGET
+# Auteur  : Pierre COUGET ktulu.analog@gmail.com
 # Licence : GNU Affero General Public License v3.0 (AGPL-3.0)
 #           https://www.gnu.org/licenses/agpl-3.0.html
 # Année   : 2026
@@ -78,6 +78,17 @@ from core.tools_engine import tool, set_current_family, report_progress, _TOOL_I
 from core.config import Config
 
 
+def _grist_cfg():
+    """Retourne le UserConfig actif ou Config (fallback Qt6)."""
+    try:
+        from core.request_context import get_user_config
+        uc = get_user_config()
+        return uc if uc is not None else None
+    except ImportError:
+        return None
+
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  1. DÉCLARATION DE LA FAMILLE
 # ══════════════════════════════════════════════════════════════════════════════
@@ -112,15 +123,17 @@ _TOOL_ICONS.update({
 
 def _get_headers() -> dict:
     """Construit les headers HTTP avec la clé API Grist."""
+    _uc = _grist_cfg()
+    _key = (_uc.GRIST_API_KEY if _uc else None) or Config.GRIST_API_KEY
     return {
-        "Authorization": f"Bearer {Config.GRIST_API_KEY}",
+        "Authorization": f"Bearer {_key}",
         "Content-Type": "application/json",
     }
 
 
 def _base_url() -> str:
     """Retourne l'URL de base de l'API Grist (sans slash final)."""
-    return Config.GRIST_BASE_URL.rstrip("/") + "/api"
+    return ((_grist_cfg().GRIST_BASE_URL if _grist_cfg() else None) or Config.GRIST_BASE_URL).rstrip("/") + "/api"
 
 
 def _check_prerequisites() -> Optional[str]:
@@ -133,9 +146,9 @@ def _check_prerequisites() -> Optional[str]:
             "Erreur : la bibliothèque 'requests' est absente. "
             "Installez-la avec : pip install requests"
         )
-    if not Config.GRIST_API_KEY:
+    if not ((_grist_cfg().GRIST_API_KEY if _grist_cfg() else None) or Config.GRIST_API_KEY):
         return "Erreur : GRIST_API_KEY est absent du fichier .env."
-    if not Config.GRIST_BASE_URL:
+    if not ((_grist_cfg().GRIST_BASE_URL if _grist_cfg() else None) or Config.GRIST_BASE_URL):
         return "Erreur : GRIST_BASE_URL est absent du fichier .env."
     return None
 

@@ -1,0 +1,11 @@
+# ── Serveur FastAPI ───────────────────────────────────────────────────────────
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0          # websockets, httptools, uvloop
+websockets>=12.0
+python-multipart>=0.0.9            # UploadFile (multipart/form-data)
+python-dotenv>=1.0.0               # set_key pour l'écriture dans .env
+
+# ── Toutes les dépendances existantes de Prométhée ───────────────────────────
+# (reprises de requirements.txt existant — à fusionner)
+# openai, qdrant-client, sentence-transformers, etc.
+# → voir requirements.txt à la racine du projet

@@ -1,7 +1,7 @@
 # ============================================================================
-# Prométhée — Assistant IA desktop
+# Prométhée — Assistant IA avancé
 # ============================================================================
-# Auteur  : Pierre COUGET
+# Auteur  : Pierre COUGET ktulu.analog@gmail.com
 # Licence : GNU Affero General Public License v3.0 (AGPL-3.0)
 #           https://www.gnu.org/licenses/agpl-3.0.html
 # Année   : 2026
@@ -247,19 +247,29 @@ class HistoryDB:
                 )
                 log.info("[DB] Migration v4 : colonne folder_id ajoutee.")
 
+            # Migration v5 : ajouter starred a conversations si absente
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(conversations)").fetchall()}
+            if "starred" not in cols:
+                conn.execute(
+                    "ALTER TABLE conversations ADD COLUMN starred INTEGER NOT NULL DEFAULT 0"
+                )
+                log.info("[DB] Migration v5 : colonne starred ajoutee.")
+
     # -- Conversations -----------------------------------------------------
 
     def create_conversation(self, title: str = "Nouvelle conversation",
-                            system_prompt: str = "", model: str = None) -> str:
+                            system_prompt: str = "", model: str = None,
+                            folder_id: str = None) -> str:
         cid = str(uuid.uuid4())
         now = datetime.now().isoformat()
         with self._conn() as conn:
             conn.execute(
-                "INSERT INTO conversations (id, title, created_at, updated_at, model, system_prompt)"
-                " VALUES (?,?,?,?,?,?)",
+                "INSERT INTO conversations (id, title, created_at, updated_at, model, system_prompt, folder_id)"
+                " VALUES (?,?,?,?,?,?,?)",
                 (cid, self._enc(title), now, now,
                  model or Config.active_model(),
-                 self._enc(system_prompt))
+                 self._enc(system_prompt),
+                 folder_id)
             )
             if self._search_idx:
                 conn.execute(
@@ -303,6 +313,13 @@ class HistoryDB:
             conn.execute(
                 "UPDATE conversations SET updated_at=? WHERE id=?",
                 (datetime.now().isoformat(), cid)
+            )
+
+    def star_conversation(self, cid: str, starred: bool):
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE conversations SET starred=? WHERE id=?",
+                (1 if starred else 0, cid)
             )
 
     def delete_conversation(self, cid: str):

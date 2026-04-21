@@ -1,0 +1,15 @@
+# Dockerfile.garage-init
+# ─────────────────────────────────────────────────────────────────────────────
+# Objectif : image d'initialisation one-shot pour configurer le nœud Garage
+#            (layout, clé d'accès, bucket).
+#
+# Stratégie multi-stage :
+#   1. On extrait le binaire /garage depuis l'image officielle distroless.
+#   2. On le copie dans Alpine qui fournit sh, awk, head et tous les outils
+#      nécessaires aux scripts d'init — sans bidouille busybox/scratch.
+# ─────────────────────────────────────────────────────────────────────────────
+
+FROM dxflrs/garage:v1.0.1 AS garage
+
+FROM alpine:3.19
+COPY --from=garage /garage /usr/local/bin/garage

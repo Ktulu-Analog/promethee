@@ -730,34 +730,62 @@ c4context
 
 ```
 requirementDiagram
-    requirement AuthReq {
-        id: REQ-001
-        text: "L'utilisateur doit s'authentifier."
+    requirement R1 {
+        id: R1
+        text: Le systeme doit garantir la confidentialite des donnees
         risk: high
         verifyMethod: test
     }
+    functionalRequirement FR1 {
+        id: FR1
+        text: Authentification via mot de passe chiffre
+        risk: medium
+        verifyMethod: review
+    }
     element WebApp {
         type: system
+        docRef: /docs/arch
     }
-    AuthReq - satisfies -> WebApp
+    R1 - satisfies -> FR1
+    FR1 - traces -> WebApp
 ```
 
-### SANS guillemets pour les mots-clés
+### Champs autorisés dans un bloc requirement
+
+| Champ          | Valeur                                      | Guillemets ? |
+|----------------|---------------------------------------------|--------------|
+| `id:`          | identifiant libre (ex: R1, REQ-001)         | **NON**      |
+| `text:`        | texte libre                                 | **NON**      |
+| `risk:`        | `low` / `medium` / `high`                  | **NON**      |
+| `verifyMethod:`| `analysis` / `demonstration` / `inspection` / `test` | **NON** |
+
+**RÈGLE ABSOLUE : aucune valeur entre guillemets dans un bloc requirement.**
 
 ```
-❌  risk: "high"         → erreur "got qString"
-✅  risk: high
-
-❌  verifyMethod: "test"
-✅  verifyMethod: test
-
-❌  type: "system"
-✅  type: system
+❌  id: "R1"              → erreur parser
+❌  text: "Le système…"   → erreur parser
+❌  risk: "high"          → erreur "got qString"
+❌  verification: test    → mot-clé INEXISTANT, erreur "got unqString"
+✅  verifyMethod: test    → mot-clé CORRECT
 ```
 
-`id:` et `text:` acceptent les guillemets (valeurs libres).
+### Syntaxe des relations — RÈGLE ABSOLUE
 
-Relations : `satisfies`, `traces`, `contains`, `copies`, `derives`, `refines`, `verifies`
+```
+✅  R1 - satisfies -> FR1
+✅  R1 - traces -> FR1
+✅  R1 - contains -> FR1
+✅  R1 - copies -> FR1
+✅  R1 - derives -> FR1
+✅  R1 - refines -> FR1
+✅  R1 - verifies -> FR1
+
+❌  R1 --> FR1             ← syntaxe flowchart, INVALIDE ici
+❌  R1 ..> FR1 : satisfies ← syntaxe classDiagram, INVALIDE ici
+❌  R1 -> FR1              ← manque le type de relation, INVALIDE
+```
+
+Le type de relation est **obligatoire** entre les deux tirets : `- type ->`.
 
 ---
 
@@ -833,6 +861,6 @@ Chaque tâche est indentée sous sa colonne.
 - [ ] **Sankey** : CSV sans guillemets, sans virgules dans les noms
 - [ ] **sequenceDiagram** : aucun mot réservé en début de ligne de texte libre
 - [ ] **gitGraph** : valeurs string entre guillemets, types en MAJUSCULES
-- [ ] **requirementDiagram** : `risk:`, `verifyMethod:`, `type:` sans guillemets
+- [ ] **requirementDiagram** : AUCUNE valeur entre guillemets (ni `id:`, ni `text:`, ni `risk:`) ; mot-clé `verifyMethod:` (pas `verification:`) ; relations en `- type ->` uniquement
 - [ ] **erDiagram** : chaque attribut a un type, labels de relation obligatoires
 - [ ] **gantt** : `dateFormat` déclaré, `:` obligatoire après chaque nom de tâche

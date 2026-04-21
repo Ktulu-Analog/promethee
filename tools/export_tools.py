@@ -1,7 +1,7 @@
 # ============================================================================
-# Prométhée — Assistant IA desktop
+# Prométhée — Assistant IA avancé
 # ============================================================================
-# Auteur  : Pierre COUGET
+# Auteur  : Pierre COUGET ktulu.analog@gmail.com
 # Licence : GNU Affero General Public License v3.0 (AGPL-3.0)
 #           https://www.gnu.org/licenses/agpl-3.0.html
 # Année   : 2026
@@ -53,10 +53,10 @@ Outils exposés (10) :
 
 Conventions communes
 ────────────────────
-  - output_path : chemin absolu ou relatif au home utilisateur.
-                  Si omis ou vide, un fichier est créé dans ~/Exports/Prométhée/.
-  - Retour      : dict JSON {"path": "/chemin/absolu", "size_bytes": N,
-                             "pages"/"sheets"/"slides": N, "status": "ok"}
+  - output_path : chemin VFS de destination (ex: /documents/rapport.pdf).
+                  Si omis ou vide, le fichier est créé dans /exports/.
+  - Retour      : dict JSON {"path": "/chemin/vfs", "size_bytes": N,
+                             "pages"/"sheets"/"slides": N, "status": "ok", "vfs": true}
   - En cas d'erreur : {"error": "message explicatif", "status": "error"}
 
 Structure JSON commune pour export_docx, export_pdf, export_pptx_json
@@ -111,26 +111,72 @@ from core.tools_engine import tool, set_current_family
 
 set_current_family("export_tools", "Export de fichiers", "📄")
 
-# ── Répertoire de sortie par défaut ──────────────────────────────────────────
+# ── Répertoire VFS de sortie par défaut ──────────────────────────────────────
 
-_DEFAULT_EXPORT_DIR = Path.home() / "Exports" / "Prométhée"
+_DEFAULT_VFS_EXPORT_DIR = "/exports"
 
 
-def _resolve_output(output_path: str, default_name: str) -> Path:
-    """Résout le chemin de sortie et crée les répertoires manquants."""
+def _resolve_output(output_path: str, default_name: str) -> tuple[Path, str]:
+    """
+    Résout le chemin de sortie vers le VFS.
+
+    Toute sortie passe EXCLUSIVEMENT par le VFS. Un fichier temporaire
+    est créé sur disque uniquement comme étape technique intermédiaire
+    de construction, puis immédiatement ingéré dans le VFS par l'appelant
+    via _ingest_to_vfs(). Le chemin FS temporaire n'est jamais exposé.
+
+    Returns
+    -------
+    tuple[Path, str]
+        (chemin_filesystem_temporaire, chemin_vfs_cible)
+    """
     if output_path:
-        p = Path(output_path).expanduser()
-        if not p.is_absolute():
-            p = Path.home() / p
+        vfs_path = output_path if output_path.startswith("/") else f"/{output_path}"
     else:
-        _DEFAULT_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-        p = _DEFAULT_EXPORT_DIR / default_name
-    p.parent.mkdir(parents=True, exist_ok=True)
-    return p
+        vfs_path = f"{_DEFAULT_VFS_EXPORT_DIR}/{default_name}"
+
+    suffix = Path(vfs_path).suffix or ""
+    tmp = Path(tempfile.mktemp(suffix=suffix, prefix="promethee_export_"))
+    return tmp, vfs_path
 
 
-def _ok(path: Path, extra: dict | None = None) -> str:
-    r = {"status": "ok", "path": str(path), "size_bytes": path.stat().st_size}
+def _ingest_to_vfs(tmp_path: Path, vfs_path: str) -> str:
+    """
+    Ingère un fichier temporaire dans le VFS et supprime le tmp.
+
+    Returns
+    -------
+    str
+        Chemin VFS effectif après ingestion (identique à vfs_path).
+
+    Raises
+    ------
+    RuntimeError
+        Si le VFS est indisponible ou si l'ingestion échoue.
+    """
+    import mimetypes
+    from core.virtual_fs import get_vfs
+    vfs = get_vfs()
+    data = tmp_path.read_bytes()
+    mime, _ = mimetypes.guess_type(vfs_path)
+    mime = mime or "application/octet-stream"
+    vfs.write_bytes(vfs_path, data, mime)
+    try:
+        tmp_path.unlink()
+    except Exception:
+        pass
+    return vfs_path
+
+
+def _ok(path: Path, vfs_path: str, extra: dict | None = None) -> str:
+    """
+    Construit la réponse JSON de succès.
+
+    path     : fichier temporaire local (pour lire la taille avant suppression)
+    vfs_path : chemin VFS effectif retourné au LLM
+    """
+    size = path.stat().st_size if path.exists() else 0
+    r: dict = {"status": "ok", "path": vfs_path, "size_bytes": size, "vfs": True}
     if extra:
         r.update(extra)
     return json.dumps(r, ensure_ascii=False)
@@ -150,7 +196,9 @@ def _err(msg: str) -> str:
         "Écrit un fichier Markdown (.md) à partir de contenu texte brut. "
         "À utiliser quand l'utilisateur demande de produire un rapport, un README, "
         "un article ou tout document texte en format Markdown. "
-        "Le contenu doit déjà être en Markdown valide (titres #, listes -, tableaux |)."
+        "Le contenu doit déjà être en Markdown valide (titres #, listes -, tableaux |). "
+        "RÈGLE IMPÉRATIVE : cet outil DOIT être appelé pour tout enregistrement de fichier "
+        "Markdown — ne jamais affirmer qu'un fichier est créé sans appeler cet outil."
     ),
     parameters={
         "type": "object",
@@ -163,7 +211,7 @@ def _err(msg: str) -> str:
                 "type": "string",
                 "description": (
                     "Chemin de destination, ex: ~/Documents/rapport.md. "
-                    "Si omis, crée le fichier dans ~/Exports/Prométhée/."
+                    "Si omis, crée le fichier dans /exports/."
                 )
             },
             "filename": {
@@ -179,10 +227,11 @@ def export_md(content: str, output_path: str = "", filename: str = "") -> str:
         name = filename or "export.md"
         if not name.endswith(".md"):
             name += ".md"
-        p = _resolve_output(output_path, name)
+        p, vfs_path = _resolve_output(output_path, name)
         p.write_text(content, encoding="utf-8")
+        _ingest_to_vfs(p, vfs_path)
         lines = content.count("\n") + 1
-        return _ok(p, {"lines": lines})
+        return _ok(p, vfs_path, {"lines": lines})
     except Exception as e:
         return _err(f"export_md : {e}")
 
@@ -699,6 +748,9 @@ def _build_docx(doc_json: dict):
         "et plusieurs paragraphes par section. "
         "À utiliser pour tout document formel : rapport, compte-rendu, contrat, note, guide. "
         "\n\n"
+        "RÈGLE IMPÉRATIVE D'APPEL : cet outil DOIT être appelé pour tout enregistrement "
+        "de document Word — ne jamais affirmer dans le texte qu'un fichier est enregistré "
+        "sans avoir appelé cet outil au préalable. "
         "RÈGLE DE CONTENU CRITIQUE : le document doit être COMPLET et DÉVELOPPÉ. "
         "Ne pas se limiter à une structure squelette. "
         "Chaque section doit contenir un vrai contenu rédigé, proportionnel au sujet. "
@@ -754,11 +806,12 @@ def export_docx(document: dict, output_path: str = "", filename: str = "") -> st
         name = filename or (document.get("title", "export") + ".docx")
         if not name.endswith(".docx"):
             name += ".docx"
-        p = _resolve_output(output_path, name)
+        p, vfs_path = _resolve_output(output_path, name)
         doc = _build_docx(document)
         doc.save(str(p))
+        _ingest_to_vfs(p, vfs_path)
         sections = len(document.get("sections", []))
-        return _ok(p, {"sections": sections})
+        return _ok(p, vfs_path, {"sections": sections})
     except Exception as e:
         return _err(f"export_docx : {e}")
 
@@ -910,37 +963,58 @@ def _build_charts(wb, ws, charts_def: list, sheet_data_rows: int, sheet_headers_
                 warnings.append(f"Graphique {idx+1} ('{chart_def.get('title', '')}') : aucune série définie, ignoré.")
                 continue
 
-            for s_def in series_defs:
-                col = int(s_def.get("col", 2))
-                vals = Reference(
-                    src_ws,
-                    min_col=col, max_col=col,
-                    min_row=row_min, max_row=row_max,
-                )
-
-                if chart_type in ("scatter", "bubble"):
-                    # ScatterChart / BubbleChart : x_values + values
+            if chart_type in ("scatter", "bubble"):
+                # ScatterChart / BubbleChart : Series() avec xvalues explicites
+                for s_def in series_defs:
+                    col = int(s_def.get("col", 2))
+                    vals = Reference(src_ws, min_col=col, max_col=col,
+                                     min_row=row_min, max_row=row_max)
                     x_vals = Reference(src_ws, min_col=cat_col, max_col=cat_col,
                                        min_row=row_min, max_row=row_max)
                     series = Series(vals, xvalues=x_vals)
-                else:
-                    series = Series(vals, cats)
+                    if s_def.get("title"):
+                        series.title = SeriesLabel(v=s_def["title"])
+                    if s_def.get("color"):
+                        try:
+                            series.graphicalProperties.solidFill = s_def["color"].lstrip("#")
+                        except Exception:
+                            pass
+                    chart.series.append(series)
+            else:
+                # Tous les autres types (bar, line, area, pie, radar, doughnut…) :
+                # ─────────────────────────────────────────────────────────────────
+                # BUG CORRIGÉ : Series(vals, cats) passait cats comme 2e argument
+                # positionnel interprété par openpyxl comme `title` (str). openpyxl
+                # appelle ensuite len() sur cet objet Reference → erreur
+                # "object of type 'int' has no len()".
+                # SOLUTION : utiliser l'API officielle chart.add_data() +
+                # chart.set_categories() qui opère au niveau du chart, pas de la série.
+                cols = [int(s.get("col", 2)) for s in series_defs]
+                col_min_s, col_max_s = min(cols), max(cols)
 
-                # Titre de la série (légende)
-                if s_def.get("title"):
-                    series.title = SeriesLabel(v=s_def["title"])
+                # Inclure la ligne d'en-tête pour récupérer les titres de séries
+                header_row = max(1, row_min - 1)
+                has_header = header_row < row_min
+                data_ref = Reference(
+                    src_ws,
+                    min_col=col_min_s, max_col=col_max_s,
+                    min_row=header_row if has_header else row_min,
+                    max_row=row_max,
+                )
+                chart.add_data(data_ref, titles_from_data=has_header)
+                chart.set_categories(cats)
 
-                # Couleur de remplissage
-                if s_def.get("color"):
-                    from openpyxl.drawing.fill import PatternFillProperties
-                    from openpyxl.drawing.spreadsheet_drawing import SpreadsheetDrawing
-                    try:
-                        hex_color = s_def["color"].lstrip("#")
-                        series.graphicalProperties.solidFill = hex_color
-                    except Exception:
-                        pass
-
-                chart.series.append(series)
+                # Surcharger titres et couleurs si précisés dans la config JSON
+                for i, s_def in enumerate(series_defs):
+                    if i >= len(chart.series):
+                        break
+                    if s_def.get("title"):
+                        chart.series[i].title = SeriesLabel(v=s_def["title"])
+                    if s_def.get("color"):
+                        try:
+                            chart.series[i].graphicalProperties.solidFill = s_def["color"].lstrip("#")
+                        except Exception:
+                            pass
 
             # Étiquettes de données
             if chart_def.get("show_data_labels", False):
@@ -1017,7 +1091,7 @@ def export_xlsx_json(workbook: dict, output_path: str = "", filename: str = "") 
         name = filename or "export.xlsx"
         if not name.endswith(".xlsx"):
             name += ".xlsx"
-        p = _resolve_output(output_path, name)
+        p, vfs_path = _resolve_output(output_path, name)
 
         wb = openpyxl.Workbook()
         wb.remove(wb.active)  # supprimer la feuille vide par défaut
@@ -1066,10 +1140,11 @@ def export_xlsx_json(workbook: dict, output_path: str = "", filename: str = "") 
                 all_warnings.extend(warnings)
 
         wb.save(str(p))
+        _ingest_to_vfs(p, vfs_path)
         result = {"sheets": len(sheets), "total_rows": total_rows}
         if all_warnings:
             result["warnings"] = all_warnings
-        return _ok(p, result)
+        return _ok(p, vfs_path, result)
     except Exception as e:
         return _err(f"export_xlsx_json : {e}")
 
@@ -1125,7 +1200,7 @@ def export_xlsx_csv(csv_content: str, sheet_name: str = "Données",
         name = filename or "export.xlsx"
         if not name.endswith(".xlsx"):
             name += ".xlsx"
-        p = _resolve_output(output_path, name)
+        p, vfs_path = _resolve_output(output_path, name)
 
         wb = openpyxl.Workbook()
         ws = wb.active
@@ -1162,7 +1237,8 @@ def export_xlsx_csv(csv_content: str, sheet_name: str = "Données",
 
         ws.freeze_panes = "A2"
         wb.save(str(p))
-        return _ok(p, {"rows": len(all_rows) - 1, "columns": len(all_rows[0]) if all_rows else 0})
+        _ingest_to_vfs(p, vfs_path)
+        return _ok(p, vfs_path, {"rows": len(all_rows) - 1, "columns": len(all_rows[0]) if all_rows else 0})
     except Exception as e:
         return _err(f"export_xlsx_csv : {e}")
 
@@ -1267,7 +1343,7 @@ def export_pptx_json(presentation: dict, output_path: str = "", filename: str = 
         name = filename or (presentation.get("title", "présentation") + ".pptx")
         if not name.endswith(".pptx"):
             name += ".pptx"
-        p = _resolve_output(output_path, name)
+        p, vfs_path = _resolve_output(output_path, name)
 
         prs = Presentation()
         prs.slide_width  = Inches(13.33)
@@ -1288,8 +1364,9 @@ def export_pptx_json(presentation: dict, output_path: str = "", filename: str = 
             _add_slide(prs, 1, title, bullets, content=content, notes=notes)
 
         prs.save(str(p))
+        _ingest_to_vfs(p, vfs_path)
         n_slides = len(prs.slides)
-        return _ok(p, {"slides": n_slides})
+        return _ok(p, vfs_path, {"slides": n_slides})
     except Exception as e:
         return _err(f"export_pptx_json : {e}")
 
@@ -1349,7 +1426,7 @@ def export_pptx_outline(outline: str, title: str = "",
         name = filename or (title or "présentation") + ".pptx"
         if not name.endswith(".pptx"):
             name += ".pptx"
-        p = _resolve_output(output_path, name)
+        p, vfs_path = _resolve_output(output_path, name)
 
         prs = Presentation()
         prs.slide_width  = Inches(13.33)
@@ -1384,7 +1461,8 @@ def export_pptx_outline(outline: str, title: str = "",
                        content=s["content"].strip(), notes=s["notes"].strip())
 
         prs.save(str(p))
-        return _ok(p, {"slides": len(prs.slides)})
+        _ingest_to_vfs(p, vfs_path)
+        return _ok(p, vfs_path, {"slides": len(prs.slides)})
     except Exception as e:
         return _err(f"export_pptx_outline : {e}")
 
@@ -1888,14 +1966,15 @@ def export_pdf(document: dict, output_path: str = "", filename: str = "") -> str
     name = filename or (document.get("title", "export") + ".pdf")
     if not name.endswith(".pdf"):
         name += ".pdf"
-    p = _resolve_output(output_path, name)
+    p, vfs_path = _resolve_output(output_path, name)
 
     # ── Tentative WeasyPrint ───────────────────────────────────────────────────
     try:
         import weasyprint  # noqa: F401 — test de disponibilité
         html_source = _doc_to_html(document)
         weasyprint.HTML(string=html_source).write_pdf(str(p))
-        return _ok(p, {"sections": len(document.get("sections", [])),
+        _ingest_to_vfs(p, vfs_path)
+        return _ok(p, vfs_path, {"sections": len(document.get("sections", [])),
                         "engine": "weasyprint"})
 
     except ImportError:
@@ -2115,7 +2194,8 @@ def export_pdf(document: dict, output_path: str = "", filename: str = "") -> str
             title=document.get("title", ""),
         )
         doc_obj.build(story, onFirstPage=footer, onLaterPages=footer)
-        return _ok(p, {"sections": len(document.get("sections", [])),
+        _ingest_to_vfs(p, vfs_path)
+        return _ok(p, vfs_path, {"sections": len(document.get("sections", [])),
                         "engine": "reportlab (repli — weasyprint absent)"})
 
     except Exception as e:
@@ -2152,7 +2232,7 @@ def export_pdf(document: dict, output_path: str = "", filename: str = "") -> str
                 "type": "string",
                 "description": (
                     "Chemin de destination du PDF généré. "
-                    "Si omis, le PDF est placé dans ~/Exports/Prométhée/ "
+                    "Si omis, le PDF est placé dans /exports/ "
                     "avec le même nom de base que le fichier .tex."
                 )
             }
@@ -2162,20 +2242,26 @@ def export_pdf(document: dict, output_path: str = "", filename: str = "") -> str
 )
 def export_pdf_from_tex(input_path: str, output_path: str = "") -> str:
     """
-    Compile un fichier .tex existant en PDF via pdflatex (2 passes).
+    Compile un fichier .tex existant (lu depuis le VFS) en PDF via pdflatex (2 passes).
     Contrairement à export_pdf (qui génère du contenu depuis JSON),
-    cet outil prend en entrée un fichier source LaTeX déjà présent sur disque.
+    cet outil prend en entrée un fichier source LaTeX déjà présent dans le VFS.
     """
     try:
-        src = Path(input_path).expanduser().resolve()
-        if not src.exists():
-            return _err(f"export_pdf_from_tex : fichier source introuvable : {src}")
-        if src.suffix.lower() != ".tex":
+        from core.virtual_fs import get_vfs
+        vfs = get_vfs()
+
+        # ── Lire le .tex depuis le VFS ────────────────────────────────────
+        if Path(input_path).suffix.lower() != ".tex":
             return _err(
                 f"export_pdf_from_tex : le fichier doit avoir l'extension .tex "
-                f"(reçu : '{src.suffix}'). Pour générer un PDF depuis du contenu JSON, "
+                f"(reçu : '{Path(input_path).suffix}'). Pour générer un PDF depuis du contenu JSON, "
                 f"utiliser export_pdf."
             )
+        if not vfs.exists(input_path) or not vfs.is_file(input_path):
+            return _err(f"export_pdf_from_tex : fichier source introuvable dans le VFS : {input_path}")
+
+        tex_data = vfs.read_bytes(input_path)
+        src_stem = Path(input_path).stem
 
         if not shutil.which("pdflatex"):
             return _err(
@@ -2183,11 +2269,13 @@ def export_pdf_from_tex(input_path: str, output_path: str = "") -> str:
                 "Installer texlive-latex-base : apt install texlive-latex-base"
             )
 
-        name = src.stem + ".pdf"
-        dest = _resolve_output(output_path, name)
+        name = src_stem + ".pdf"
+        dest, vfs_path = _resolve_output(output_path, name)
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp = Path(tmp_dir)
+            tmp_tex = tmp / f"{src_stem}.tex"
+            tmp_tex.write_bytes(tex_data)
 
             # Deux passes pdflatex pour résoudre \ref, \cite, table des matières, etc.
             for _ in range(2):
@@ -2197,13 +2285,13 @@ def export_pdf_from_tex(input_path: str, output_path: str = "") -> str:
                         "-interaction=nonstopmode",
                         "-halt-on-error",
                         "-output-directory", str(tmp),
-                        str(src),
+                        str(tmp_tex),
                     ],
                     capture_output=True,
                     timeout=120,
                 )
 
-            out_pdf = tmp / (src.stem + ".pdf")
+            out_pdf = tmp / (src_stem + ".pdf")
             if not out_pdf.exists():
                 log_snippet = result.stderr.decode(errors="replace")[-1000:]
                 stdout_snippet = result.stdout.decode(errors="replace")[-500:]
@@ -2216,7 +2304,13 @@ def export_pdf_from_tex(input_path: str, output_path: str = "") -> str:
 
             shutil.copy2(str(out_pdf), str(dest))
 
-        return _ok(dest, {"engine": "pdflatex", "source": str(src)})
+        _ingest_to_vfs(dest, vfs_path)
+        return _ok(dest, vfs_path, {"engine": "pdflatex", "source": input_path})
+
+    except subprocess.TimeoutExpired:
+        return _err("export_pdf_from_tex : délai de compilation dépassé (> 120 s).")
+    except Exception as e:
+        return _err(f"export_pdf_from_tex : {e}")
 
     except subprocess.TimeoutExpired:
         return _err("export_pdf_from_tex : délai de compilation dépassé (> 120 s).")
@@ -2295,28 +2389,41 @@ def _libreoffice_convert(input_path: Path, target_format: str,
 def export_libreoffice(input_path: str, target_format: str,
                         output_path: str = "") -> str:
     try:
-        src = Path(input_path).expanduser().resolve()
-        if not src.exists():
-            return _err(f"export_libreoffice : fichier source introuvable : {src}")
+        from core.virtual_fs import get_vfs
+        vfs = get_vfs()
 
-        # Dossier de sortie temporaire pour LibreOffice
+        # ── Lire le fichier source depuis le VFS ──────────────────────────
+        if not vfs.exists(input_path) or not vfs.is_file(input_path):
+            return _err(f"export_libreoffice : fichier source introuvable dans le VFS : {input_path}")
+
+        src_data = vfs.read_bytes(input_path)
+        src_suffix = Path(input_path).suffix or ""
+        src_stem   = Path(input_path).stem
+
+        # Déterminer le chemin VFS de sortie
+        default_name = f"{src_stem}.{target_format}"
+        if output_path:
+            vfs_out = output_path if output_path.startswith("/") else f"/{output_path}"
+        else:
+            vfs_out = f"{_DEFAULT_VFS_EXPORT_DIR}/{default_name}"
+
+        # Dossier temporaire pour LibreOffice (conversion interne uniquement)
         with tempfile.TemporaryDirectory() as tmp_dir:
-            converted = _libreoffice_convert(src, target_format, Path(tmp_dir))
+            tmp = Path(tmp_dir)
+            tmp_src = tmp / f"source{src_suffix}"
+            tmp_src.write_bytes(src_data)
+
+            converted = _libreoffice_convert(tmp_src, target_format, tmp)
             if converted is None:
                 return _err("export_libreoffice : LibreOffice non disponible ou conversion échouée")
 
-            # Déterminer la destination finale
-            if output_path:
-                dest = Path(output_path).expanduser()
-                if not dest.is_absolute():
-                    dest = Path.home() / dest
-            else:
-                dest = src.parent / (src.stem + f".{target_format}")
+            _ingest_to_vfs(converted, vfs_out)
+            # _ingest_to_vfs supprime le tmp ; reconstruire le Path pour _ok
+            # (le fichier est déjà supprimé mais on a besoin de la taille → lire depuis VFS)
+            size = len(vfs.read_bytes(vfs_out))
 
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(str(converted), str(dest))
-
-        return _ok(dest)
+        r: dict = {"status": "ok", "path": vfs_out, "size_bytes": size, "vfs": True}
+        return json.dumps(r, ensure_ascii=False)
     except Exception as e:
         return _err(f"export_libreoffice : {e}")
 
@@ -2365,7 +2472,7 @@ def export_libreoffice_native(target_format: str, document: dict,
         name = filename or f"{doc_title}.{target_format}"
         if not name.endswith(f".{target_format}"):
             name = name.rsplit(".", 1)[0] + f".{target_format}"
-        final_dest = _resolve_output(output_path, name)
+        final_dest, vfs_path = _resolve_output(output_path, name)
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp = Path(tmp_dir)
@@ -2433,9 +2540,13 @@ def export_libreoffice_native(target_format: str, document: dict,
                     f"Le fichier intermédiaire est disponible : {tmp_src}"
                 )
 
-            final_dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(str(converted), str(final_dest))
+            # Ingérer directement le fichier converti dans le VFS
+            _ingest_to_vfs(converted, vfs_path)
 
-        return _ok(final_dest, {"intermediate_format": intermediate_format})
+        from core.virtual_fs import get_vfs as _gvfs
+        size = len(_gvfs().read_bytes(vfs_path))
+        r: dict = {"status": "ok", "path": vfs_path, "size_bytes": size,
+                   "vfs": True, "intermediate_format": intermediate_format}
+        return json.dumps(r, ensure_ascii=False)
     except Exception as e:
         return _err(f"export_libreoffice_native : {e}")

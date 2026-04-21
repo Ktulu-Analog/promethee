@@ -1,7 +1,7 @@
 # ============================================================================
-# Prométhée — Assistant IA desktop
+# Prométhée — Assistant IA avancé
 # ============================================================================
-# Auteur  : Pierre COUGET
+# Auteur  : Pierre COUGET ktulu.analog@gmail.com
 # Licence : GNU Affero General Public License v3.0 (AGPL-3.0)
 #           https://www.gnu.org/licenses/agpl-3.0.html
 # Année   : 2026
@@ -103,8 +103,13 @@ _log = logging.getLogger("promethee.skill_manager")
 # ── Répertoire par défaut ──────────────────────────────────────────────────
 _SKILLS_DIR = Path(__file__).parent.parent / "skills"
 
-# Taille maximale d'un skill injecté dans le prompt (caractères)
-_SKILL_MAX_CHARS = 6_000
+# Taille maximale d'un skill injecté dans le prompt système (caractères).
+# Valeur choisie pour couvrir la quasi-totalité des skills du projet
+# (16 skills, dont les plus longs à ~17k chars sont encore tronqués mais
+# conservent leurs sections essentielles) tout en maintenant les profils
+# les plus chargés (GPEC, Administratif) sous 60k chars de system_prompt —
+# soit moins de 15% d'une fenêtre de 128k tokens.
+_SKILL_MAX_CHARS = 10_000
 
 # Taille maximale d'un skill retourné via l'outil skill_read
 _SKILL_READ_MAX_CHARS = 12_000

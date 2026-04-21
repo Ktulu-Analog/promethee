@@ -1,5 +1,5 @@
 """
-main.py — Point d'entrée de l'application Prométhée AI
+main.py — Point d'entrée de l'application Prométhée AI (FastAPI)
 """
 import logging
 import logging.handlers
@@ -9,8 +9,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 # ── Configuration centralisée du logging ──────────────────────────────────
-# Tous les loggers du projet (getLogger(__name__)) propagent vers la racine.
-# Aucune sortie console — tout va dans logs/promethee.log.
 _LOG_DIR = Path(__file__).parent / "logs"
 _LOG_DIR.mkdir(exist_ok=True)
 
@@ -21,7 +19,7 @@ logging.basicConfig(
     handlers=[
         logging.handlers.RotatingFileHandler(
             _LOG_DIR / "promethee.log",
-            maxBytes=5 * 1024 * 1024,   # 5 Mo
+            maxBytes=5 * 1024 * 1024,
             backupCount=5,
             encoding="utf-8",
         ),
@@ -32,16 +30,27 @@ logging.basicConfig(
 from tools import register_all
 register_all()
 
-# ── Diagnostic collections Qdrant ─────────────────────────────────────────
+# ── Diagnostic au démarrage ───────────────────────────────────────────────
 from core.config import Config
 import logging as _logging
 _logging.getLogger("promethee.startup").info(
-    "[Config] QDRANT_COLLECTION=%s | LTM_COLLECTION=%s | LTM_ENABLED=%s | RAG_USER_ID=%r",
-    Config.QDRANT_COLLECTION, Config.LTM_COLLECTION, Config.LTM_ENABLED, Config.RAG_USER_ID,
+    "[Config] QDRANT_URL=%s | LTM_ENABLED=%s | LOCAL=%s | MODEL=%s",
+    Config.QDRANT_URL, Config.LTM_ENABLED, Config.LOCAL, Config.active_model(),
 )
+# Les collections Qdrant (QDRANT_COLLECTION, LTM_COLLECTION) sont propres à
+# chaque utilisateur et calculées dynamiquement par UserConfig à partir du
+# username — elles ne sont plus des attributs de Config.
 # ──────────────────────────────────────────────────────────────────────────
 
-from ui import run
-
 if __name__ == "__main__":
-    run()
+    import uvicorn
+
+    host = getattr(Config, "SERVER_HOST", "0.0.0.0")
+    port = int(getattr(Config, "SERVER_PORT", 8000))
+
+    uvicorn.run(
+        "server.main:app",
+        host=host,
+        port=port,
+        reload=False,
+    )

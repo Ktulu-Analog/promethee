@@ -2,315 +2,223 @@
 name: Workflow Légifrance
 description: Protocole de recherche juridique avec les outils Légifrance — ordre des appels, identifiants, cas d'usage, erreurs fréquentes
 tags: [légifrance, judilibre, juridique, droit, recherche, protocole, jurisprudence, fonction-publique, CGFP]
-version: 4.0
+version: 4.6
 ---
 
 # Workflow Légifrance
 
-Guide opérationnel pour exploiter efficacement les outils Légifrance disponibles.
+## Principe : large → précis. Stopper dès les IDs obtenus.
 
-## Principe général : toujours partir du plus large vers le plus précis
+**Règle critique d'économie** : dès qu'un appel retourne des résultats pertinents, utiliser directement les IDs trouvés. Ne PAS relancer de recherche avec une formulation différente sauf si 0 résultat utile. Chaque appel supplémentaire inutile consomme du contexte et ralentit la réponse.
 
 ```
 Besoin flou    → legifrance_suggerer            → identifier le texte
-Besoin ciblé   → legifrance_rechercher          → obtenir les CIDs/IDs
+Besoin ciblé   → legifrance_rechercher          → obtenir les IDs (nb_resultats=5 suffit)
 Lecture code   → legifrance_consulter_code      → table des matières + CIDs
 Lecture article → legifrance_article_par_numero → plus simple que le LEGIARTI
 ```
 
 ---
 
-## 1. Workflows types par cas d'usage
+## 1. Workflows types
 
-### Cas 1 — Trouver et lire un article de code (cas le plus fréquent)
-
+### Cas 1 — Article de code
 ```
-1. legifrance_lister_codes()
-   → trouver le code_id (ex: LEGITEXT000006070721 pour le Code du travail)
-
-2. legifrance_article_par_numero(code_id="LEGITEXT...", num="L1234-5")
-   → lecture directe si on connaît le numéro d'article
-
-   OU
-
-   legifrance_consulter_code(code_id="LEGITEXT...", date="YYYY-MM-DD")
-   → table des matières avec les CIDs des sections
-
+1. legifrance_lister_codes() → trouver le code_id (LEGITEXT...)
+2. legifrance_article_par_numero(code_id, num="L1234-5")
+   OU legifrance_consulter_code(code_id, date) → CIDs des sections
 3. legifrance_obtenir_article(article_id="LEGIARTI...")
-   → lecture d'un article par son identifiant LEGIARTI
 ```
 
-### Cas 2 — Recherche thématique sans identifiant connu
-
+### Cas 2 — Recherche thématique
 ```
-1. legifrance_rechercher(query="télétravail agent public", fond="CODE")
-   → liste de résultats avec leurs identifiants
-
+1. legifrance_rechercher(query="télétravail agent public", fond="CODE_DATE")
 2. legifrance_obtenir_article(article_id="LEGIARTI...")
-   → lecture de l'article retenu
 ```
 
-### Cas 3 — Trouver une loi ou un décret récent
-
+### Cas 3 — Loi ou décret récent
 ```
-1. legifrance_rechercher(query="...", fond="LODA")
-   OU
-   legifrance_lister_loda(nature="DECRET", date_debut="2023-01-01", date_fin="2024-12-31")
-
+1. legifrance_lister_loda(natures=["DECRET"], date_debut="2023-01-01", date_fin="2024-12-31")
+   OU legifrance_rechercher(query="...", fond="ALL")
+   ⚠️ Ne jamais passer fond="LODA" → HTTP 400. Valeurs correctes: LODA_DATE, LODA_ETAT.
 2. legifrance_loi_decret(text_id="JORFTEXT...")
-   → texte complet
 ```
 
-### Cas 4 — Vérifier la version en vigueur à une date précise
-
+### Cas 3bis — Décrets de nomination / cessation de fonctions
+Ces décrets sont abrogés dès la nomination suivante → ne pas filtrer sur en_vigueur.
 ```
-legifrance_version_canonique(text_id="...", date="2019-06-01")
-legifrance_version_canonique_article(article_id="...", date="2019-06-01")
+1. legifrance_rechercher(
+       query="nomination [nom complet de l'organisme]",
+       fond="JORF",
+       date_debut="2020-01-01",
+       tri="PERTINENCE"    ← toujours PERTINENCE, jamais DATE_PUBLI_DESC
+   )
+   → Les décrets pertinents remontent dans les 10 premiers résultats.
+   STOPPER immédiatement dès que des JORFTEXT de nominations sont identifiés.
+   Ne PAS relancer avec une formulation différente si des résultats pertinents sont présents.
+
+   OU pour lister exhaustivement par plage de dates :
+   legifrance_lister_loda(
+       natures=["DECRET"],
+       en_vigueur_seulement=False,   ← OBLIGATOIRE
+       date_debut="2020-01-01",
+       date_fin="2024-12-31"
+   )
+
+2. legifrance_jorf(text_id="JORFTEXT...")       → métadonnées
+3. legifrance_jorf_part(text_id="JORFTEXT...")  → contenu
 ```
 
-### Cas 5 — Convention collective (droit du travail privé)
+### Cas 4 — Version à une date précise
+```
+legifrance_version_canonique(cid_text="LEGITEXT...", date="2019-06-01")
+legifrance_version_canonique_article(article_id="LEGIARTI...")
+```
 
+### Cas 5 — Convention collective
 ```
 1. legifrance_conventions(query="bâtiment") ou legifrance_conventions(idcc="1596")
-   → obtenir le text_id (KALITEXT...)
-
 2. legifrance_convention_texte(text_id="KALITEXT...")
-   → texte complet de la convention
 ```
 
 ### Cas 6 — Jurisprudence
-
 ```
 1. legifrance_rechercher(query="responsabilité contractuelle", fond="JURI")
-   → liste de décisions avec identifiants
-
 2. legifrance_jurisprudence(decision_id="JURITEXT...")
-   → texte de la décision
 ```
 
 ---
 
-## 2. Fonds de recherche disponibles
+## 2. Fonds valides pour legifrance_rechercher
 
 | Fond | Contenu |
 |------|---------|
-| `CODE` | Codes juridiques (Code civil, Code du travail, etc.) |
-| `LODA` | Lois, ordonnances, décrets, arrêtés standalone |
-| `JORF` | Journal Officiel de la République Française |
-| `CNIL` | Délibérations CNIL |
-| `CIRC` | Circulaires et instructions |
-| `ACCO` | Accords d'entreprise |
+| `ALL` | Tous (défaut) |
+| `CODE_DATE` / `CODE_ETAT` | Codes juridiques (par date / par état) |
+| `LODA_DATE` / `LODA_ETAT` | Lois/décrets autonomes (par date / par état) |
+| `JORF` | Journal Officiel |
+| `JURI` / `JUFI` | Jurisprudence judiciaire |
+| `CETAT` | Conseil d'État |
+| `CONSTIT` | Conseil Constitutionnel |
 | `KALI` | Conventions collectives |
-| `JURI` | Jurisprudence judiciaire |
-| `CETAT` | Jurisprudence administrative (Conseil d'État) |
-| `JADE` | Jurisprudence des cours administratives d'appel |
-| `CONSTIT` | Décisions du Conseil Constitutionnel |
+| `CNIL` | Délibérations CNIL |
+| `CIRC` | Circulaires |
+| `ACCO` | Accords d'entreprise |
+
+⚠️ `LODA`, `CODE`, `JADE` n'existent PAS → HTTP 400.
 
 ---
 
-## 3. Types d'identifiants : ne pas les confondre
+## 3. Identifiants
 
-| Identifiant | Format | Usage |
-|-------------|--------|-------|
-| `LEGITEXT...` | Texte dans la base | Codes, lois codifiées |
-| `LEGIARTI...` | Article précis | legifrance_obtenir_article |
-| `LEGISCTA...` | Section d'un code | legifrance_section_par_cid |
-| `JORFTEXT...` | Texte publié au JO | legifrance_loi_decret, legifrance_jorf |
-| `KALITEXT...` | Convention collective | legifrance_convention_texte |
-| `JURITEXT...` | Décision judiciaire | legifrance_jurisprudence |
-| NOR | Code de publication JO (`EQUA2400123A`) | legifrance_jo_par_nor |
-| IDCC | Numéro de convention collective (`1596`) | legifrance_convention_par_idcc |
+| Préfixe | Usage |
+|---------|-------|
+| `LEGITEXT...` | Codes, lois codifiées → legifrance_loi_decret, legifrance_consulter_code |
+| `LEGIARTI...` | Article précis → legifrance_obtenir_article |
+| `LEGISCTA...` | Section → legifrance_section_par_cid |
+| `JORFTEXT...` | Texte JO → legifrance_jorf, legifrance_jorf_part |
+| `KALITEXT...` | Convention collective → legifrance_convention_texte |
+| `JURITEXT...` | Décision judiciaire → legifrance_jurisprudence |
+| NOR | Code JO court (ex: EQUA2400123A) → legifrance_jo_par_nor |
+| IDCC | Numéro convention (ex: 1596) → legifrance_convention_par_idcc |
 
 ---
 
-## 4. Référence des outils par famille
+## 4. Référence outils
 
-### Codes juridiques
-```
-legifrance_lister_codes()
-legifrance_consulter_code(code_id, date)
-legifrance_article_par_numero(code_id, num)
-legifrance_obtenir_article(article_id)
-legifrance_section_par_cid(cid)
-```
+**Codes** : `legifrance_lister_codes` · `legifrance_consulter_code(code_id, date)` · `legifrance_article_par_numero(code_id, num)` · `legifrance_obtenir_article(article_id)` · `legifrance_section_par_cid(cid)`
 
-### Lois, décrets, ordonnances (LODA)
-```
-legifrance_rechercher(query, fond="LODA")
-legifrance_lister_loda(nature, date_debut, date_fin)
-legifrance_loi_decret(text_id)
-```
-Natures disponibles : `LOI`, `ORDONNANCE`, `DECRET`, `ARRETE`
+**LODA** : `legifrance_lister_loda(natures, date_debut, date_fin, en_vigueur_seulement)` · `legifrance_loi_decret(text_id)`
+Natures : `LOI` `ORDONNANCE` `DECRET` `DECRET_LOI` `ARRETE` `CONSTITUTION` `DECISION` `CONVENTION` `DECLARATION` `ACCORD_FONCTION_PUBLIQUE`
 
-### Journal Officiel
-```
-legifrance_derniers_jo(nb)
-legifrance_sommaire_jorf(date)
-legifrance_jo_par_nor(nor)
-legifrance_jorf(text_id)
-```
+**JO** : `legifrance_derniers_jo(nb)` · `legifrance_sommaire_jorf(date)` · `legifrance_jo_par_nor(nor)` · `legifrance_jorf(text_id)` · `legifrance_jorf_part(text_id)`
 
-### Jurisprudence
-```
-legifrance_rechercher(query, fond="JURI")      # judiciaire
-legifrance_rechercher(query, fond="CETAT")     # administratif
-legifrance_jurisprudence(decision_id)
-legifrance_jurisprudence_plan_classement(pdc_id)
-legifrance_suggerer_pdc(query)
-```
+**Jurisprudence** : `legifrance_rechercher(fond="JURI"|"CETAT")` · `legifrance_jurisprudence(decision_id)` · `legifrance_jurisprudence_plan_classement(pdc_id)` · `legifrance_suggerer_pdc(query)`
 
-### Conventions collectives (KALI)
-```
-legifrance_conventions(query, idcc)
-legifrance_convention_par_idcc(idcc)
-legifrance_convention_texte(text_id)
-legifrance_convention_article(article_id)
-legifrance_convention_section(section_id)
-```
+**KALI** : `legifrance_conventions(query, idcc)` · `legifrance_convention_par_idcc(idcc)` · `legifrance_convention_texte(text_id)` · `legifrance_convention_article(article_id)` · `legifrance_convention_section(section_id)`
 
-### Accords d'entreprise (ACCO)
-```
-legifrance_suggerer_acco(query)
-legifrance_acco(accord_id)
-legifrance_lister_bocc(annee)
-legifrance_lister_bocc_textes(bocc_id, idcc)
-```
+**ACCO** : `legifrance_suggerer_acco(query)` · `legifrance_acco(accord_id)` · `legifrance_lister_bocc(annee)` · `legifrance_lister_bocc_textes(bocc_id, idcc)`
 
-### Circulaires et documents administratifs
-```
-legifrance_circulaire(circulaire_id)
-legifrance_lister_docs_admins(annee)
-```
+**Circulaires** : `legifrance_circulaire(circulaire_id)` · `legifrance_lister_docs_admins(annee)`
 
-### Travaux parlementaires
-```
-legifrance_lister_legislatures()
-legifrance_lister_dossiers_legislatifs(legislature_id)
-legifrance_dossier_legislatif(dossier_id)
-legifrance_lister_debats_parlementaires(legislature_id)
-legifrance_debat(debat_id)
-legifrance_lister_questions_parlementaires(legislature_id)
-```
+**Parlementaire** : `legifrance_lister_legislatures()` · `legifrance_lister_dossiers_legislatifs(legislature_id)` · `legifrance_dossier_legislatif(dossier_id)` · `legifrance_lister_debats_parlementaires(legislature_id)` · `legifrance_debat(debat_id)` · `legifrance_lister_questions_parlementaires(legislature_id)`
 
-### Historique et versions
-```
-legifrance_versions_article(article_id)
-legifrance_historique_texte(text_id, date_debut)
-legifrance_version_canonique(text_id, date)
-legifrance_version_canonique_article(article_id, date)
-legifrance_version_proche(text_id, date)
-legifrance_a_des_versions(text_id)
-```
+**Versions** : `legifrance_versions_article(article_id)` · `legifrance_historique_texte(text_id, date_debut)` · `legifrance_version_canonique(cid_text, date)` · `legifrance_version_canonique_article(article_id)` · `legifrance_version_proche(cid_text, date)` · `legifrance_a_des_versions(text_id)`
 
-### Recherche et suggestions
-```
-legifrance_rechercher(query, fond)
-legifrance_suggerer(query)
-legifrance_cnil(deliberation_id)
-```
+**Recherche** : `legifrance_rechercher(query, fond, date_debut, date_fin, tri)` · `legifrance_suggerer(query)` · `legifrance_cnil(deliberation_id)`
+Tri : `PERTINENCE` (défaut, recommandé) · `SIGNATURE_DATE_DESC` (après pertinence satisfaisante). ⚠️ `DATE_PUBLI_DESC` sans query précise retourne les documents les plus récents de la plage, ignorant la pertinence.
 
 ---
 
 ## 5. Bonnes pratiques
 
-- **Toujours vérifier la date d'entrée en vigueur** : un article peut être abrogé ou modifié. Utiliser le paramètre `date` (format `YYYY-MM-DD`) pour obtenir le texte en vigueur à une date précise.
-- **En cas d'identifiant inconnu** : commencer par `legifrance_suggerer` ou `legifrance_rechercher`, puis extraire l'identifiant de la réponse.
-- **Fond LODA ≠ Fond CODE** : les lois standalone sont dans LODA, les articles codifiés sont dans CODE. Une même loi peut apparaître dans les deux.
-- **Pour les conventions collectives** : toujours utiliser l'IDCC (numéro à 4 chiffres) quand connu — plus fiable que la recherche textuelle.
-- **Ne jamais construire d'URL Légifrance manuellement** : utiliser exclusivement le champ `legifrance_url` retourné par les outils. Les URLs générées manuellement sont souvent fausses.
+- **Stopper dès les IDs obtenus** : ne pas relancer si les résultats sont déjà pertinents.
+- **Vérifier la date d'entrée en vigueur** : passer `date="YYYY-MM-DD"` pour obtenir la version historique.
+- **Conventions collectives** : préférer l'IDCC (4 chiffres) à la recherche textuelle.
+- **URLs Légifrance** : utiliser exclusivement le champ `legifrance_url` retourné par les outils — ne jamais construire manuellement.
 
 ---
 
 ## 5bis. Droit public — règle critique
 
-**Les fonctionnaires, ouvriers d'État et contractuels de droit public relèvent du Code général de la fonction publique (CGFP), pas du Code du travail.**
+**Fonctionnaires, ouvriers d'État et contractuels de droit public → Code général de la fonction publique (CGFP), pas Code du travail.**
 
 | Population | Code applicable |
 |---|---|
-| Fonctionnaires (titulaires) | Code général de la fonction publique |
-| Contractuels de droit public | Code général de la fonction publique |
-| Ouvriers d'État | Code général de la fonction publique |
+| Fonctionnaires (titulaires) | CGFP |
+| Contractuels de droit public | CGFP |
+| Ouvriers d'État | CGFP |
 | Salariés de droit privé | Code du travail |
-| Agents contractuels de droit privé (EPA, certains EPIC) | Code du travail selon statut |
+| Contractuels de droit privé (EPA, certains EPIC) | Code du travail selon statut |
 
-Le Code du travail ne s'applique à un agent public que si un texte spécifique y renvoie expressément (ex : certaines dispositions sur la formation, le harcèlement…). En cas de doute, chercher dans le CGFP en premier.
+Le Code du travail ne s'applique à un agent public que si un texte spécifique y renvoie expressément. En cas de doute, chercher dans le CGFP en premier.
 
-**Pour chercher dans le CGFP :**
 ```
-legifrance_lister_codes()
-→ repérer le LEGITEXT du Code général de la fonction publique
-
+legifrance_lister_codes() → repérer le LEGITEXT du CGFP
 legifrance_article_par_numero(code_id="LEGITEXT...", num="L1xx-xx")
 ```
 
 ---
 
-## 5ter. Lecture des décisions du Conseil d'État
+## 5ter. Décisions du Conseil d'État
 
-Les décisions du Conseil d'État suivent une structure immuable :
-
-```
-1. Visas       → textes et pièces examinés (commence par "Vu...")
-2. Considérants → raisonnement juridique (commence par "Considérant que...")
-3. Dispositif  → LA DÉCISION EFFECTIVE (dernière partie, après "DÉCIDE :" ou "Article 1er")
-```
-
-**Toujours lire le dispositif en fin de décision** pour connaître l'issue réelle :
-- **Rejet** : le recours est rejeté, l'acte attaqué est maintenu
-- **Annulation** : l'acte attaqué est annulé
-- **Renvoi** : l'affaire est renvoyée devant une autre juridiction
-- **Sursis à exécution** : l'acte est suspendu temporairement
-
-Ne pas conclure à partir des seuls considérants — le dispositif peut conclure différemment du raisonnement apparent.
+Structure immuable : **Visas** → **Considérants** → **Dispositif** (après "DÉCIDE :" ou "Article 1er").
+Toujours lire le dispositif en fin de décision : Rejet / Annulation / Renvoi / Sursis à exécution.
+Ne pas conclure depuis les seuls considérants.
 
 ---
 
-## 6. Judilibre — jurisprudence de la Cour de cassation
+## 6. Judilibre (Cour de cassation)
 
-Judilibre est distinct de Légifrance. Il expose la jurisprudence judiciaire de la Cour de cassation via ses propres outils `judilibre_*`.
-
-**Point critique :** `www.judilibre.com` n'existe pas. Le site de référence est `www.courdecassation.fr`.
-
-### Outils disponibles
+⚠️ `www.judilibre.com` n'existe pas — utiliser les outils `judilibre_*`.
 
 ```
-judilibre_rechercher(query, ...) → liste de décisions avec identifiants
-judilibre_decision(id)           → texte complet d'une décision
-judilibre_scan(...)              → parcourir les décisions par lot
-judilibre_taxonomie()            → récupérer les classifications thématiques
-judilibre_stats()                → statistiques de la base
-judilibre_historique(id)         → historique d'une décision
+judilibre_rechercher(query) → liste avec identifiants
+judilibre_decision(id)      → texte complet
 ```
-
-### Workflow type
-
-```
-1. judilibre_rechercher(query="responsabilité délictuelle préjudice")
-   → liste de décisions avec leur identifiant
-
-2. judilibre_decision(id="...")
-   → texte intégral de la décision retenue
-```
-
-### Quand utiliser Judilibre vs Légifrance pour la jurisprudence
 
 | Besoin | Outil |
 |--------|-------|
-| Jurisprudence judiciaire (Cour de cassation) | `judilibre_*` |
+| Cour de cassation | `judilibre_*` |
 | Jurisprudence judiciaire (index Légifrance) | `legifrance_rechercher(fond="JURI")` |
-| Jurisprudence administrative (Conseil d'État) | `legifrance_rechercher(fond="CETAT")` |
-| Jurisprudence CAA | `legifrance_rechercher(fond="JADE")` |
-| Décisions du Conseil constitutionnel | `legifrance_rechercher(fond="CONSTIT")` |
+| Conseil d'État | `legifrance_rechercher(fond="CETAT")` |
+| CAA | `legifrance_rechercher(fond="CETAT")` — pas de fond JADE |
+| Conseil constitutionnel | `legifrance_rechercher(fond="CONSTIT")` |
 
 ---
 
-## 7. Erreurs fréquentes à éviter
+## 7. Erreurs fréquentes
 
 | Erreur | Correction |
 |--------|------------|
-| Chercher un article codifié dans LODA | Utiliser le fond `CODE` |
-| Utiliser un LEGIARTI dans `legifrance_loi_decret` | legifrance_loi_decret attend un JORFTEXT |
-| Omettre le paramètre `date` | Sans `date`, on obtient la version actuelle — préciser la date si besoin historique |
-| Confondre NOR et LEGIARTI | Le NOR est un code alphanumérique court (ex: EQUA2400123A), le LEGIARTI est long |
-| Utiliser `judilibre_*` pour le Conseil d'État | Le CE est dans Légifrance fond `CETAT`, pas dans Judilibre |
-| Accéder à Judilibre via www.judilibre.com | Ce site n'existe pas — utiliser les outils `judilibre_*` directement |
+| `legifrance_rechercher(fond="LODA")` | HTTP 400 → utiliser `LODA_DATE` ou `legifrance_lister_loda` |
+| `legifrance_rechercher(fond="JADE")` | HTTP 400 → utiliser `fond="CETAT"` |
+| `legifrance_rechercher(fond="CODE")` | HTTP 400 → utiliser `CODE_DATE` ou `CODE_ETAT` |
+| Relancer une recherche après des résultats pertinents | Stopper et utiliser les IDs déjà obtenus |
+| Résultats mélangés (nominations noyées dans du bruit) | Ajouter `date_debut` pour filtrer la période, garder `tri="PERTINENCE"` |
+| `tri="DATE_PUBLI_DESC"` sans query ciblée | Retourne les docs les plus récents sans pertinence → résultats faux. Toujours utiliser `PERTINENCE` |
+| Dates ignorées dans `lister_loda` | Vérifier que `date_debut`/`date_fin` sont bien passés |
+| `en_vigueur_seulement=True` pour nominations | Ces décrets sont abrogés → toujours `False` |
+| LEGIARTI dans `legifrance_loi_decret` | Attend un JORFTEXT |
+| URL Légifrance construite manuellement | Utiliser le champ `legifrance_url` retourné par l'outil |
+| `judilibre_*` pour le Conseil d'État | CE → `legifrance_rechercher(fond="CETAT")` |

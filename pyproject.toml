@@ -7,18 +7,18 @@ build-backend = "setuptools.backends.legacy:build"
 # ==============================================================================
 
 [project]
-name = "Prométhée-ai"
-version = "2.2.4"
-description = "Assistant IA desktop avec outils intégrés, RAG, mémoire long terme et support Légifrance/Judilibre"
+name = "Prométhée"
+version = "3.0.0"
+description = "Assistant IA web multi-utilisateurs avec outils intégrés, RAG, mémoire long terme et support Légifrance/Judilibre"
 readme = "README.md"
 license = { text = "AGPL-3.0-only" }
 requires-python = ">=3.10"
 
-keywords = ["ai", "llm", "rag", "desktop", "assistant", "legifrance", "pyqt6"]
+keywords = ["ai", "llm", "rag", "assistant", "legifrance", "fastapi"]
 
 classifiers = [
     "Development Status :: 4 - Beta",
-    "Environment :: X11 Applications :: Qt",
+    "Environment :: Web Environment",
     "Intended Audience :: End Users/Desktop",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
@@ -31,11 +31,14 @@ classifiers = [
 dependencies = [
     "python-dotenv>=1.0.0",
     "openai>=1.30.0",
-    "PyQt6>=6.6.0",
-    "PyQt6-WebEngine>=6.6.0",
     "PyYAML>=6.0.1",
     "requests>=2.31.0",
     "httpx>=0.27.0",
+    "fastapi>=0.111.0",
+    "uvicorn[standard]>=0.30.0",
+    "python-multipart>=0.0.9",
+    "python-jose[cryptography]>=3.3.0",
+    "bcrypt>=4.0.1",
 ]
 
 # ── Dépendances optionnelles (groupes) ────────────────────────────────────────
@@ -58,7 +61,6 @@ data = [
 # RAG — base vectorielle
 rag = [
     "qdrant-client>=1.9.0",
-    "sentence-transformers>=3.0.0",
     "numpy>=1.26.0",
 ]
 
@@ -85,6 +87,15 @@ rendering = [
     "tiktoken>=0.7.0",
 ]
 
+# Serveur FastAPI multi-utilisateurs
+server = [
+    "fastapi>=0.111.0",
+    "uvicorn[standard]>=0.30.0",
+    "python-multipart>=0.0.9",
+    "python-jose[cryptography]>=3.3.0",
+    "bcrypt>=4.0.1",
+]
+
 # Grist (tableur collaboratif)
 grist = [
     "requests>=2.31.0",
@@ -97,7 +108,6 @@ audio = [
 
 # Modèles locaux Ollama
 local = [
-    "ollama>=0.2.0",
 ]
 
 # SQL (drivers additionnels — installés à la demande via python_install)
@@ -108,7 +118,7 @@ sql = [
 
 # Tout (sauf drivers SQL et audio)
 all = [
-    "promethee-ai[web,data,rag,ocr,office,rendering,grist,local]",
+    "promethee-ai[web,data,rag,ocr,office,rendering,grist,local,server]",
 ]
 
 # Développement
@@ -124,10 +134,8 @@ dev = [
 
 # ── Point d'entrée ────────────────────────────────────────────────────────────
 [project.scripts]
-promethee = "main:run"
-
-[project.gui-scripts]
-promethee-gui = "main:run"
+promethee = "main:__main__"
+promethee-server = "server.main:app"
 
 # ==============================================================================
 # Outils
@@ -137,7 +145,7 @@ promethee-gui = "main:run"
 [tool.ruff]
 target-version = "py310"
 line-length = 100
-src = [".", "core", "tools", "ui"]
+src = [".", "core", "tools", "server"]
 
 [tool.ruff.lint]
 select = [
@@ -163,8 +171,8 @@ ignore = [
 python_version = "3.10"
 warn_return_any = true
 warn_unused_configs = true
-ignore_missing_imports = true   # PyQt6 stubs non exhaustifs
-exclude = ["tests/", "ui/"]    # UI PyQt6 difficile à typer statiquement
+ignore_missing_imports = true   # stubs tiers non exhaustifs
+exclude = ["tests/"]    # aucune UI Qt à exclure
 
 # ── Pytest ────────────────────────────────────────────────────────────────────
 [tool.pytest.ini_options]
@@ -179,7 +187,6 @@ addopts = "-v --tb=short"
 source = ["core", "tools"]
 omit = [
     "tests/*",
-    "ui/*",
     "*/site-packages/*",
 ]
 
@@ -195,5 +202,5 @@ exclude_lines = [
 # ── Setuptools ────────────────────────────────────────────────────────────────
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["core*", "tools*", "ui*"]
-exclude = ["tests*", "assets*"]
+include = ["core*", "tools*", "server*"]
+exclude = ["tests*", "assets*", "frontend*"]

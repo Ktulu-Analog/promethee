@@ -1,7 +1,7 @@
 # ============================================================================
-# Prométhée — Assistant IA desktop
+# Prométhée — Assistant IA avancé
 # ============================================================================
-# Auteur  : Pierre COUGET
+# Auteur  : Pierre COUGET ktulu.analog@gmail.com
 # Licence : GNU Affero General Public License v3.0 (AGPL-3.0)
 #           https://www.gnu.org/licenses/agpl-3.0.html
 # Année   : 2026
@@ -26,8 +26,8 @@ Ce module fait le pont entre deux systèmes déjà en place :
 
 Collection Qdrant dédiée
 ─────────────────────────
-Les souvenirs sont stockés dans Config.LTM_COLLECTION, une collection
-SÉPARÉE de Config.QDRANT_COLLECTION (RAG documentaire). Cela évite la
+Les souvenirs sont stockés dans la collection LTM de l'utilisateur courant, une collection
+SÉPARÉE de la collection RAG documentaire de l'utilisateur. Cela évite la
 pollution croisée entre souvenirs de conversations et documents manuels.
 
 Le nommage suit exactement les mêmes règles que la collection documentaire :
@@ -55,10 +55,10 @@ Principe de fonctionnement
 ──────────────────────────
 1. À la fermeture d'une conversation, `index_conversation()` est appelée.
    Elle construit un texte structuré à partir des messages SQLite et
-   l'ingère dans Config.LTM_COLLECTION.
+   l'ingère dans la collection LTM de l'utilisateur courant.
 
 2. Au premier message d'une nouvelle conversation, `recall()` cherche dans
-   Config.LTM_COLLECTION les souvenirs sémantiquement proches et retourne
+   la collection LTM de l'utilisateur courant les souvenirs sémantiquement proches et retourne
    un bloc de contexte injecté avant le RAG documentaire dans le system prompt.
 
 3. `index_all_unindexed()` indexe rétroactivement toutes les conversations.
@@ -113,6 +113,7 @@ from datetime import datetime
 from typing import Optional
 
 from .config import Config
+from . import request_context as _req_ctx
 
 _log = logging.getLogger("promethee.long_term_memory")
 
@@ -183,7 +184,7 @@ Conserve impérativement :
 class LongTermMemory:
     """
     Mémoire long terme : indexation des conversations passées dans Qdrant
-    (collection Config.LTM_COLLECTION) et rappel sémantique au démarrage
+    (collection la collection LTM de l'utilisateur courant) et rappel sémantique au démarrage
     d'une nouvelle conversation.
 
     Toutes les valeurs de configuration sont lues depuis Config, elle-même
@@ -256,8 +257,15 @@ class LongTermMemory:
         self._consolidation_max_chunks = consolidation_max_chunks \
             if consolidation_max_chunks is not None else Config.LTM_CONSOLIDATION_MAX_CHUNKS
 
-        # La collection LTM est calculée une seule fois au démarrage dans Config.
-        self._collection = Config.LTM_COLLECTION
+        # La collection LTM est propre à l'utilisateur courant — lue depuis le request_context.
+        _ucfg = _req_ctx.get_user_config()
+        if _ucfg is None:
+            raise RuntimeError(
+                "[LongTermMemory] Aucun UserConfig dans le request_context. "
+                "Vérifiez que la route FastAPI utilise Depends(get_current_user_config) "
+                "et appelle set_user_config(user_cfg) avant l'instanciation."
+            )
+        self._collection = _ucfg.LTM_COLLECTION
 
         # Compteur d'indexations depuis la dernière consolidation (persisté dans kv_store)
         self._indexations_since_consolidation: int = self._load_consolidation_counter()
@@ -372,7 +380,7 @@ class LongTermMemory:
 
     def recall(self, query: str, exclude_conv_id: str = None) -> str:
         """
-        Recherche les souvenirs pertinents pour une requête dans Config.LTM_COLLECTION
+        Recherche les souvenirs pertinents pour une requête dans la collection LTM de l'utilisateur courant
         et retourne un bloc de contexte formaté prêt à injecter dans le system prompt.
 
         Combine deux sources :
@@ -536,7 +544,7 @@ class LongTermMemory:
 
     def forget_conversation(self, conv_id: str) -> int:
         """
-        Supprime les souvenirs d'une conversation de Config.LTM_COLLECTION
+        Supprime les souvenirs d'une conversation de la collection LTM de l'utilisateur courant
         et du registre kv_store.
 
         À appeler quand l'utilisateur supprime une conversation de l'historique.

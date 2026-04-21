@@ -8,6 +8,7 @@
 
 # ── fonctions en test ──────────────────────────
 qdrant_manager/
+
 # ── Base de données ──────────────────────────────────────────
 *.db
 *.db-shm
@@ -16,6 +17,23 @@ qdrant_manager/
 # ── Logs ─────────────────────────────────────────────────────
 logs/
 *.log
+
+# ── Docker ───────────────────────────────────────────────────
+# Les volumes Docker sont gérés par Docker, pas par Git
+docker-compose.override.yml
+
+# ── Assets JS téléchargés au build ───────────────────────────
+# Générés par scripts/download_katex.py et download_mermaid.py
+assets/katex/
+assets/mermaid/
+
+# ── Frontend — dépendances et build ──────────────────────────
+frontend/node_modules/
+frontend/dist/
+node_modules/
+
+# ── Scripts locaux ───────────────────────────────────────────
+git_helper.py
 
 # ── Python ───────────────────────────────────────────────────
 __pycache__/
@@ -69,6 +87,3 @@ coverage.xml
 # ── Outputs générés par Prométhée ────────────────────────────
 exports/
 output/
-
-# ── Outils maison ────────────────────────────────────────────
-git_helper.py

@@ -1,7 +1,8 @@
 # ============================================================================
-# Prométhée — Assistant IA desktop
 # ============================================================================
-# Auteur  : Pierre COUGET
+# Prométhée — Assistant IA avancé
+# ============================================================================
+# Auteur  : Pierre COUGET ktulu.analog@gmail.com
 # Licence : GNU Affero General Public License v3.0 (AGPL-3.0)
 #           https://www.gnu.org/licenses/agpl-3.0.html
 # Année   : 2026

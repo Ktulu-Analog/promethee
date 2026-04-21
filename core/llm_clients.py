@@ -1,7 +1,7 @@
 # ============================================================================
-# Prométhée — Assistant IA desktop
+# Prométhée — Assistant IA avancé
 # ============================================================================
-# Auteur  : Pierre COUGET
+# Auteur  : Pierre COUGET ktulu.analog@gmail.com
 # Licence : GNU Affero General Public License v3.0 (AGPL-3.0)
 #           https://www.gnu.org/licenses/agpl-3.0.html
 # Année   : 2026
@@ -37,8 +37,7 @@ Pour un appel LLM donné, la résolution suit cet ordre de priorité :
      familles d'outils. Déprécié au profit de build_family_client.
 
   3. **Modèle principal** (build_client + Config.active_model()) — modèle
-     de conversation par défaut, défini dans .env (OPENAI_MODEL ou
-     OLLAMA_MODEL selon LOCAL).
+     de conversation par défaut, défini dans .env (OPENAI_MODEL).
 
 Cas d'usage recommandé dans les outils
 ────────────────────────────────────────
@@ -52,9 +51,84 @@ si aucun modèle n'est assigné — aucun test conditionnel n'est nécessaire
 dans l'outil.
 """
 
+import httpx
 from openai import OpenAI
 
 from .config import Config
+
+
+# ── Cache de clients ──────────────────────────────────────────────────────────
+#
+# Chaque OpenAI(...) crée un pool de connexions httpx indépendant.
+# Recréer un client à chaque appel force une nouvelle connexion TCP vers Albert,
+# ce qui peut provoquer un GeneratorExit si la connexion est établie mais le
+# stream commence pendant qu'Albert referme l'ancienne.
+#
+# Solution : un cache global (base_url, api_key) → OpenAI.
+# Les paramètres de connexion étant stables au sein d'une session, le pool
+# est réutilisé entre l'appel de décision et l'appel de synthèse finale.
+#
+# Thread-safety : le GIL protège les accès dict en lecture/écriture simple.
+# En cas de concurrence (plusieurs requêtes simultanées), deux threads peuvent
+# créer le client en parallèle — le dernier écrase le premier dans le dict,
+# mais les deux clients sont valides. Le coût est au pire 2 connexions TCP
+# sur le premier appel concurrent, jamais de corruption.
+
+_CLIENT_CACHE: dict[tuple[str, str], OpenAI] = {}
+
+# Timeouts httpx pour les appels vers Albert/vLLM.
+#
+# Le timeout par défaut httpx est 5s connect + 5s read. C'est insuffisant
+# pour Albert qui peut mettre >5s à produire le premier token d'un stream
+# de synthèse sur un contexte lourd (ex. 20 pages OCR).
+#
+#   connect : 10s — établissement TCP + TLS vers Albert
+#   read    : 120s — attente du premier token (ou d'un chunk intermédiaire)
+#   write   : 10s — envoi de la requête (corps JSON potentiellement volumineux)
+#   pool    : 10s — attente d'une connexion libre dans le pool httpx
+#
+# Ces valeurs sont intentionnellement larges pour les LLM qui peuvent être
+# lents à démarrer leur génération. Ajuster via Config si nécessaire.
+_HTTPX_TIMEOUT = httpx.Timeout(
+    connect=10.0,
+    read=120.0,
+    write=10.0,
+    pool=10.0,
+)
+
+
+def _get_or_create_client(base_url: str, api_key: str) -> OpenAI:
+    """
+    Retourne un client OpenAI mis en cache pour (base_url, api_key).
+    Crée et met en cache un nouveau client si nécessaire.
+    Le client est configuré avec des timeouts httpx adaptés aux LLM lents.
+    """
+    key = (base_url, api_key)
+    client = _CLIENT_CACHE.get(key)
+    if client is None:
+        client = OpenAI(
+            base_url=base_url,
+            api_key=api_key,
+            http_client=httpx.Client(timeout=_HTTPX_TIMEOUT),
+        )
+        _CLIENT_CACHE[key] = client
+    return client
+
+
+# ── Résolution du contexte utilisateur ───────────────────────────────────────
+
+def _effective_config():
+    """
+    Retourne le UserConfig actif (mode multi-user, requête FastAPI)
+    ou Config (mode Qt6 mono-user / hors requête).
+    L'import est différé pour éviter les cycles d'import au démarrage.
+    """
+    try:
+        from .request_context import get_user_config
+        uc = get_user_config()
+        return uc if uc is not None else Config
+    except ImportError:
+        return Config
 
 
 # ── Client principal ──────────────────────────────────────────────────────────
@@ -62,27 +136,17 @@ from .config import Config
 
 def build_client(local: bool | None = None) -> OpenAI:
     """
-    Construit un client OpenAI ou Ollama selon la configuration active.
-
-    Parameters
-    ----------
-    local : bool | None
-        Si None (défaut), utilise Config.LOCAL.
-        Si True, construit un client Ollama.
-        Si False, construit un client OpenAI-compatible.
+    Construit un client OpenAI-compatible selon la configuration active.
 
     Returns
     -------
     OpenAI
         Client prêt à l'emploi.
     """
-    use_local = Config.LOCAL if local is None else local
-    if use_local:
-        base_url = Config.OLLAMA_BASE_URL.rstrip("/") + "/v1"
-        return OpenAI(base_url=base_url, api_key="ollama")
-    return OpenAI(
-        base_url=Config.OPENAI_API_BASE,
-        api_key=Config.OPENAI_API_KEY or "none",
+    cfg = _effective_config()
+    return _get_or_create_client(
+        cfg.OPENAI_API_BASE,
+        cfg.OPENAI_API_KEY or "none",
     )
 
 
@@ -120,14 +184,11 @@ def build_specialist_client(task: str) -> tuple[OpenAI, str]:
     model    = spec["model"]
     base_url = spec["base_url"]
 
-    if backend == "ollama":
-        url    = (base_url or Config.OLLAMA_BASE_URL).rstrip("/") + "/v1"
-        client = OpenAI(base_url=url, api_key="ollama")
-    else:
-        client = OpenAI(
-            base_url=base_url or Config.OPENAI_API_BASE,
-            api_key=Config.OPENAI_API_KEY or "none",
-        )
+    cfg = _effective_config()
+    client = _get_or_create_client(
+        base_url or cfg.OPENAI_API_BASE,
+        cfg.OPENAI_API_KEY or "none",
+    )
 
     return client, model
 
@@ -180,38 +241,16 @@ def build_family_client(family: str) -> tuple[OpenAI, str]:
     model    = assigned["model"]
     base_url = assigned.get("base_url", "")
 
-    if backend == "ollama":
-        url    = (base_url or Config.OLLAMA_BASE_URL).rstrip("/") + "/v1"
-        client = OpenAI(base_url=url, api_key="ollama")
-    else:
-        client = OpenAI(
-            base_url=base_url or Config.OPENAI_API_BASE,
-            api_key=Config.OPENAI_API_KEY or "none",
-        )
+    cfg = _effective_config()
+    client = _get_or_create_client(
+        base_url or cfg.OPENAI_API_BASE,
+        cfg.OPENAI_API_KEY or "none",
+    )
 
     return client, model
 
 
 # ── Découverte des modèles disponibles ───────────────────────────────────────
-
-
-def list_local_models() -> list[str]:
-    """
-    Liste les modèles Ollama disponibles sur l'instance locale.
-
-    Retourne une liste vide (ou ``[Config.OLLAMA_MODEL]``) en cas d'erreur
-    (Ollama non démarré, package ollama non installé…).
-
-    Returns
-    -------
-    list[str]
-        Noms des modèles disponibles.
-    """
-    try:
-        import ollama
-        return [m["name"] for m in ollama.list().get("models", [])]
-    except Exception:
-        return [Config.OLLAMA_MODEL]
 
 
 def list_remote_models() -> list[str]:
@@ -226,7 +265,7 @@ def list_remote_models() -> list[str]:
         Noms des modèles triés alphabétiquement.
     """
     try:
-        client = build_client(local=False)
+        client = build_client()
         return sorted([m.id for m in client.models.list().data])
     except Exception:
         return [Config.OPENAI_MODEL]

@@ -1,0 +1,256 @@
+/**
+ * ============================================================================
+ * Prométhée — Assistant IA avancé
+ * ============================================================================
+ * Auteur  : Pierre COUGET ktulu.analog@gmail.com
+ * Licence : GNU Affero General Public License v3.0 (AGPL-3.0)
+ *           https://www.gnu.org/licenses/agpl-3.0.html
+ * Année   : 2026
+ * ----------------------------------------------------------------------------
+ * Ce fichier fait partie du projet Prométhée.
+ * Vous pouvez le redistribuer et/ou le modifier selon les termes de la
+ * licence AGPL-3.0 publiée par la Free Software Foundation.
+ * ============================================================================
+ *
+ *
+ * theme.css — Variables CSS fidèles à tokens.py
+ *
+ * Chaque token PALETTE["nom"] = (dark, light) devient :
+ *   --nom: valeur;
+ *
+ * Usage : var(--accent), var(--base-bg), etc.
+ * Les tirets bas sont remplacés par des tirets dans les noms CSS.
+ */
+
+/* ── Thème sombre (défaut) ─────────────────────────────────────────────── */
+:root,
+[data-theme="dark"] {
+  /* Fonds principaux */
+  --base-bg:        #141416;
+  --surface-bg:     #1c1c1f;
+  --elevated-bg:    #242428;
+  --status-bg:      #0d0d0f;
+
+  /* Bordures */
+  --border:         #2e2e34;
+  --border-active:  #3a3a40;
+
+  /* Texte */
+  --text-primary:   #e4e2ec;
+  --text-secondary: #b0adb8;
+  --text-muted:     #8a8a98;
+  --text-disabled:  #52525c;
+
+  /* Accent orange */
+  --accent:               #d4813d;
+  --accent-hover:         #e08f4a;
+  --accent-pressed:       #bf7030;
+  --accent-glow:          rgba(212,129,61,0.25);
+  --accent-user-role:     #d4813d;
+  --accent-assistant-role:#7aafd4;
+
+  /* Topbar */
+  --topbar-bg:         #0d0d0f;
+  --topbar-border:     #2e2e34;
+  --logo-color:        #e4e2ec;
+  --model-badge-color: #8a8a98;
+  --model-badge-bg:    #242428;
+  --model-badge-border:#2e2e34;
+
+  /* Scrollbars */
+  --scroll-handle:       #3a3a40;
+  --scroll-handle-hover: #52525c;
+
+  /* Inputs */
+  --input-bg:       #242428;
+  --input-color:    #e4e2ec;
+  --input-border:   #3a3a40;
+  --input-focus-bg: #262630;
+
+  /* Messages */
+  --msg-user-bg:     #1c1c1f;
+  --msg-user-border: #2e2e34;
+
+  /* Rendu HTML dans les messages */
+  --link-color:       #6b9fd4;
+  --code-inline-color:#cc7c3a;
+  --code-bg:          #1e1e22;
+  --code-border:      #2e2e33;
+  --blockquote-bg:    #1a1a1e;
+  --table-row-hover:  #161618;
+  --code-block-bg:    #282C34;
+
+  /* Panneau artefacts */
+  --artifact-bg:         #23232a;
+
+  /* Sidebar */
+  --sidebar-bg:          #141416;
+  --sidebar-border:      #2e2e34;
+  --sidebar-item-color:  #b0adb8;
+  --sidebar-item-active-bg:    #1c1c1f;
+  --sidebar-item-active-color: #e4e2ec;
+  --sidebar-item-hover-bg:     #1a1a1d;
+  --sidebar-folder-color:      #8a8a98;
+
+  /* Badges */
+  --tools-badge-idle:   #8a8a98;
+  --tools-badge-active: #d4813d;
+  --rag-badge-on:       #5aaa7a;
+  --rag-badge-off:      #52525c;
+  --char-count-color:   #8a8a98;
+
+  /* Tool calls */
+  --tool-call-bg:     #1c1c1f;
+  --tool-call-border: #2e2e34;
+  --tool-call-color:  #b0adb8;
+
+  /* Pièces jointes */
+  --attachment-btn-bg:     #242428;
+  --attachment-btn-border: #3a3a40;
+  --attachment-btn-color:  #d4813d;
+  --attachment-item-bg:    #1c1c1f;
+  --attachment-item-border:#2e2e34;
+  --attachment-name-color: #e4e2ec;
+  --attachment-size-color: #8a8a98;
+
+  /* Menus */
+  --menu-bg:    #1c1c1f;
+  --menu-border:#2e2e34;
+  --menu-color: #e4e2ec;
+
+  /* Stop/send buttons */
+  --stop-btn-bg:     #2e1a10;
+  --stop-btn-color:  #e07840;
+  --stop-btn-border: #6e3818;
+  --stop-btn-hover-bg: #3e2414;
+
+  /* Mermaid */
+  --mermaid-btn-bg:     #2a2a2a;
+  --mermaid-btn-color:  #d0d0d0;
+  --mermaid-btn-border: #444444;
+
+  /* RAG panel */
+  --rag-status-ok:   #5aaa7a;
+  --rag-status-warn: #8a8a98;
+  --rag-status-off:  #52525c;
+
+  /* Chat separator */
+  --chat-sep-color: #8a8a98;
+
+  /* Toggle input bar */
+  --toggle-bar-bg: #0d0d0f;
+  --toggle-bar-color: #52525c;
+}
+
+[data-theme="light"] {
+  --base-bg:        #f2f0eb;
+  --surface-bg:     #e6e3dc;
+  --elevated-bg:    #ffffff;
+  --status-bg:      #e0ddd6;
+
+  --border:         #d8d4cc;
+  --border-active:  #b8b4ac;
+
+  --text-primary:   #1e1c18;
+  --text-secondary: #5c5850;
+  --text-muted:     #646058;
+  --text-disabled:  #b8b4ac;
+
+  --accent:               #8e4e18;
+  --accent-hover:         #d4813d;
+  --accent-pressed:       #b46428;
+  --accent-glow:          rgba(142,78,24,0.18);
+  --accent-user-role:     #8e4e18;
+  --accent-assistant-role:#3a6e9e;
+
+  --topbar-bg:         #e0ddd6;
+  --topbar-border:     #d8d4cc;
+  --logo-color:        #1e1c18;
+  --model-badge-color: #5c5850;
+  --model-badge-bg:    #f2f0eb;
+  --model-badge-border:#d8d4cc;
+
+  --scroll-handle:       #c8c4bc;
+  --scroll-handle-hover: #b8b4ac;
+
+  --input-bg:       #ffffff;
+  --input-color:    #1e1c18;
+  --input-border:   #b8b4ac;
+  --input-focus-bg: #fffdf8;
+
+  --msg-user-bg:     #e6e3dc;
+  --msg-user-border: #d8d4cc;
+
+  --link-color:       #4a82b4;
+  --code-inline-color:#b86d2e;
+  --code-bg:          #e8e4dc;
+  --code-border:      #d0ccc4;
+  --blockquote-bg:    #f0ede6;
+  --table-row-hover:  #f5f2ec;
+  --code-block-bg:    #f0f0f0;
+
+  /* Panneau artefacts */
+  --artifact-bg:             #fafaf8;
+
+  --sidebar-bg:             #f2f0eb;
+  --sidebar-border:         #d8d4cc;
+  --sidebar-item-color:     #5c5850;
+  --sidebar-item-active-bg: #e6e3dc;
+  --sidebar-item-active-color: #1e1c18;
+  --sidebar-item-hover-bg:  #e8e5de;
+  --sidebar-folder-color:   #646058;
+
+  --tools-badge-idle:   #646058;
+  --tools-badge-active: #8e4e18;
+  --rag-badge-on:       #2e7a52;
+  --rag-badge-off:      #646058;
+  --char-count-color:   #646058;
+
+  --tool-call-bg:     #f2f0eb;
+  --tool-call-border: #d8d4cc;
+  --tool-call-color:  #5c5850;
+
+  --attachment-btn-bg:     #ffffff;
+  --attachment-btn-border: #b8b4ac;
+  --attachment-btn-color:  #8e4e18;
+  --attachment-item-bg:    #ffffff;
+  --attachment-item-border:#d8d4cc;
+  --attachment-name-color: #1e1c18;
+  --attachment-size-color: #646058;
+
+  --menu-bg:    #ffffff;
+  --menu-border:#d8d4cc;
+  --menu-color: #1e1c18;
+
+  --stop-btn-bg:       #ffe8d6;
+  --stop-btn-color:    #8e4e18;
+  --stop-btn-border:   #e0b090;
+  --stop-btn-hover-bg: #f5d0b0;
+
+  --mermaid-btn-bg:     #f0f0f0;
+  --mermaid-btn-color:  #444444;
+  --mermaid-btn-border: #cccccc;
+
+  --rag-status-ok:   #2e7a52;
+  --rag-status-warn: #646058;
+  --rag-status-off:  #888078;
+
+  --chat-sep-color: #888078;
+}
+
+/* ── Reset et base ─────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: "SF Pro Display", "Helvetica Neue", "Segoe UI", system-ui, sans-serif;
+  font-size: 14px;
+  background: var(--base-bg);
+  color: var(--text-primary);
+  line-height: 1.5;
+}
+
+::-webkit-scrollbar       { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--scroll-handle); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--scroll-handle-hover); }

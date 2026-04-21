@@ -1,7 +1,7 @@
 # ============================================================================
-# Prométhée — Assistant IA desktop
+# Prométhée — Assistant IA avancé
 # ============================================================================
-# Auteur  : Pierre COUGET
+# Auteur  : Pierre COUGET ktulu.analog@gmail.com
 # Licence : GNU Affero General Public License v3.0 (AGPL-3.0)
 #           https://www.gnu.org/licenses/agpl-3.0.html
 # Année   : 2026
@@ -47,90 +47,104 @@ _TOOL_ICONS: dict[str, str] = {}
 # Mapping outil → famille (clé du module, ex: "legifrance_tools")
 _TOOL_FAMILY: dict[str, str] = {}
 
-# ── Persistance des familles désactivées ───────────────────────────────────
+# ── État en mémoire des familles désactivées ──────────────────────────────
+#
+# Remplace l'ancien fichier ~/.promethee_disabled_families.json (vestige
+# desktop mono-utilisateur). Dans le contexte Docker multi-utilisateurs :
+#   - ce fichier était partagé entre tous les utilisateurs (~ = /root dans
+#     le conteneur), causant des interférences entre sessions
+#   - il était perdu à chaque recréation du conteneur
+#   - il générait des race conditions sur les requêtes concurrentes
+#
+# Nouvelle architecture :
+#   _DISABLED_FAMILIES : état courant en mémoire, appliqué de façon éphémère
+#                        par apply_profile_families() à chaque requête.
+#   Persistance manuelle (enable/disable_family) → kv_store SQLite par user,
+#                        via save_user_families() / load_user_families().
 
 _DISABLED_FAMILIES: set[str] = set()
-_PREFS_FILE = Path.home() / ".promethee_disabled_families.json"
 
 
-def _json_load(path: Path, default):
+def load_user_families(user_id: str) -> None:
     """
-    Charge un fichier JSON depuis ``path``.
-
-    Retourne ``default`` si le fichier est absent, illisible ou si le type
-    du contenu ne correspond pas à celui de ``default`` (validation légère).
-
-    Parameters
-    ----------
-    path : Path
-        Chemin vers le fichier JSON.
-    default : list | dict
-        Valeur de repli — détermine aussi le type attendu.
+    Charge l'état des familles désactivées depuis le kv_store SQLite de
+    l'utilisateur (clé "disabled_families").
+    Remplace l'ancien _load_disabled_families() sur fichier JSON global.
     """
-    try:
-        if path.exists():
-            data = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(data, type(default)):
-                return data
-    except Exception:
-        pass
-    return default
-
-
-def _json_save(path: Path, data) -> None:
-    """
-    Persiste ``data`` en JSON dans ``path``.
-
-    Silencieux en cas d'erreur (permissions, disque plein…) : la perte
-    d'une préférence utilisateur ne doit pas faire crasher l'application.
-
-    Parameters
-    ----------
-    path : Path
-        Chemin cible (créé ou écrasé).
-    data : list | dict
-        Données sérialisables en JSON.
-    """
-    try:
-        path.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-    except Exception:
-        pass
-
-
-def _load_disabled_families() -> None:
     global _DISABLED_FAMILIES
-    _DISABLED_FAMILIES = set(_json_load(_PREFS_FILE, []))
+    try:
+        from pathlib import Path as _Path
+        data_dir = _Path(__file__).resolve().parent.parent / "data" / user_id
+        db_path = str(data_dir / "history.db")
+        from core.database import HistoryDB
+        db = HistoryDB(db_path=db_path)
+        raw = db.kv_get("disabled_families")
+        if raw:
+            _DISABLED_FAMILIES = set(json.loads(raw))
+        else:
+            _DISABLED_FAMILIES = set()
+    except Exception:
+        _DISABLED_FAMILIES = set()
 
 
-def _save_disabled_families() -> None:
-    _json_save(_PREFS_FILE, sorted(_DISABLED_FAMILIES))
+def save_user_families(user_id: str) -> None:
+    """
+    Persiste l'état courant des familles désactivées dans le kv_store SQLite
+    de l'utilisateur (clé "disabled_families").
+    Remplace l'ancien _save_disabled_families() sur fichier JSON global.
+    """
+    try:
+        from pathlib import Path as _Path
+        data_dir = _Path(__file__).resolve().parent.parent / "data" / user_id
+        data_dir.mkdir(parents=True, exist_ok=True)
+        db_path = str(data_dir / "history.db")
+        from core.database import HistoryDB
+        db = HistoryDB(db_path=db_path)
+        db.kv_set("disabled_families", json.dumps(sorted(_DISABLED_FAMILIES)))
+    except Exception:
+        pass
 
-
-_load_disabled_families()
 
 
 # ── Registre des modèles assignés par famille ──────────────────────────────
 #
-# Persistance dans ~/.promethee_family_models.json
-# Format : { "imap_tools": { "backend": "ollama", "model": "mistral-small:7b",
-#                             "base_url": "" }, ... }
+# Persistance dans le kv_store SQLite par utilisateur (clé "family_models").
+# Remplace ~/.promethee_family_models.json (vestige desktop mono-utilisateur).
+# Format stocké : { "imap_tools": { "backend": "openai", "model": "...",
+#                                    "base_url": "" }, ... }
 #
-# Les familles absentes du fichier héritent du modèle principal (build_client).
+# Les familles absentes héritent du modèle principal (build_client).
 
 _FAMILY_MODELS: dict[str, dict] = {}
-_FAMILY_MODELS_FILE = Path.home() / ".promethee_family_models.json"
 
 
-def _load_family_models() -> None:
+def load_user_family_models(user_id: str) -> None:
+    """Charge les modèles de familles depuis le kv_store de l'utilisateur."""
     global _FAMILY_MODELS
-    _FAMILY_MODELS = _json_load(_FAMILY_MODELS_FILE, {})
+    try:
+        from pathlib import Path as _Path
+        data_dir = _Path(__file__).resolve().parent.parent / "data" / user_id
+        db_path = str(data_dir / "history.db")
+        from core.database import HistoryDB
+        db = HistoryDB(db_path=db_path)
+        raw = db.kv_get("family_models")
+        _FAMILY_MODELS = json.loads(raw) if raw else {}
+    except Exception:
+        _FAMILY_MODELS = {}
 
 
-def _save_family_models() -> None:
-    _json_save(_FAMILY_MODELS_FILE, _FAMILY_MODELS)
+def save_user_family_models(user_id: str) -> None:
+    """Persiste les modèles de familles dans le kv_store de l'utilisateur."""
+    try:
+        from pathlib import Path as _Path
+        data_dir = _Path(__file__).resolve().parent.parent / "data" / user_id
+        data_dir.mkdir(parents=True, exist_ok=True)
+        db_path = str(data_dir / "history.db")
+        from core.database import HistoryDB
+        db = HistoryDB(db_path=db_path)
+        db.kv_set("family_models", json.dumps(_FAMILY_MODELS))
+    except Exception:
+        pass
 
 
 def get_family_model(family: str) -> dict | None:
@@ -147,10 +161,11 @@ def get_family_model(family: str) -> dict | None:
     return entry
 
 
-def set_family_model(family: str, backend: str, model: str, base_url: str = "") -> None:
+def set_family_model(family: str, backend: str, model: str, base_url: str = "", user_id: str | None = None) -> None:
     """
     Assigne un modèle à une famille. Passer model="" pour supprimer l'assignation
     et revenir au modèle principal.
+    Persiste dans le kv_store SQLite de l'utilisateur si user_id est fourni.
     """
     if not model.strip():
         _FAMILY_MODELS.pop(family, None)
@@ -160,16 +175,16 @@ def set_family_model(family: str, backend: str, model: str, base_url: str = "") 
             "model":    model.strip(),
             "base_url": base_url.strip(),
         }
-    _save_family_models()
+    if user_id:
+        save_user_family_models(user_id)
 
 
-def clear_family_model(family: str) -> None:
+def clear_family_model(family: str, user_id: str | None = None) -> None:
     """Supprime l'assignation de modèle pour une famille (retour au modèle principal)."""
     _FAMILY_MODELS.pop(family, None)
-    _save_family_models()
+    if user_id:
+        save_user_family_models(user_id)
 
-
-_load_family_models()
 
 
 # ── Famille courante (positionnée par chaque module avant ses @tool) ───────
@@ -242,45 +257,75 @@ def tool(name: str, description: str, parameters: dict):
 
 # ── API familles ───────────────────────────────────────────────────────────
 
-def apply_profile_families(enabled: list[str], disabled: list[str]) -> None:
+def apply_profile_families(
+    enabled: list[str],
+    disabled: list[str],
+    user_id: str | None = None,
+) -> None:
     """
-    Applique les familles définies par un profil, en préservant les
-    surcharges manuelles de l'utilisateur stockées dans le fichier de prefs.
+    Applique les familles définies par un profil de manière ÉPHÉMÈRE pour
+    la durée de la requête en cours. Ne persiste pas sur disque.
 
     Logique :
-      - Si 'enabled' et 'disabled' sont tous deux vides → aucune contrainte,
-        on restaure toutes les familles (retour à l'état des prefs utilisateur).
-      - Sinon, on applique les disabled du profil, on force les enabled du profil,
-        et on laisse les familles non mentionnées à leur état utilisateur.
+      - Si 'enabled' et 'disabled' sont tous deux vides → aucune contrainte :
+        on charge les prefs persistées de l'utilisateur (état "neutre").
+      - Sinon, on part des prefs persistées, on applique les overrides du
+        profil (disabled → ajoutés, enabled → retirés), mais on ne sauvegarde
+        PAS : l'état est éphémère et propre à la requête en cours.
 
-    L'état résultant est immédiatement persisté.
+    Parameters
+    ----------
+    enabled  : familles forcées actives par le profil.
+    disabled : familles forcées inactives par le profil.
+    user_id  : identifiant de l'utilisateur courant (pour charger ses prefs).
+               Peut être None en mode anonyme/admin (aucune pref chargée).
+
+    NOTE : ne jamais appeler save_user_families() ici — intentionnel.
+    La persistance est réservée aux actions manuelles (enable/disable_family).
     """
+    global _DISABLED_FAMILIES
+
+    # Toujours partir des prefs persistées de cet utilisateur
+    if user_id:
+        load_user_families(user_id)
+    else:
+        _DISABLED_FAMILIES = set()
+
     if not enabled and not disabled:
-        # Pas de contrainte de profil : restaurer les prefs utilisateur pures
-        _load_disabled_families()
+        # Aucun override de profil : on garde les prefs utilisateur telles quelles
         return
 
-    # Partir des prefs utilisateur existantes
-    _load_disabled_families()
-
+    # Appliquer les overrides du profil (sans sauvegarder)
     for fam in disabled:
         _DISABLED_FAMILIES.add(fam)
     for fam in enabled:
         _DISABLED_FAMILIES.discard(fam)
 
-    _save_disabled_families()
 
+def disable_family(family: str, user_id: str | None = None) -> None:
+    """
+    Désactive tous les outils d'une famille et persiste le choix.
 
-def disable_family(family: str) -> None:
-    """Désactive tous les outils d'une famille (ils ne seront plus envoyés au LLM)."""
+    Parameters
+    ----------
+    user_id : identifiant de l'utilisateur courant (pour la persistance SQLite).
+    """
     _DISABLED_FAMILIES.add(family)
-    _save_disabled_families()
+    if user_id:
+        save_user_families(user_id)
 
 
-def enable_family(family: str) -> None:
-    """Réactive tous les outils d'une famille."""
+def enable_family(family: str, user_id: str | None = None) -> None:
+    """
+    Réactive tous les outils d'une famille et persiste le choix.
+
+    Parameters
+    ----------
+    user_id : identifiant de l'utilisateur courant (pour la persistance SQLite).
+    """
     _DISABLED_FAMILIES.discard(family)
-    _save_disabled_families()
+    if user_id:
+        save_user_families(user_id)
 
 
 def is_family_disabled(family: str) -> bool:

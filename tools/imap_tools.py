@@ -1,7 +1,7 @@
 # ============================================================================
-# Prométhée — Assistant IA desktop
+# Prométhée — Assistant IA avancé
 # ============================================================================
-# Auteur  : Pierre COUGET
+# Auteur  : Pierre COUGET ktulu.analog@gmail.com
 # Licence : GNU Affero General Public License v3.0 (AGPL-3.0)
 #           https://www.gnu.org/licenses/agpl-3.0.html
 # Année   : 2026
@@ -15,26 +15,25 @@
 tools/imap_tools.py — Outils d'accès messagerie via IMAP / SMTP
 ================================================================
 
-Outils exposés (8) :
+Outils exposés (10) :
 
   Lecture (3) :
-    - imap_list_mails     : liste les N derniers mails d'un dossier
-    - imap_search_mails   : recherche multicritères (expéditeur, objet, date, corps)
-    - imap_read_mail      : lit un mail complet (headers + corps + pièces jointes)
+    - imap_list_mails       : liste les N derniers mails d'un dossier
+    - imap_search_mails     : recherche multicritères (expéditeur, objet, date, corps)
+    - imap_read_mail        : lit un mail complet (headers + corps + pièces jointes)
 
-  Écriture (2) :
-    - imap_send_mail      : envoie un mail via SMTP (HTML, PJ chemin disque ou base64)
-    - imap_reply_mail     : répond à un mail existant (In-Reply-To, References, HTML, PJ)
+  Écriture (3) :
+    - imap_send_mail        : envoie un mail via SMTP (HTML, PJ chemin disque ou base64)
+    - imap_reply_mail       : répond à un mail existant (In-Reply-To, References, HTML, PJ)
+    - imap_forward_mail     : transfère un mail (avec PJ originales ré-attachées)
+
+  Pièces jointes (1) :
+    - imap_save_attachment  : sauvegarde une PJ reçue sur le disque
 
   Gestion (3) :
-    - imap_mark_mail      : marque lu / non-lu / important / supprimé
-    - imap_move_mail      : déplace un mail vers un autre dossier
-    - imap_list_folders   : liste les dossiers IMAP disponibles
-
-  Gestion (3) :
-    - imap_mark_mail      : marque lu / non-lu / important / supprimé
-    - imap_move_mail      : déplace un mail vers un autre dossier
-    - imap_list_folders   : liste les dossiers IMAP disponibles
+    - imap_mark_mail        : marque lu / non-lu / important / supprimé
+    - imap_move_mail        : déplace un mail vers un autre dossier
+    - imap_list_folders     : liste les dossiers IMAP disponibles
 
 Profils (multi-comptes) :
   Chaque opération accepte un paramètre optionnel `profil` qui correspond
@@ -83,14 +82,16 @@ set_current_family("imap_tools", "Messagerie IMAP", "📧")
 
 # ── Icônes UI ─────────────────────────────────────────────────────────────────
 _TOOL_ICONS.update({
-    "imap_list_mails":   "📬",
-    "imap_search_mails": "🔎",
-    "imap_read_mail":    "📧",
-    "imap_send_mail":    "📤",
-    "imap_reply_mail":   "↩️",
-    "imap_mark_mail":    "🏷️",
-    "imap_move_mail":    "📁",
-    "imap_list_folders": "🗂️",
+    "imap_list_mails":      "📬",
+    "imap_search_mails":    "🔎",
+    "imap_read_mail":       "📧",
+    "imap_send_mail":       "📤",
+    "imap_reply_mail":      "↩️",
+    "imap_forward_mail":    "⏩",
+    "imap_save_attachment": "💾",
+    "imap_mark_mail":       "🏷️",
+    "imap_move_mail":       "📁",
+    "imap_list_folders":    "🗂️",
 })
 
 # Extensions de pièces jointes décodées inline (base64 transmis à l'agent)
@@ -108,22 +109,39 @@ def _get_profile_config(profil: Optional[str] = None) -> dict:
     """
     Construit la configuration IMAP/SMTP pour un profil donné.
 
-    Sans profil : utilise IMAP_HOST, IMAP_USER, IMAP_PASSWORD, etc.
-    Avec profil "pro" : utilise IMAP_PRO_HOST, IMAP_PRO_USER, etc.
-
-    Returns dict avec les clés :
-        imap_host, imap_port, imap_user, imap_password, imap_ssl,
-        imap_oauth2_token,
-        smtp_host, smtp_port, smtp_user, smtp_password, smtp_ssl,
-        from_address, display_name
+    En mode multi-user (FastAPI) : lit d'abord les secrets du UserConfig actif.
+    En mode mono-user (Qt6) : lit os.getenv() comme avant.
+    Avec profil "pro" : utilise les variables préfixées IMAP_PRO_*.
     """
     prefix = f"IMAP_{profil.upper()}_" if profil else "IMAP_"
     smtp_prefix = f"SMTP_{profil.upper()}_" if profil else "SMTP_"
 
+    # Récupérer le UserConfig s'il existe (mode multi-user)
+    _uc = None
+    if not profil:  # les secrets user ne couvrent que le profil par défaut
+        try:
+            from core.request_context import get_user_config
+            _uc = get_user_config()
+        except ImportError:
+            pass
+
     def _get(key: str, default: str = "") -> str:
+        # key = "IMAP_HOST" ou "SMTP_PORT" etc.
+        # Chercher d'abord dans le UserConfig
+        if _uc:
+            attr = key.replace(prefix, "IMAP_", 1).replace(smtp_prefix, "SMTP_", 1)
+            val = getattr(_uc, attr, None)
+            if val and str(val):
+                return str(val)
         return os.getenv(key, default).strip()
 
     def _bool(key: str, default: bool = True) -> bool:
+        if _uc:
+            attr = key.replace(prefix, "IMAP_", 1).replace(smtp_prefix, "SMTP_", 1)
+            val = getattr(_uc, attr, None)
+            if val is not None and str(val):
+                v = str(val).upper()
+                return v in ("ON", "TRUE", "1", "YES")
         val = os.getenv(key, "").strip().upper()
         if not val:
             return default
@@ -260,7 +278,8 @@ def _extract_body(msg: email.message.Message) -> tuple[str, str]:
 
 def _extract_attachments(msg: email.message.Message) -> list[dict]:
     """
-    Extrait les pièces jointes.
+    Extrait les pièces jointes et les images inline (Content-Disposition: inline
+    avec un filename, ou Content-ID présent).
     Les types inline (_INLINE_EXTENSIONS) sont encodés en base64.
     """
     attachments = []
@@ -270,29 +289,45 @@ def _extract_attachments(msg: email.message.Message) -> list[dict]:
 
     for part in msg.walk():
         disp = str(part.get("Content-Disposition", ""))
+        content_id = part.get("Content-ID", "").strip("<>")
         filename = part.get_filename()
-        if not filename and "attachment" not in disp:
+
+        # On capture :
+        #   - les pièces jointes classiques (attachment)
+        #   - les images inline portant un filename ou un Content-ID (embedded)
+        is_attachment = "attachment" in disp
+        is_inline_with_name = "inline" in disp and (filename or content_id)
+        if not filename and not is_attachment and not is_inline_with_name:
             continue
 
-        filename = _decode_header(filename or "fichier_sans_nom")
+        filename = _decode_header(filename or content_id or "fichier_sans_nom")
         content_type = part.get_content_type()
         payload = part.get_payload(decode=True)
         if payload is None:
             continue
 
         ext = os.path.splitext(filename)[1].lower()
+        # Si l'extension est absente, tenter de la déduire du Content-Type
+        if not ext and "/" in content_type:
+            import mimetypes
+            guessed_ext = mimetypes.guess_extension(content_type)
+            if guessed_ext:
+                ext = guessed_ext
+                filename += ext
+
         att: dict = {
             "filename":     filename,
             "content_type": content_type,
             "size_bytes":   len(payload),
+            "inline":       is_inline_with_name and not is_attachment,
         }
+        if content_id:
+            att["content_id"] = content_id
 
         if ext in _INLINE_EXTENSIONS:
             att["data_base64"] = base64.b64encode(payload).decode("ascii")
-            att["inline"] = True
         else:
             att["data_base64"] = base64.b64encode(payload).decode("ascii")
-            att["inline"] = False
 
         attachments.append(att)
 
@@ -337,6 +372,49 @@ def _imap_select_folder(imap, folder: str) -> tuple[bool, str]:
     if typ == "OK":
         return True, folder
     return False, f"Dossier '{folder}' introuvable. Utilisez imap_list_folders pour lister les dossiers disponibles."
+
+
+def _build_attachment_part(pj: dict) -> tuple["MIMEBase | None", str]:
+    """
+    Construit un MIMEBase à partir d'un descripteur de pièce jointe.
+
+    Accepte :
+      - {"chemin": "/abs/path/fichier.pdf"}
+      - {"data_base64": "...", "nom_fichier": "rapport.pdf", "type_mime": "application/pdf"}
+
+    Retourne (part, erreur) — l'un des deux est None.
+    """
+    import mimetypes
+    chemin      = pj.get("chemin")
+    data_b64    = pj.get("data_base64")
+    nom_fichier = pj.get("nom_fichier")
+    type_mime   = pj.get("type_mime", "application/octet-stream")
+
+    if chemin:
+        chemin = os.path.expanduser(chemin)
+        if not os.path.isfile(chemin):
+            return None, f"Fichier introuvable : {chemin}"
+        with open(chemin, "rb") as f:
+            data = f.read()
+        nom_fichier = nom_fichier or os.path.basename(chemin)
+        if type_mime == "application/octet-stream":
+            guessed, _ = mimetypes.guess_type(chemin)
+            if guessed:
+                type_mime = guessed
+    elif data_b64 and nom_fichier:
+        try:
+            data = base64.b64decode(data_b64)
+        except Exception as exc:
+            return None, f"Décodage base64 échoué pour '{nom_fichier}' : {exc}"
+    else:
+        return None, "Pièce jointe ignorée : fournir 'chemin' ou 'data_base64' + 'nom_fichier'."
+
+    maintype, subtype = type_mime.split("/", 1) if "/" in type_mime else ("application", "octet-stream")
+    part = MIMEBase(maintype, subtype)
+    part.set_payload(data)
+    encoders.encode_base64(part)
+    part.add_header("Content-Disposition", "attachment", filename=nom_fichier)
+    return part, ""
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1112,47 +1190,12 @@ def imap_send_mail(
         if pieces_jointes:
             for pj in pieces_jointes:
                 try:
-                    chemin      = pj.get("chemin")
-                    data_b64    = pj.get("data_base64")
-                    nom_fichier = pj.get("nom_fichier")
-                    type_mime   = pj.get("type_mime", "application/octet-stream")
-
-                    if chemin:
-                        # Chargement depuis le disque
-                        chemin = os.path.expanduser(chemin)
-                        if not os.path.isfile(chemin):
-                            pj_errors.append(f"Fichier introuvable : {chemin}")
-                            continue
-                        with open(chemin, "rb") as f:
-                            data = f.read()
-                        nom_fichier = nom_fichier or os.path.basename(chemin)
-                        # Détection du type MIME depuis l'extension si non fourni
-                        if type_mime == "application/octet-stream":
-                            import mimetypes
-                            guessed, _ = mimetypes.guess_type(chemin)
-                            if guessed:
-                                type_mime = guessed
-                    elif data_b64 and nom_fichier:
-                        data = base64.b64decode(data_b64)
-                    else:
-                        pj_errors.append(
-                            "Pièce jointe ignorée : fournir 'chemin' ou 'data_base64' + 'nom_fichier'."
-                        )
+                    part, err_pj = _build_attachment_part(pj)
+                    if err_pj:
+                        pj_errors.append(err_pj)
                         continue
-
-                    # Construction de la partie MIME
-                    maintype, subtype = type_mime.split("/", 1) if "/" in type_mime else ("application", "octet-stream")
-                    part = MIMEBase(maintype, subtype)
-                    part.set_payload(data)
-                    encoders.encode_base64(part)
-                    part.add_header(
-                        "Content-Disposition",
-                        "attachment",
-                        filename=nom_fichier,
-                    )
                     msg.attach(part)
-                    pj_added.append(nom_fichier)
-
+                    pj_added.append(pj.get("nom_fichier") or os.path.basename(pj.get("chemin", "?")))
                 except Exception as e:
                     pj_errors.append(f"Erreur PJ '{pj.get('nom_fichier') or pj.get('chemin', '?')}' : {e}")
 
@@ -1358,46 +1401,18 @@ def imap_reply_mail(
         if cc_list:
             msg["Cc"] = ", ".join(cc_list)
 
-        # Ajout des pièces jointes (réutilise la même logique)
+        # Ajout des pièces jointes (réutilise le helper commun)
         pj_errors = []
         pj_added  = []
         if pieces_jointes:
             for pj in pieces_jointes:
                 try:
-                    chemin      = pj.get("chemin")
-                    data_b64    = pj.get("data_base64")
-                    nom_fichier = pj.get("nom_fichier")
-                    type_mime   = pj.get("type_mime", "application/octet-stream")
-
-                    if chemin:
-                        chemin = os.path.expanduser(chemin)
-                        if not os.path.isfile(chemin):
-                            pj_errors.append(f"Fichier introuvable : {chemin}")
-                            continue
-                        with open(chemin, "rb") as f:
-                            data = f.read()
-                        nom_fichier = nom_fichier or os.path.basename(chemin)
-                        if type_mime == "application/octet-stream":
-                            import mimetypes
-                            guessed, _ = mimetypes.guess_type(chemin)
-                            if guessed:
-                                type_mime = guessed
-                    elif data_b64 and nom_fichier:
-                        data = base64.b64decode(data_b64)
-                    else:
-                        pj_errors.append(
-                            "Pièce jointe ignorée : fournir 'chemin' ou 'data_base64' + 'nom_fichier'."
-                        )
+                    part, err_pj = _build_attachment_part(pj)
+                    if err_pj:
+                        pj_errors.append(err_pj)
                         continue
-
-                    maintype, subtype = type_mime.split("/", 1) if "/" in type_mime else ("application", "octet-stream")
-                    part = MIMEBase(maintype, subtype)
-                    part.set_payload(data)
-                    encoders.encode_base64(part)
-                    part.add_header("Content-Disposition", "attachment", filename=nom_fichier)
                     msg.attach(part)
-                    pj_added.append(nom_fichier)
-
+                    pj_added.append(pj.get("nom_fichier") or os.path.basename(pj.get("chemin", "?")))
                 except Exception as e:
                     pj_errors.append(f"Erreur PJ '{pj.get('nom_fichier') or pj.get('chemin', '?')}' : {e}")
 
@@ -1440,3 +1455,399 @@ def imap_reply_mail(
         return {"status": "error", "error": "Authentification SMTP échouée."}
     except Exception as e:
         return {"status": "error", "error": f"Erreur envoi réponse : {e}"}
+
+
+@tool(
+    name="imap_save_attachment",
+    description=(
+        "Sauvegarde une pièce jointe d'un mail reçu sur le disque. "
+        "Lit le mail identifié par son UID, trouve la PJ par son nom de fichier, "
+        "et l'écrit dans le répertoire cible. "
+        "Utiliser imap_read_mail pour obtenir la liste des pièces jointes disponibles."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "uid": {
+                "type": "string",
+                "description": "UID du mail contenant la pièce jointe.",
+            },
+            "nom_fichier": {
+                "type": "string",
+                "description": (
+                    "Nom de la pièce jointe telle que retournée par imap_read_mail "
+                    "(champ 'filename' dans la liste 'attachments')."
+                ),
+            },
+            "repertoire": {
+                "type": "string",
+                "description": (
+                    "Répertoire de destination sur le disque (ex: '/home/pierre/Téléchargements'). "
+                    "Le répertoire est créé s'il n'existe pas. "
+                    "Si omis, utilise le répertoire courant."
+                ),
+            },
+            "nom_sortie": {
+                "type": "string",
+                "description": (
+                    "Nom du fichier de sortie (optionnel). "
+                    "Si omis, conserve le nom original de la pièce jointe."
+                ),
+            },
+            "dossier": {
+                "type": "string",
+                "description": "Dossier IMAP contenant le mail (défaut : INBOX).",
+            },
+            "profil": {
+                "type": "string",
+                "description": "Nom du profil de compte (optionnel).",
+            },
+        },
+        "required": ["uid", "nom_fichier"],
+    },
+)
+def imap_save_attachment(
+    uid: str,
+    nom_fichier: str,
+    repertoire: Optional[str] = None,
+    nom_sortie: Optional[str] = None,
+    dossier: str = "INBOX",
+    profil: Optional[str] = None,
+) -> dict:
+    cfg = _get_profile_config(profil)
+    ok, err = _validate_config(cfg)
+    if not ok:
+        return {"status": "error", "error": err}
+
+    ok, result = _imap_connect(cfg)
+    if not ok:
+        return {"status": "error", "error": result}
+
+    imap = result
+    try:
+        ok_sel, err_sel = _imap_select_folder(imap, dossier)
+        if not ok_sel:
+            return {"status": "error", "error": err_sel}
+
+        typ, msg_data = imap.fetch(uid.encode(), "(RFC822)")
+        if typ != "OK" or not msg_data or not msg_data[0]:
+            return {"status": "error", "error": f"Mail UID {uid} introuvable dans {dossier}."}
+
+        raw = msg_data[0][1] if isinstance(msg_data[0], tuple) else msg_data[0]
+        msg = email.message_from_bytes(raw, policy=email.policy.compat32)
+    except Exception as e:
+        return {"status": "error", "error": f"Erreur récupération mail : {e}"}
+    finally:
+        try:
+            imap.logout()
+        except Exception:
+            pass
+
+    # Parcourir les parties pour trouver la PJ demandée
+    found_data: Optional[bytes] = None
+    found_type = "application/octet-stream"
+
+    if msg.is_multipart():
+        for part in msg.walk():
+            disp = str(part.get("Content-Disposition", ""))
+            content_id = part.get("Content-ID", "").strip("<>")
+            fname = part.get_filename()
+            if fname:
+                fname = _decode_header(fname)
+            # Correspondance sur le nom ou le Content-ID
+            if fname == nom_fichier or content_id == nom_fichier:
+                payload = part.get_payload(decode=True)
+                if payload is not None:
+                    found_data = payload
+                    found_type = part.get_content_type()
+                    break
+    else:
+        # Message simple (peu probable pour une PJ, mais géré par sécurité)
+        payload = msg.get_payload(decode=True)
+        if payload and (msg.get_filename() == nom_fichier or nom_fichier == ""):
+            found_data = payload
+            found_type = msg.get_content_type()
+
+    if found_data is None:
+        return {
+            "status": "error",
+            "error": (
+                f"Pièce jointe '{nom_fichier}' introuvable dans le mail UID {uid}. "
+                "Vérifiez le nom exact avec imap_read_mail."
+            ),
+        }
+
+    # Préparer le chemin de sortie
+    dest_dir = os.path.expanduser(repertoire) if repertoire else os.getcwd()
+    os.makedirs(dest_dir, exist_ok=True)
+    filename_out = nom_sortie or nom_fichier
+    dest_path = os.path.join(dest_dir, filename_out)
+
+    # Éviter l'écrasement silencieux : numéroter si le fichier existe
+    if os.path.exists(dest_path):
+        base, ext = os.path.splitext(filename_out)
+        counter = 1
+        while os.path.exists(dest_path):
+            dest_path = os.path.join(dest_dir, f"{base}_{counter}{ext}")
+            counter += 1
+
+    try:
+        with open(dest_path, "wb") as f:
+            f.write(found_data)
+    except OSError as e:
+        return {"status": "error", "error": f"Impossible d'écrire le fichier : {e}"}
+
+    return {
+        "status":        "success",
+        "uid":           uid,
+        "nom_fichier":   nom_fichier,
+        "chemin_sortie": dest_path,
+        "taille_octets": len(found_data),
+        "type_mime":     found_type,
+        "message":       f"Pièce jointe '{nom_fichier}' sauvegardée dans '{dest_path}'.",
+    }
+
+
+@tool(
+    name="imap_forward_mail",
+    description=(
+        "Transfère un mail existant à de nouveaux destinataires, "
+        "en incluant automatiquement toutes les pièces jointes originales. "
+        "Il est possible d'ajouter un commentaire introductif et des PJ supplémentaires."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "uid": {
+                "type": "string",
+                "description": "UID du mail à transférer.",
+            },
+            "destinataires": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Liste des adresses email des nouveaux destinataires (TO).",
+            },
+            "commentaire": {
+                "type": "string",
+                "description": (
+                    "Texte introductif ajouté avant le message transféré (optionnel). "
+                    "Si omis, le mail est transféré sans commentaire."
+                ),
+            },
+            "commentaire_html": {
+                "type": "string",
+                "description": "Version HTML du commentaire introductif (optionnel).",
+            },
+            "cc": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Destinataires en copie (optionnel).",
+            },
+            "cci": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Destinataires en copie cachée (optionnel).",
+            },
+            "pieces_jointes_sup": {
+                "type": "array",
+                "description": (
+                    "Pièces jointes supplémentaires à ajouter au transfert (optionnel). "
+                    "Même format que imap_send_mail : 'chemin' ou 'data_base64' + 'nom_fichier' + 'type_mime'."
+                ),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "chemin":      {"type": "string"},
+                        "data_base64": {"type": "string"},
+                        "nom_fichier": {"type": "string"},
+                        "type_mime":   {"type": "string"},
+                    },
+                },
+            },
+            "inclure_pj_originales": {
+                "type": "boolean",
+                "description": (
+                    "Inclure les pièces jointes du mail original (défaut : true). "
+                    "Mettre à false pour transférer uniquement le corps."
+                ),
+            },
+            "dossier": {
+                "type": "string",
+                "description": "Dossier contenant le mail original (défaut : INBOX).",
+            },
+            "profil": {
+                "type": "string",
+                "description": "Nom du profil de compte (optionnel).",
+            },
+        },
+        "required": ["uid", "destinataires"],
+    },
+)
+def imap_forward_mail(
+    uid: str,
+    destinataires: list,
+    commentaire: Optional[str] = None,
+    commentaire_html: Optional[str] = None,
+    cc: Optional[list] = None,
+    cci: Optional[list] = None,
+    pieces_jointes_sup: Optional[list] = None,
+    inclure_pj_originales: bool = True,
+    dossier: str = "INBOX",
+    profil: Optional[str] = None,
+) -> dict:
+    cfg = _get_profile_config(profil)
+    ok, err = _validate_config(cfg, need_smtp=True)
+    if not ok:
+        return {"status": "error", "error": err}
+
+    # ── 1. Récupérer le mail original ────────────────────────────────────────
+    ok, conn = _imap_connect(cfg)
+    if not ok:
+        return {"status": "error", "error": conn}
+
+    imap = conn
+    try:
+        ok_sel, err_sel = _imap_select_folder(imap, dossier)
+        if not ok_sel:
+            return {"status": "error", "error": err_sel}
+
+        typ, msg_data = imap.fetch(uid.encode(), "(RFC822)")
+        if typ != "OK" or not msg_data or not msg_data[0]:
+            return {"status": "error", "error": f"Mail UID {uid} introuvable dans {dossier}."}
+
+        raw = msg_data[0][1] if isinstance(msg_data[0], tuple) else msg_data[0]
+        original = email.message_from_bytes(raw, policy=email.policy.compat32)
+    except Exception as e:
+        return {"status": "error", "error": f"Erreur lecture mail original : {e}"}
+    finally:
+        try:
+            imap.logout()
+        except Exception:
+            pass
+
+    # ── 2. Construire le sujet ────────────────────────────────────────────────
+    orig_subject = _decode_header(original.get("Subject", ""))
+    fwd_subject  = orig_subject if orig_subject.lower().startswith("fwd:") else f"Fwd: {orig_subject}"
+
+    # ── 3. Corps : commentaire + citation du mail original ────────────────────
+    orig_plain, orig_html_body = _extract_body(original)
+    orig_from = _decode_header(original.get("From", ""))
+    orig_date = original.get("Date", "")
+    orig_to   = _decode_header(original.get("To", ""))
+
+    sep_plain = (
+        f"\n\n--- Message transféré ---"
+        f"\nDe      : {orig_from}"
+        f"\nDate    : {orig_date}"
+        f"\nObjet   : {orig_subject}"
+        f"\nÀ       : {orig_to}"
+        f"\n\n{orig_plain}"
+    )
+    full_plain = (commentaire or "") + sep_plain
+
+    sep_html = (
+        "<br><br><hr>"
+        "<b>--- Message transféré ---</b><br>"
+        f"<b>De&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;:</b> {orig_from}<br>"
+        f"<b>Date&nbsp;&nbsp;&nbsp;:</b> {orig_date}<br>"
+        f"<b>Objet&nbsp;&nbsp;:</b> {orig_subject}<br>"
+        f"<b>À&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;:</b> {orig_to}<br><br>"
+        + (orig_html_body or orig_plain.replace("\n", "<br>"))
+    )
+    full_html = (commentaire_html or (commentaire or "").replace("\n", "<br>")) + sep_html
+
+    # ── 4. Construction MIME ──────────────────────────────────────────────────
+    outer = MIMEMultipart("mixed")
+
+    alt = MIMEMultipart("alternative")
+    alt.attach(MIMEText(full_plain, "plain", "utf-8"))
+    alt.attach(MIMEText(full_html,  "html",  "utf-8"))
+    outer.attach(alt)
+
+    from_addr   = cfg["from_address"]
+    display     = cfg["display_name"]
+    from_header = f"{display} <{from_addr}>" if display else from_addr
+
+    outer["From"]    = from_header
+    outer["To"]      = ", ".join(destinataires)
+    outer["Subject"] = fwd_subject
+    if cc:
+        outer["Cc"] = ", ".join(cc)
+
+    pj_errors: list[str] = []
+    pj_added:  list[str] = []
+
+    # PJ originales
+    if inclure_pj_originales and original.is_multipart():
+        for part in original.walk():
+            disp = str(part.get("Content-Disposition", ""))
+            fname = part.get_filename()
+            if not fname and "attachment" not in disp:
+                continue
+            fname = _decode_header(fname or "fichier_sans_nom")
+            payload = part.get_payload(decode=True)
+            if payload is None:
+                continue
+            content_type = part.get_content_type()
+            maintype, subtype = content_type.split("/", 1) if "/" in content_type else ("application", "octet-stream")
+            fwd_part = MIMEBase(maintype, subtype)
+            fwd_part.set_payload(payload)
+            encoders.encode_base64(fwd_part)
+            fwd_part.add_header("Content-Disposition", "attachment", filename=fname)
+            outer.attach(fwd_part)
+            pj_added.append(fname)
+
+    # PJ supplémentaires
+    if pieces_jointes_sup:
+        for pj in pieces_jointes_sup:
+            try:
+                part, err_pj = _build_attachment_part(pj)
+                if err_pj:
+                    pj_errors.append(err_pj)
+                    continue
+                outer.attach(part)
+                pj_added.append(pj.get("nom_fichier") or os.path.basename(pj.get("chemin", "?")))
+            except Exception as e:
+                pj_errors.append(f"Erreur PJ '{pj.get('nom_fichier') or pj.get('chemin', '?')}' : {e}")
+
+    # ── 5. Envoi SMTP ─────────────────────────────────────────────────────────
+    try:
+        all_recipients = destinataires + (cc or []) + (cci or [])
+
+        if cfg["smtp_ssl"]:
+            context = ssl.create_default_context()
+            server = smtplib.SMTP_SSL(cfg["smtp_host"], cfg["smtp_port"], context=context)
+        else:
+            server = smtplib.SMTP(cfg["smtp_host"], cfg["smtp_port"])
+            server.ehlo()
+            if server.has_extn("STARTTLS"):
+                server.starttls()
+                server.ehlo()
+
+        if cfg.get("smtp_oauth2_token"):
+            auth_string = f"user={cfg['smtp_user']}\x01auth=Bearer {cfg['smtp_oauth2_token']}\x01\x01"
+            server.docmd("AUTH", "XOAUTH2 " + base64.b64encode(auth_string.encode()).decode())
+        else:
+            server.login(cfg["smtp_user"], cfg["smtp_password"])
+
+        server.sendmail(from_addr, all_recipients, outer.as_bytes())
+        server.quit()
+
+        result = {
+            "status":          "success",
+            "uid_original":    uid,
+            "destinataires":   destinataires,
+            "cc":              cc or [],
+            "objet":           fwd_subject,
+            "pieces_jointes":  pj_added,
+            "message":         f"Mail UID {uid} transféré à {', '.join(destinataires)}."
+                               + (f" PJ : {', '.join(pj_added)}." if pj_added else ""),
+        }
+        if pj_errors:
+            result["avertissements_pj"] = pj_errors
+        return result
+
+    except smtplib.SMTPAuthenticationError:
+        return {"status": "error", "error": "Authentification SMTP échouée."}
+    except Exception as e:
+        return {"status": "error", "error": f"Erreur transfert mail : {e}"}

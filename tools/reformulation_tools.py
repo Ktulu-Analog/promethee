@@ -1,7 +1,7 @@
 # ============================================================================
-# Prométhée — Assistant IA desktop
+# Prométhée — Assistant IA avancé
 # ============================================================================
-# Auteur  : Pierre COUGET
+# Auteur  : Pierre COUGET ktulu.analog@gmail.com
 # Licence : GNU Affero General Public License v3.0 (AGPL-3.0)
 #           https://www.gnu.org/licenses/agpl-3.0.html
 # Année   : 2026
@@ -407,6 +407,9 @@ def _assembler_docx(
         "découpé en morceaux de taille contrôlée pour ne jamais saturer la fenêtre de contexte "
         "du LLM. Chaque morceau est reformulé indépendamment, puis les résultats sont assemblés "
         "dans un fichier .docx de sortie. "
+        "CORRECTION BUG 3 — RÈGLE IMPÉRATIVE : cet outil DOIT être appelé pour toute "
+        "reformulation de .docx. Ne jamais prétendre reformuler ou enregistrer un fichier "
+        "sans appeler cet outil — une réponse textuelle sans appel d'outil est une erreur. "
         "RÈGLE IMPORTANTE : appeler skill_read('guide_redacteur') avant cet outil pour "
         "injecter les conventions rédactionnelles spécifiques à l'organisation. "
         "Retourne un rapport détaillé : nombre de chunks traités, tokens consommés, durée."

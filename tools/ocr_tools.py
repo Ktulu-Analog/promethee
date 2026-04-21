@@ -1,7 +1,7 @@
 # ============================================================================
-# Prométhée — Assistant IA desktop
+# Prométhée — Assistant IA avancé
 # ============================================================================
-# Auteur  : Pierre COUGET
+# Auteur  : Pierre COUGET ktulu.analog@gmail.com
 # Licence : GNU Affero General Public License v3.0 (AGPL-3.0)
 #           https://www.gnu.org/licenses/agpl-3.0.html
 # Année   : 2026
@@ -24,7 +24,7 @@ Outils exposés (4) :
                          sans extraire le texte
   - ocr_languages      : liste les langues Tesseract disponibles sur le système
 
-Ce module est un pont vers ui/widgets/ocr_engine.py qui contient la logique
+Ce module est un pont vers core/ocr_engine.py qui contient la logique
 Tesseract/PyMuPDF. Il en fait une famille d'outils LLM invocable en mode agent,
 ce qui permet de traiter automatiquement des lots de documents sans intervention
 manuelle (glisser-déposer dans l'interface).
@@ -38,7 +38,7 @@ Variables .env (optionnelles) :
     OCR_MAX_PAGES=50           # nombre max de pages PDF à traiter (défaut: 50)
 """
 
-import sys
+import sys  # conservé pour compatibilité éventuelle
 from pathlib import Path
 from typing import Optional
 
@@ -67,19 +67,78 @@ _IMAGE_EXTENSIONS = {
 }
 
 
+# ── Résolution VFS → chemin réel ──────────────────────────────────────────────
+
+import tempfile
+import atexit
+
+# Fichiers temporaires créés pour les fichiers VFS — nettoyés à la sortie
+_TMP_FILES: list[str] = []
+
+
+def _cleanup_tmp() -> None:
+    for p in _TMP_FILES:
+        try:
+            Path(p).unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+atexit.register(_cleanup_tmp)
+
+
+def _resolve_path(chemin: str) -> tuple[Path, bool]:
+    """
+    Résout un chemin qui peut être soit un chemin filesystem réel, soit un
+    chemin virtuel VFS (stocké dans SQLite + Garage).
+
+    Stratégie :
+      1. Si le chemin existe déjà sur le filesystem → retour direct.
+      2. Sinon → tentative de lecture via get_vfs(). Si le fichier existe dans
+         le VFS, son contenu est écrit dans un fichier temporaire et le chemin
+         de ce temporaire est retourné.
+      3. Si le VFS échoue aussi → retourne le chemin original (l'appelant
+         produira le message d'erreur habituel "Fichier introuvable").
+
+    Returns
+    -------
+    tuple[Path, bool]
+        (chemin_résolu, depuis_vfs)
+        depuis_vfs=True si le fichier a été extrait du VFS dans un temporaire.
+    """
+    real = Path(chemin).expanduser().resolve()
+    if real.exists():
+        return real, False
+
+    # Tentative VFS
+    try:
+        from core.virtual_fs import get_vfs
+        vfs = get_vfs()
+        if vfs.exists(chemin) and vfs.is_file(chemin):
+            data = vfs.read_bytes(chemin)
+            suffix = Path(chemin).suffix or ".bin"
+            tmp = tempfile.NamedTemporaryFile(
+                delete=False, suffix=suffix, prefix="promethee_ocr_"
+            )
+            tmp.write(data)
+            tmp.close()
+            _TMP_FILES.append(tmp.name)
+            return Path(tmp.name), True
+    except Exception:
+        pass  # VFS indisponible ou chemin absent → l'appelant gère l'erreur
+
+    return real, False
+
+
 # ── Import conditionnel du moteur OCR ─────────────────────────────────────────
 
 def _get_ocr_engine():
     """
-    Importe ocr_engine depuis ui/widgets/ de façon robuste.
+    Importe ocr_engine depuis core/ de façon robuste.
     Retourne le module ou None si les dépendances sont absentes.
     """
     try:
-        # Ajouter la racine du projet au path si nécessaire
-        project_root = Path(__file__).parent.parent
-        if str(project_root) not in sys.path:
-            sys.path.insert(0, str(project_root))
-        from ui.widgets import ocr_engine
+        from core import ocr_engine
         return ocr_engine
     except ImportError:
         return None
@@ -94,7 +153,7 @@ def _ocr_available() -> tuple[bool, str]:
     if engine is None:
         return False, (
             "Module ocr_engine introuvable. "
-            "Vérifiez que les dépendances UI sont accessibles."
+            "Vérifiez que les dépendances sont accessibles (core/ocr_engine.py)."
         )
     if not engine.is_available():
         return False, (
@@ -167,7 +226,7 @@ def ocr_image(
     if not ok:
         return {"status": "error", "error": err}
 
-    path = Path(chemin).expanduser().resolve()
+    path, _from_vfs = _resolve_path(chemin)
 
     if not path.exists():
         return {"status": "error", "error": f"Fichier introuvable : {chemin}"}
@@ -175,7 +234,7 @@ def ocr_image(
     if not path.is_file():
         return {"status": "error", "error": f"Le chemin ne pointe pas vers un fichier : {chemin}"}
 
-    ext = path.suffix.lower()
+    ext = Path(chemin).suffix.lower()  # extension d'origine, pas du tmp
     if ext not in _IMAGE_EXTENSIONS:
         return {
             "status": "error",
@@ -289,12 +348,12 @@ def ocr_pdf(
     if not ok:
         return {"status": "error", "error": err}
 
-    path = Path(chemin).expanduser().resolve()
+    path, _from_vfs = _resolve_path(chemin)
 
     if not path.exists():
         return {"status": "error", "error": f"Fichier introuvable : {chemin}"}
 
-    if path.suffix.lower() != ".pdf":
+    if Path(chemin).suffix.lower() != ".pdf":  # vérifier l'extension d'origine
         return {
             "status": "error",
             "error": (
@@ -422,12 +481,12 @@ def ocr_pdf(
     },
 )
 def ocr_pdf_detect(chemin: str) -> dict:
-    path = Path(chemin).expanduser().resolve()
+    path, _from_vfs = _resolve_path(chemin)
 
     if not path.exists():
         return {"status": "error", "error": f"Fichier introuvable : {chemin}"}
 
-    if path.suffix.lower() != ".pdf":
+    if Path(chemin).suffix.lower() != ".pdf":
         return {"status": "error", "error": f"Ce fichier n'est pas un PDF : {chemin}"}
 
     engine = _get_ocr_engine()

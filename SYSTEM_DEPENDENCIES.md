@@ -38,24 +38,7 @@ sudo apt install -y \
     libreoffice-nogui \
     \
     # ── Extraction .doc legacy ────────────────────────────────
-    antiword \
-    \
-    # ── Interface Qt6 / WebEngine (libs graphiques) ──────────
-    libxcb-cursor0 \
-    libxcb-icccm4 \
-    libxcb-image0 \
-    libxcb-keysyms1 \
-    libxcb-randr0 \
-    libxcb-render-util0 \
-    libxcb-shape0 \
-    libxcb-xinerama0 \
-    libxcb-xkb1 \
-    libxkbcommon-x11-0 \
-    libegl1 \
-    libgl1 \
-    libglib2.0-0 \
-    libnss3 \
-    libdbus-1-3
+    antiword
 ```
 
 ---
@@ -109,7 +92,6 @@ Ajouter les dossiers `bin/` de chaque outil au `PATH` système.
 | Export PDF via WeasyPrint (`export_pdf`) | `libpango-1.0-0`, `libpangoft2-1.0-0`, `libpangocairo-1.0-0`, `libcairo2`, `libgdk-pixbuf2.0-0`, `shared-mime-info`, `fonts-liberation` | Non* |
 | Export LibreOffice (odt/ods/odp) | `libreoffice-nogui` | Non* |
 | Extraction fichiers `.doc` legacy | `antiword` | Non* |
-| Affichage interface Qt6 (Linux) | libs `xcb`, `egl`, `gl` | **Oui** |
 
 \* Fonctionnalité dégradée si absent, mais l'application démarre quand même.
 

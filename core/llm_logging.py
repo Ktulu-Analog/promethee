@@ -1,7 +1,7 @@
 # ============================================================================
-# Prométhée — Assistant IA desktop
+# Prométhée — Assistant IA avancé
 # ============================================================================
-# Auteur  : Pierre COUGET
+# Auteur  : Pierre COUGET ktulu.analog@gmail.com
 # Licence : GNU Affero General Public License v3.0 (AGPL-3.0)
 #           https://www.gnu.org/licenses/agpl-3.0.html
 # Année   : 2026
@@ -147,10 +147,12 @@ class TokenUsage:
 
     Champs spécifiques à l'API Albert
     ──────────────────────────────────
-    cost   : float — coût en euros de la session.
-    carbon : dict  — empreinte carbone estimée :
-                     {"kWh":     {"min": float, "max": float},
-                      "kgCO2eq": {"min": float, "max": float}}
+    cost    : float — coût en euros de la session.
+    impacts : dict  — empreinte carbone (format Albert v0.4.2) :
+                      {"kgCO2eq": float, "kWh": float}
+    carbon  : dict  — ancien format (déprécié depuis v0.4.2), conservé pour
+                      rétrocompat : {"kWh": {"min": float, "max": float},
+                                     "kgCO2eq": {"min": float, "max": float}}
 
     Gestion du double comptage en streaming Albert
     ───────────────────────────────────────────────
@@ -164,14 +166,15 @@ class TokenUsage:
     ce qui revient à ne pas filtrer (comportement correct).
     """
 
-    __slots__ = ("prompt", "completion", "calls", "cost", "carbon")
+    __slots__ = ("prompt", "completion", "calls", "cost", "carbon", "impacts")
 
     def __init__(self) -> None:
         self.prompt:     int   = 0
         self.completion: int   = 0
         self.calls:      int   = 0
         self.cost:       float = 0.0
-        self.carbon:     dict  = {}
+        self.carbon:     dict  = {}   # ancien champ Albert (déprécié, conservé pour rétrocompat)
+        self.impacts:    dict  = {}   # nouveau champ Albert v0.4.2 : {"kgCO2eq": float, "kWh": float}
 
     # ── Détection du chunk final Albert ──────────────────────────────────────
 
@@ -222,6 +225,20 @@ class TokenUsage:
         self.calls      += 1
         self.cost       += getattr(usage, "cost", 0.0) or 0.0
 
+        # ── Nouveau format Albert v0.4.2 : impacts.kgCO2eq (float scalaire) ──
+        impacts = getattr(usage, "impacts", None)
+        if impacts is not None:
+            if isinstance(impacts, dict):
+                for unit in ("kWh", "kgCO2eq"):
+                    v = impacts.get(unit, 0.0) or 0.0
+                    self.impacts[unit] = self.impacts.get(unit, 0.0) + v
+            else:
+                # objet Pydantic / dataclass
+                for unit in ("kWh", "kgCO2eq"):
+                    v = getattr(impacts, unit, 0.0) or 0.0
+                    self.impacts[unit] = self.impacts.get(unit, 0.0) + v
+
+        # ── Ancien format Albert (déprécié) : carbon.kgCO2eq.{min,max} ───────
         carbon = getattr(usage, "carbon", None)
         if carbon and isinstance(carbon, dict):
             for unit in ("kWh", "kgCO2eq"):

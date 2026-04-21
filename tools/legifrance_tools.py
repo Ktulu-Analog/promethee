@@ -1,7 +1,7 @@
 # ============================================================================
-# Prométhée — Assistant IA desktop
+# Prométhée — Assistant IA avancé
 # ============================================================================
-# Auteur  : Pierre COUGET
+# Auteur  : Pierre COUGET ktulu.analog@gmail.com
 # Licence : GNU Affero General Public License v3.0 (AGPL-3.0)
 #           https://www.gnu.org/licenses/agpl-3.0.html
 # Année   : 2026
@@ -235,10 +235,24 @@ class _LegifranceClient:
 
     @property
     def client_id(self) -> Optional[str]:
+        try:
+            from core.request_context import get_user_config
+            uc = get_user_config()
+            if uc:
+                return uc.LEGIFRANCE_CLIENT_ID or os.getenv("LEGIFRANCE_CLIENT_ID")
+        except ImportError:
+            pass
         return os.getenv("LEGIFRANCE_CLIENT_ID")
 
     @property
     def client_secret(self) -> Optional[str]:
+        try:
+            from core.request_context import get_user_config
+            uc = get_user_config()
+            if uc:
+                return uc.LEGIFRANCE_CLIENT_SECRET or os.getenv("LEGIFRANCE_CLIENT_SECRET")
+        except ImportError:
+            pass
         return os.getenv("LEGIFRANCE_CLIENT_SECRET")
 
     def _check_credentials(self):
@@ -351,18 +365,16 @@ def _fmt_search(data: Dict, query: str) -> str:
     total   = data.get("totalResultNumber", 0)
     if not results:
         return f"Aucun résultat pour : « {query} »"
-    lines = [f"**{total} résultat(s) pour « {query} »** — {len(results)} affichés\n"]
+    lines = [f"{total} résultat(s) — {len(results)} affichés\n"]
     for i, r in enumerate(results, 1):
-        t_list  = r.get("titles", [{}])
-        title   = t_list[0].get("title",           r.get("title", "Sans titre"))
-        nature  = t_list[0].get("nature",           r.get("nature", ""))
-        rid     = t_list[0].get("id",               r.get("id", ""))
-        date_p  = t_list[0].get("datePubliTexte",   "")
-        lines.append(f"{i}. **{title}**")
-        if nature: lines.append(f"   Nature : {nature}")
-        if rid:    lines.append(f"   ID : `{rid}`")
-        if date_p: lines.append(f"   Date : {date_p}")
-        lines.append("")
+        t_list = r.get("titles", [{}])
+        title  = t_list[0].get("title", r.get("title", "Sans titre"))
+        rid    = t_list[0].get("id",    r.get("id", ""))
+        date_p = t_list[0].get("datePubliTexte", "")
+        # Titre tronqué à 120 chars pour limiter la taille du contexte
+        title  = title[:120] + ("…" if len(title) > 120 else "")
+        suffix = f" — {date_p}" if date_p else ""
+        lines.append(f"{i}. {title}{suffix} `{rid}`")
     return "\n".join(lines)
 
 
@@ -425,36 +437,83 @@ def _fmt_toc(data: Dict, code: str) -> str:
             },
             "nb_resultats": {
                 "type": "integer",
-                "default": 10,
-                "description": "Nombre de résultats (1–20, défaut: 10)",
+                "default": 5,
+                "description": "Nombre de résultats (1–10, défaut: 5). Ne pas dépasser 10 sauf besoin explicite.",
             },
             "fond": {
                 "type": "string",
-                "enum": ["ALL", "JORF", "LODA", "CODE_DATE", "JURI", "KALI", "CNIL"],
+                "enum": ["ALL", "JORF", "CODE_DATE", "CODE_ETAT", "LODA_DATE", "LODA_ETAT", "JURI", "JUFI", "CETAT", "CONSTIT", "KALI", "CNIL", "CIRC", "ACCO"],
                 "default": "ALL",
-                "description": "Fonds à interroger (ALL=tous, JURI=jurisprudence, KALI=conventions collectives…)",
+                "description": (
+                    "Fonds à interroger. ALL=tous les fonds. "
+                    "Codes: CODE_DATE (par date), CODE_ETAT (par état juridique). "
+                    "Lois/décrets: LODA_DATE (par date), LODA_ETAT (par état). "
+                    "Jurisprudence: JURI (judiciaire), JUFI (fond judiciaire), CETAT (Conseil d'État), CONSTIT (Conseil constit.). "
+                    "Autres: JORF (Journal Officiel), KALI (conventions collectives), CNIL, CIRC (circulaires), ACCO (accords entreprise). "
+                    "⚠️ JADE n'existe pas dans l'API. "
+                    "⚠️ Ne PAS passer 'LODA' — les valeurs correctes sont LODA_DATE ou LODA_ETAT."
+                ),
+            },
+            "date_debut": {
+                "type": "string",
+                "description": "Date de publication minimale YYYY-MM-DD (ex: '2020-01-01'). Utiliser pour filtrer par période.",
+            },
+            "date_fin": {
+                "type": "string",
+                "description": "Date de publication maximale YYYY-MM-DD (ex: '2024-12-31').",
+            },
+            "tri": {
+                "type": "string",
+                "enum": ["PERTINENCE", "SIGNATURE_DATE_DESC"],
+                "default": "PERTINENCE",
+                "description": (
+                    "Ordre de tri. PERTINENCE (défaut, recommandé dans presque tous les cas). "
+                    "SIGNATURE_DATE_DESC uniquement si la pertinence est satisfaisante "
+                    "et qu'on veut ordonner les résultats par date. "
+                    "⚠️ Ne PAS utiliser DATE_PUBLI_DESC seul sans query précise : "
+                    "cela retourne les documents les plus récents de la plage, "
+                    "sans tenir compte de la pertinence par rapport à la query."
+                ),
             },
         },
         "required": ["query"],
     },
 )
-def legifrance_rechercher(query: str, nb_resultats: int = 10, fond: str = "ALL") -> str:
+def legifrance_rechercher(
+    query: str,
+    nb_resultats: int = 10,
+    fond: str = "ALL",
+    date_debut: Optional[str] = None,
+    date_fin: Optional[str] = None,
+    tri: str = "PERTINENCE",
+) -> str:
     c = _get_client()
-    data = c._req("/search", body={
-        "fond": fond,
-        "recherche": {
-            "champs": [{
-                "typeChamp": "ALL",
-                "criteres": [{"typeRecherche": "UN_DES_MOTS", "valeur": query, "operateur": "ET"}],
-                "operateur": "ET",
-            }],
-            "operateur":      "ET",
-            "pageSize":       min(max(1, nb_resultats), 20),
-            "pageNumber":     1,
-            "sort":           "PERTINENCE",
-            "typePagination": "DEFAUT",
-        },
-    })
+
+    # Correction du double encodage UTF-8 produit par certains backends vLLM/Albert.
+    # Le modèle génère parfois Ã© (bytes UTF-8 de é interprétés comme codepoints)
+    # au lieu de é. On détecte et corrige avant d'envoyer à l'API.
+    try:
+        query = query.encode("latin-1").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        pass  # Encodage correct, pas de correction nécessaire
+
+    recherche: Dict[str, Any] = {
+        "champs": [{
+            "typeChamp": "ALL",
+            "criteres": [{"typeRecherche": "UN_DES_MOTS", "valeur": query, "operateur": "ET"}],
+            "operateur": "ET",
+        }],
+        "operateur":      "ET",
+        "pageSize":       min(max(1, nb_resultats), 20),
+        "pageNumber":     1,
+        "sort":           tri,
+        "typePagination": "DEFAUT",
+    }
+    # Note : le filtre DATE_SIGNATURE de l'API trie les résultats par date ascendante,
+    # ce qui écrase la pertinence et ramène les documents les plus anciens de la plage.
+    # On N'utilise PAS ce filtre — date_debut/date_fin sont conservés comme paramètres
+    # documentés mais non transmis à l'API pour préserver la pertinence des résultats.
+    data = c._req("/search", body={"fond": fond, "recherche": recherche})
     return _fmt_search(data, query)
 
 
@@ -1628,7 +1687,9 @@ def legifrance_a_des_versions(text_cid: str) -> str:
     name="legifrance_lister_loda",
     description=(
         "Liste les lois, ordonnances et décrets autonomes disponibles dans Légifrance (fonds LODA). "
-        "Filtrable par nature (LOI, ORDONNANCE, DECRET…) et état juridique."
+        "Filtrable par nature (LOI, ORDONNANCE, DECRET…), état juridique et plage de dates. "
+        "⚠️ Pour les décrets de nomination/cessation de fonctions : passer en_vigueur_seulement=false "
+        "car ces décrets sont abrogés dès la nomination suivante."
     ),
     parameters={
         "type": "object",
@@ -1640,8 +1701,20 @@ def legifrance_a_des_versions(text_cid: str) -> str:
             },
             "en_vigueur_seulement": {
                 "type": "boolean",
-                "default": True,
-                "description": "Retourner uniquement les textes en vigueur (défaut: true)",
+                "default": False,
+                "description": (
+                    "Retourner uniquement les textes en vigueur (défaut: false). "
+                    "Mettre false pour les décrets de nomination, cessation de fonctions, "
+                    "ou tout acte ponctuel épuisant ses effets dès sa publication."
+                ),
+            },
+            "date_debut": {
+                "type": "string",
+                "description": "Date de publication minimale YYYY-MM-DD (ex: '2020-01-01')",
+            },
+            "date_fin": {
+                "type": "string",
+                "description": "Date de publication maximale YYYY-MM-DD (ex: '2024-12-31')",
             },
             "nb_resultats": {
                 "type": "integer",
@@ -1653,7 +1726,9 @@ def legifrance_a_des_versions(text_cid: str) -> str:
 )
 def legifrance_lister_loda(
     natures: Optional[List[str]] = None,
-    en_vigueur_seulement: bool = True,
+    en_vigueur_seulement: bool = False,
+    date_debut: Optional[str] = None,
+    date_fin: Optional[str] = None,
     nb_resultats: int = 20,
 ) -> str:
     c    = _get_client()
@@ -1662,6 +1737,14 @@ def legifrance_lister_loda(
         body["natures"] = natures
     if en_vigueur_seulement:
         body["legalStatus"] = ["VIGUEUR"]
+    # L'API attend publicationDate: {start, end} et non dateDebut/dateFin (cf. swagger LODAListRequest)
+    pub_date: Dict[str, str] = {}
+    if date_debut:
+        pub_date["start"] = date_debut
+    if date_fin:
+        pub_date["end"] = date_fin
+    if pub_date:
+        body["publicationDate"] = pub_date
     data  = c._req("/list/loda", body=body)
     # LODAListResponse → results, totalResultNumber (swagger)
     # LODAListResult : titre, cid, etat, dateDebut, dateFin, lastUpdate

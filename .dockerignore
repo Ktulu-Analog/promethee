@@ -1,0 +1,47 @@
+# =============================================================================
+#  .dockerignore — exclure les fichiers inutiles du contexte de build
+# =============================================================================
+
+# Environnements virtuels Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# Frontend — dépendances et build local
+frontend/node_modules/
+frontend/dist/
+
+# Données locales (non embarquées dans l'image)
+data/
+logs/
+*.db
+*.sqlite
+
+# Fichiers de config sensibles
+.env
+*.env
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+documentation/
+*.md
+!README.md
+
+# Docker
+Dockerfile*
+docker-compose*.yml
+
+# OS
+.DS_Store
+Thumbs.db
