@@ -566,25 +566,31 @@ export function ChatPanel({
 
 function TypingIndicator() {
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "8px 0", opacity: 0.7 }}>
-      <span style={{ fontSize: 11, color: "var(--text-muted)" }}>IA</span>
-      {[0, 1, 2].map((i) => (
-        <span
-          key={i}
-          style={{
-            width: 6,
-            height: 6,
-            borderRadius: "50%",
-            background: "var(--accent)",
-            display: "inline-block",
-            animation: `bounce 1.2s ease-in-out ${i * 0.2}s infinite`,
-          }}
-        />
-      ))}
+    <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 0" }}>
+      <span style={{ fontSize: 11, color: "var(--accent-assistant-role)", fontWeight: 600,
+        textTransform: "uppercase", letterSpacing: "0.05em" }}>Prométhée</span>
+      <div style={{ display: "flex", alignItems: "flex-end", gap: 3, height: 16 }}>
+        {[0, 1, 2, 3, 4].map((i) => (
+          <span
+            key={i}
+            style={{
+              width: 3,
+              borderRadius: 2,
+              background: `var(--accent)`,
+              display: "inline-block",
+              animation: `promFlame 1.4s ease-in-out ${i * 0.12}s infinite`,
+              transformOrigin: "bottom center",
+            }}
+          />
+        ))}
+      </div>
       <style>{`
-        @keyframes bounce {
-          0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
-          30%            { transform: translateY(-6px); opacity: 1; }
+        @keyframes promFlame {
+          0%   { height: 4px;  opacity: 0.3; }
+          25%  { height: 14px; opacity: 1;   }
+          50%  { height: 7px;  opacity: 0.6; }
+          75%  { height: 12px; opacity: 0.9; }
+          100% { height: 4px;  opacity: 0.3; }
         }
       `}</style>
     </div>

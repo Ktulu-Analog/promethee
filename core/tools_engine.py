@@ -33,6 +33,7 @@ Usage dans main.py / app.py :
     from core.tools_engine import get_tool_schemas, call_tool, list_tools
 """
 
+import contextvars
 import json
 from pathlib import Path
 from typing import Callable
@@ -49,29 +50,61 @@ _TOOL_FAMILY: dict[str, str] = {}
 
 # ── État en mémoire des familles désactivées ──────────────────────────────
 #
-# Remplace l'ancien fichier ~/.promethee_disabled_families.json (vestige
-# desktop mono-utilisateur). Dans le contexte Docker multi-utilisateurs :
-#   - ce fichier était partagé entre tous les utilisateurs (~ = /root dans
-#     le conteneur), causant des interférences entre sessions
-#   - il était perdu à chaque recréation du conteneur
-#   - il générait des race conditions sur les requêtes concurrentes
+# Historique des architectures :
 #
-# Nouvelle architecture :
-#   _DISABLED_FAMILIES : état courant en mémoire, appliqué de façon éphémère
-#                        par apply_profile_families() à chaque requête.
-#   Persistance manuelle (enable/disable_family) → kv_store SQLite par user,
-#                        via save_user_families() / load_user_families().
+#   v1 – fichier global   ~/.promethee_disabled_families.json
+#         Problème : partagé entre tous les utilisateurs (/ = /root dans le
+#         conteneur), perdu à chaque recréation, race conditions.
+#
+#   v2 – variable globale _DISABLED_FAMILIES: set[str]
+#         Problème : partagée entre toutes les coroutines FastAPI simultanées.
+#         Une requête de l'utilisateur A écrasait l'état de B dès que
+#         load_user_families() était appelé dans n'importe quel handler
+#         concurrent. Résultat : la liste des outils visible dans la sidebar
+#         pouvait différer de la sélection enregistrée dans l'éditeur de profil.
+#
+#   v3 (actuelle) – ContextVar par coroutine/thread
+#         Chaque requête FastAPI s'exécute dans son propre contexte asyncio.
+#         _DISABLED_FAMILIES_VAR est isolé par contexte : les requêtes
+#         concurrentes ne peuvent pas se polluer mutuellement.
+#         asyncio.to_thread() propage le contexte vers les threads workers,
+#         donc les outils exécutés dans agent_loop() voient le bon état.
+#
+# Interface publique inchangée : load_user_families(), save_user_families(),
+# apply_profile_families(), enable_family(), disable_family(),
+# is_family_disabled() — les appelants n'ont rien à modifier.
 
-_DISABLED_FAMILIES: set[str] = set()
+_DISABLED_FAMILIES_VAR: contextvars.ContextVar[set[str]] = contextvars.ContextVar(
+    "disabled_families", default=None  # type: ignore[arg-type]
+)
+
+
+def _get_disabled() -> set[str]:
+    """Retourne l'ensemble des familles désactivées pour le contexte courant.
+    Crée un ensemble vide si le ContextVar n'a pas encore été initialisé
+    dans ce contexte (première requête ou contexte hors FastAPI)."""
+    val = _DISABLED_FAMILIES_VAR.get(None)
+    if val is None:
+        val = set()
+        _DISABLED_FAMILIES_VAR.set(val)
+    return val
+
+
+def _set_disabled(families: set[str]) -> None:
+    """Remplace l'ensemble des familles désactivées pour le contexte courant."""
+    _DISABLED_FAMILIES_VAR.set(families)
 
 
 def load_user_families(user_id: str) -> None:
     """
     Charge l'état des familles désactivées depuis le kv_store SQLite de
-    l'utilisateur (clé "disabled_families").
+    l'utilisateur (clé "disabled_families") et l'installe dans le ContextVar
+    de la coroutine courante.
+
     Remplace l'ancien _load_disabled_families() sur fichier JSON global.
+    Isolation par requête garantie : deux requêtes concurrentes ne peuvent
+    pas se polluer mutuellement.
     """
-    global _DISABLED_FAMILIES
     try:
         from pathlib import Path as _Path
         data_dir = _Path(__file__).resolve().parent.parent / "data" / user_id
@@ -79,18 +112,16 @@ def load_user_families(user_id: str) -> None:
         from core.database import HistoryDB
         db = HistoryDB(db_path=db_path)
         raw = db.kv_get("disabled_families")
-        if raw:
-            _DISABLED_FAMILIES = set(json.loads(raw))
-        else:
-            _DISABLED_FAMILIES = set()
+        _set_disabled(set(json.loads(raw)) if raw else set())
     except Exception:
-        _DISABLED_FAMILIES = set()
+        _set_disabled(set())
 
 
 def save_user_families(user_id: str) -> None:
     """
-    Persiste l'état courant des familles désactivées dans le kv_store SQLite
-    de l'utilisateur (clé "disabled_families").
+    Persiste l'état courant des familles désactivées (depuis le ContextVar)
+    dans le kv_store SQLite de l'utilisateur (clé "disabled_families").
+
     Remplace l'ancien _save_disabled_families() sur fichier JSON global.
     """
     try:
@@ -100,7 +131,7 @@ def save_user_families(user_id: str) -> None:
         db_path = str(data_dir / "history.db")
         from core.database import HistoryDB
         db = HistoryDB(db_path=db_path)
-        db.kv_set("disabled_families", json.dumps(sorted(_DISABLED_FAMILIES)))
+        db.kv_set("disabled_families", json.dumps(sorted(_get_disabled())))
     except Exception:
         pass
 
@@ -282,55 +313,60 @@ def apply_profile_families(
 
     NOTE : ne jamais appeler save_user_families() ici — intentionnel.
     La persistance est réservée aux actions manuelles (enable/disable_family).
+    Isolation par requête : opère sur le ContextVar, pas sur un global partagé.
     """
-    global _DISABLED_FAMILIES
-
     # Toujours partir des prefs persistées de cet utilisateur
     if user_id:
         load_user_families(user_id)
     else:
-        _DISABLED_FAMILIES = set()
+        _set_disabled(set())
 
     if not enabled and not disabled:
         # Aucun override de profil : on garde les prefs utilisateur telles quelles
         return
 
-    # Appliquer les overrides du profil (sans sauvegarder)
+    # Appliquer les overrides du profil dans une copie locale (sans sauvegarder)
+    current = set(_get_disabled())
     for fam in disabled:
-        _DISABLED_FAMILIES.add(fam)
+        current.add(fam)
     for fam in enabled:
-        _DISABLED_FAMILIES.discard(fam)
+        current.discard(fam)
+    _set_disabled(current)
 
 
 def disable_family(family: str, user_id: str | None = None) -> None:
     """
-    Désactive tous les outils d'une famille et persiste le choix.
+    Désactive une famille d'outils et persiste le choix.
 
     Parameters
     ----------
     user_id : identifiant de l'utilisateur courant (pour la persistance SQLite).
     """
-    _DISABLED_FAMILIES.add(family)
+    current = set(_get_disabled())
+    current.add(family)
+    _set_disabled(current)
     if user_id:
         save_user_families(user_id)
 
 
 def enable_family(family: str, user_id: str | None = None) -> None:
     """
-    Réactive tous les outils d'une famille et persiste le choix.
+    Réactive une famille d'outils et persiste le choix.
 
     Parameters
     ----------
     user_id : identifiant de l'utilisateur courant (pour la persistance SQLite).
     """
-    _DISABLED_FAMILIES.discard(family)
+    current = set(_get_disabled())
+    current.discard(family)
+    _set_disabled(current)
     if user_id:
         save_user_families(user_id)
 
 
 def is_family_disabled(family: str) -> bool:
-    """Retourne True si la famille est désactivée."""
-    return family in _DISABLED_FAMILIES
+    """Retourne True si la famille est désactivée dans le contexte courant."""
+    return family in _get_disabled()
 
 
 def list_families() -> list[dict]:
@@ -343,7 +379,9 @@ def list_families() -> list[dict]:
           model_backend, model_name, model_base_url }
 
     model_name == "" signifie "modèle principal" (aucune assignation).
+    L'état enabled/disabled reflète le ContextVar de la requête courante.
     """
+    disabled = _get_disabled()
     families: dict[str, dict] = {}
     for name, t in _TOOLS.items():
         fam = t.get("family", "unknown")
@@ -353,7 +391,7 @@ def list_families() -> list[dict]:
                 "family":         fam,
                 "label":          t.get("family_label", fam),
                 "icon":           t.get("family_icon", "🔧"),
-                "enabled":        fam not in _DISABLED_FAMILIES,
+                "enabled":        fam not in disabled,
                 "tool_count":     0,
                 "model_backend":  assigned.get("backend",  ""),
                 "model_name":     assigned.get("model",    ""),
@@ -370,11 +408,13 @@ def get_tool_schemas() -> list[dict]:
     Retourne la liste des schémas de tous les outils ACTIVÉS.
     Les outils appartenant à une famille désactivée sont exclus.
     Passez directement ce résultat au champ ``tools`` de l'API Anthropic.
+    L'état reflète le ContextVar de la requête courante (isolation par requête).
     """
+    disabled = _get_disabled()
     return [
         t["schema"]
         for name, t in _TOOLS.items()
-        if t.get("family", "unknown") not in _DISABLED_FAMILIES
+        if t.get("family", "unknown") not in disabled
     ]
 
 
@@ -401,7 +441,9 @@ def list_tools() -> list[dict]:
     Retourne la liste de TOUS les outils enregistrés (actifs et désactivés)
     avec nom, description, icône et famille.
     Destiné à l'affichage dans l'interface utilisateur.
+    L'état enabled reflète le ContextVar de la requête courante.
     """
+    disabled = _get_disabled()
     return [
         {
             "name": name,
@@ -410,7 +452,7 @@ def list_tools() -> list[dict]:
             "family": t.get("family", "unknown"),
             "family_label": t.get("family_label", "unknown"),
             "family_icon": t.get("family_icon", "🔧"),
-            "enabled": t.get("family", "unknown") not in _DISABLED_FAMILIES,
+            "enabled": t.get("family", "unknown") not in disabled,
         }
         for name, t in _TOOLS.items()
     ]

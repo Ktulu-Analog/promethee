@@ -286,14 +286,22 @@ export function ToolsPanel({ onClose, embedded = false, currentProfile }: ToolsP
     }
   }
 
-  // ── Reset overrides au changement de profil ──────────────────────────────
+  // ── Reset overrides + rechargement au changement de profil ─────────────
+  //
+  // Correction : on recharge baseFamilies depuis le serveur à chaque
+  // changement de profil, pas seulement les overrides locaux.
+  // Sans ce rechargement, baseFamilies contenait l'état du serveur au
+  // moment du mount, potentiellement pollué par un autre utilisateur ou
+  // une requête concurrente (race condition sur _DISABLED_FAMILIES global,
+  // désormais ContextVar côté serveur mais le client doit aussi rafraîchir).
 
   useEffect(() => {
     const incomingName = currentProfile?.name ?? null;
     if (incomingName === prevProfileNameRef.current) return;
     prevProfileNameRef.current = incomingName;
-    // Nouveau profil → on efface les overrides manuels
+    // Nouveau profil → effacer les overrides manuels ET recharger depuis le serveur
     setUserOverrides({});
+    loadData();
   }, [currentProfile]);
 
   // ── État effectif des familles (profil + overrides utilisateur) ──────────

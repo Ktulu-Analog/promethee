@@ -107,7 +107,6 @@ export function ProfilesPanel({
         await api.post(base, profile);
         if (isPersonal) await fetchPersonalProfiles();
         else await fetchProfiles();
-        onProfileChange({ ...profile, is_personal: isPersonal });
       } else {
         await api.patch(`${base}/${encodeURIComponent(profile.name)}`, {
           prompt: profile.prompt,
@@ -116,6 +115,17 @@ export function ProfilesPanel({
         });
         if (isPersonal) await fetchPersonalProfiles();
         else await fetchProfiles();
+      }
+      // Correction : récupérer le profil complet depuis l'API après sauvegarde
+      // pour garantir que onProfileChange reçoit un objet frais avec les
+      // tool_families à jour, évitant que ToolsPanel calcule ses overrides
+      // depuis un objet stale (référence ancienne avant PATCH).
+      try {
+        const freshBase = isPersonal ? "/personal-profiles" : "/profiles";
+        const fresh = await api.get<Profile>(`${freshBase}/${encodeURIComponent(profile.name)}`);
+        onProfileChange({ ...fresh, is_personal: isPersonal });
+      } catch {
+        // Fallback : utiliser l'objet local si le refetch échoue
         onProfileChange({ ...profile, is_personal: isPersonal });
       }
     } catch {}

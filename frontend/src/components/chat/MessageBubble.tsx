@@ -213,7 +213,7 @@ export const MessageBubble = memo(function MessageBubble({ message, isStreaming,
       onMouseLeave={() => setHovered(false)}
     >
       <div style={styles.assistantLabel}>
-        {isToolBub ? "Outils" : isError ? "⚠" : "IA"}
+        {isToolBub ? "Outils" : isError ? "⚠" : "Prométhée"}
       </div>
       <div style={bubbleStyle}>
         <MarkdownContent content={content} isStreaming={isStreaming} isDark={isDark} imageUri={imageUri} />

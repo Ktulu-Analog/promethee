@@ -498,6 +498,7 @@ pytest tests/ --cov=core --cov=tools
 ## 🗂️ Système de fichiers virtuel (VFS)
 
 Le LLM ne lit et n'écrit **jamais** sur le disque réel du serveur. Toutes les opérations sur les fichiers passent par le VFS : un espace de travail isolé par utilisateur, stocké dans la base SQLite.
+Le blobs sont stockés dans une instance Garage (S3)
 
 ### Dossiers disponibles au premier démarrage
 
