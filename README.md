@@ -1,4 +1,4 @@
-# 🔥 Prométhée AI v3.0
+# Prométhée v3.0
 
 
 ![Ecran de connexion](assets/git-0.png)
