@@ -27,7 +27,10 @@ RUN npm run build
 # ─────────────────────────────────────────────
 FROM python:3.11-slim AS app
 
-# ── Forcer apt à utiliser HTTPS (proxies transparents qui bloquent le port 80) ─
+# ───────────────────────────────────────────────────────────────────────
+# Forcer apt à utiliser HTTPS (proxies transparents qui bloquent le port 80
+# résolution du bug installation / apt-get http sur un réseau strictement https #4
+# ───────────────────────────────────────────────────────────────────────
 RUN echo 'Acquire::http::Pipeline-Depth "0";\nAcquire::https::Pipeline-Depth "0";' \
       > /etc/apt/apt.conf.d/99https \
  && sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/*.sources 2>/dev/null || true \
