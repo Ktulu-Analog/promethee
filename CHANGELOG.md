@@ -4,6 +4,15 @@ Toutes les modifications notables sont documentées dans ce fichier.
 Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) — versioning [SemVer](https://semver.org/lang/fr/).
 
 ---
+## [3.0.1] — 2026-04-22
+
+### Modifié
+- 🐛 Mise en cohérence de bibliothèques : suppression d'utilisation résiduelle de requests pour alignement sur httpx
+
+### Ajouté
+- 📚 Fonctions de recherche d'images dans web_tools (première source : Wikimedia)
+
+
 
 ## [3.0.0] — 2026-04-17
 
