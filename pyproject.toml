@@ -8,7 +8,7 @@ build-backend = "setuptools.backends.legacy:build"
 
 [project]
 name = "Prométhée"
-version = "3.0.0"
+version = "3.0.1"
 description = "Assistant IA web multi-utilisateurs avec outils intégrés, RAG, mémoire long terme et support Légifrance/Judilibre"
 readme = "README.md"
 license = { text = "AGPL-3.0-only" }

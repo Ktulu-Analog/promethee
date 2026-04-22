@@ -28,18 +28,11 @@ Pour activer uniquement certains modules :
 
 Système de fichiers :
     vfs_tools (actif par défaut) — espace de fichiers virtuel par utilisateur,
-    stocké en SQLite. Le LLM n'accède jamais au disque réel du serveur.
-
-Prérequis pour web_tools :
-    pip install requests beautifulsoup4 lxml markdownify
+    stocké en SQLite pour la structure et Garage pour les blobs. Le LLM n'accède jamais au disque réel du serveur.
 
 Prérequis pour legifrance_tools (obtenir les clés via Piste):
     LEGIFRANCE_CLIENT_ID=votre_client_id
     LEGIFRANCE_CLIENT_SECRET=votre_client_secret
-
-Note sur python_tools :
-    Crée automatiquement un environnement virtuel dans ~/.promethee_python_env/
-    où les packages peuvent être installés et le code exécuté en toute sécurité.
 
 Prérequis pour grist_tools :
     GRIST_API_KEY=votre_clé_api_grist
@@ -53,10 +46,8 @@ def register_all() -> None:
     from tools import export_tools
     from tools import export_template_tools
     from tools import reformulation_tools
-#    from tools import python_tools         # retiré de la version 3.0 en attendant sa réécriture sécurisée avec gVisor
     from tools import data_tools
     from tools import data_file_tools
-#    from tools import sql_tools            # retiré de la version 3.0 en attendant sa réécriture sécurisée
     from tools import ocr_tools
     from tools import web_tools
     from tools import legifrance_tools
@@ -64,7 +55,6 @@ def register_all() -> None:
     from tools import datagouv_tools
     from tools import imap_tools
     from tools import skill_tools
-    from tools import docs_tools
     from tools import grist_tools
     from tools import tool_creator_tools
     from tools import meteo_tools

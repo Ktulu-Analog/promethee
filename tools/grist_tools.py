@@ -57,8 +57,6 @@ Configuration requise (.env) :
 Usage :
     import tools.grist_tools   # suffit à enregistrer les outils
 
-Prérequis :
-    pip install requests
 """
 
 # ── Imports standard ──────────────────────────────────────────────────────────
@@ -68,10 +66,10 @@ from urllib.parse import urlencode
 
 # ── Imports tiers ─────────────────────────────────────────────────────────────
 try:
-    import requests
-    _HAS_REQUESTS = True
+    import httpx
+    _HAS_HTTPX = True
 except ImportError:
-    _HAS_REQUESTS = False
+    _HAS_HTTPX = False
 
 # ── Imports Prométhée ─────────────────────────────────────────────────────────
 from core.tools_engine import tool, set_current_family, report_progress, _TOOL_ICONS
@@ -138,13 +136,13 @@ def _base_url() -> str:
 
 def _check_prerequisites() -> Optional[str]:
     """
-    Vérifie que requests est installé et que les variables .env sont définies.
+    Vérifie que httpx est installé et que les variables .env sont définies.
     Retourne un message d'erreur ou None si tout est OK.
     """
-    if not _HAS_REQUESTS:
+    if not _HAS_HTTPX:
         return (
-            "Erreur : la bibliothèque 'requests' est absente. "
-            "Installez-la avec : pip install requests"
+            "Erreur : la bibliothèque 'httpx' est absente. "
+            "Installez-la avec : pip install httpx"
         )
     if not ((_grist_cfg().GRIST_API_KEY if _grist_cfg() else None) or Config.GRIST_API_KEY):
         return "Erreur : GRIST_API_KEY est absent du fichier .env."
@@ -160,16 +158,16 @@ def _get(path: str, params: Optional[dict] = None) -> tuple[bool, any]:
     """
     try:
         url = f"{_base_url()}{path}"
-        resp = requests.get(url, headers=_get_headers(), params=params, timeout=30)
+        resp = httpx.get(url, headers=_get_headers(), params=params, timeout=30)
         resp.raise_for_status()
         return True, resp.json()
-    except requests.exceptions.HTTPError as e:
+    except httpx.HTTPStatusError as e:
         try:
             detail = e.response.json()
         except Exception:
             detail = e.response.text
         return False, f"Erreur HTTP {e.response.status_code} : {detail}"
-    except requests.exceptions.RequestException as e:
+    except httpx.RequestError as e:
         return False, f"Erreur réseau : {e}"
 
 
@@ -177,18 +175,18 @@ def _post(path: str, payload: dict) -> tuple[bool, any]:
     """Effectue une requête POST sur l'API Grist."""
     try:
         url = f"{_base_url()}{path}"
-        resp = requests.post(url, headers=_get_headers(), json=payload, timeout=30)
+        resp = httpx.post(url, headers=_get_headers(), json=payload, timeout=30)
         resp.raise_for_status()
         if resp.content:
             return True, resp.json()
         return True, {"status": "ok"}
-    except requests.exceptions.HTTPError as e:
+    except httpx.HTTPStatusError as e:
         try:
             detail = e.response.json()
         except Exception:
             detail = e.response.text
         return False, f"Erreur HTTP {e.response.status_code} : {detail}"
-    except requests.exceptions.RequestException as e:
+    except httpx.RequestError as e:
         return False, f"Erreur réseau : {e}"
 
 
@@ -196,18 +194,18 @@ def _patch(path: str, payload: dict) -> tuple[bool, any]:
     """Effectue une requête PATCH sur l'API Grist."""
     try:
         url = f"{_base_url()}{path}"
-        resp = requests.patch(url, headers=_get_headers(), json=payload, timeout=30)
+        resp = httpx.patch(url, headers=_get_headers(), json=payload, timeout=30)
         resp.raise_for_status()
         if resp.content:
             return True, resp.json()
         return True, {"status": "ok"}
-    except requests.exceptions.HTTPError as e:
+    except httpx.HTTPStatusError as e:
         try:
             detail = e.response.json()
         except Exception:
             detail = e.response.text
         return False, f"Erreur HTTP {e.response.status_code} : {detail}"
-    except requests.exceptions.RequestException as e:
+    except httpx.RequestError as e:
         return False, f"Erreur réseau : {e}"
 
 
@@ -215,18 +213,18 @@ def _delete(path: str) -> tuple[bool, any]:
     """Effectue une requête DELETE sur l'API Grist."""
     try:
         url = f"{_base_url()}{path}"
-        resp = requests.delete(url, headers=_get_headers(), timeout=30)
+        resp = httpx.delete(url, headers=_get_headers(), timeout=30)
         resp.raise_for_status()
         if resp.content:
             return True, resp.json()
         return True, {"status": "ok"}
-    except requests.exceptions.HTTPError as e:
+    except httpx.HTTPStatusError as e:
         try:
             detail = e.response.json()
         except Exception:
             detail = e.response.text
         return False, f"Erreur HTTP {e.response.status_code} : {detail}"
-    except requests.exceptions.RequestException as e:
+    except httpx.RequestError as e:
         return False, f"Erreur réseau : {e}"
 
 

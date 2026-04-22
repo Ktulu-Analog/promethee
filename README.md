@@ -1,4 +1,4 @@
-# Prométhée v3.0
+# Prométhée v3.0.1
 
 
 ![Ecran de connexion](assets/git-0.png)
@@ -11,6 +11,10 @@
 ---
 
 ## 📋 Changelog
+
+### v3.0.1
+- 🐛 Mise en cohérence de bibliothèques : suppression d'utilisation résiduelle de requests pour alignement sur httpx
+- 📚 Rajout de fonctions de recherche d'images dans web_tools (première source : Wikimedia)
 
 ### v3.0
 - 📚 Application multi-utilisateurs FastAPI-React (suppression du mode desktop mono-utilisateur)

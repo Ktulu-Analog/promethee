@@ -15,12 +15,13 @@
 tools/web_tools.py — Navigation, scraping et recherche web
 ===========================================================
 
-Outils exposés (11) :
+Outils exposés (12) :
 
-  Recherche (3) :
+  Recherche (4) :
     - web_search        : recherche multi-moteurs (DDG ou SearXNG auto-hébergé)
                           avec résultats filtrables par date, domaine, langue
     - web_search_news   : recherche d'actualités récentes (dernières 24h/semaine/mois)
+    - web_image_search  : recherche d'images (URLs directes + miniatures)
     - web_search_engine : retourne la configuration du moteur actif
 
   Lecture de pages (3) :
@@ -42,13 +43,13 @@ Configuration .env (optionnelle) :
 Stratégie :
   - DuckDuckGo : aucune clé API, via POST HTML (https://html.duckduckgo.com/html/)
   - SearXNG    : instance auto-hébergée, API JSON native, aucune clé requise
-  - Toutes les requêtes passent par requests avec un User-Agent réaliste
+  - Toutes les requêtes passent par httpx avec un User-Agent réaliste
   - Timeout configurable (défaut 15s)
   - Le contenu HTML est converti en Markdown via markdownify pour une lecture aisée
   - Les pages trop volumineuses sont tronquées avec un indicateur
 
 Prérequis :
-    pip install requests beautifulsoup4 lxml markdownify
+    pip install httpx beautifulsoup4 lxml markdownify
 """
 
 import os
@@ -61,7 +62,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urljoin, urlparse, parse_qs, quote_plus, unquote
 
-import requests
+import httpx
 from bs4 import BeautifulSoup
 
 try:
@@ -79,6 +80,7 @@ set_current_family("web_tools", "Web", "🌐")
 _TOOL_ICONS.update({
     "web_search":        "🔍",
     "web_search_news":   "📰",
+    "web_image_search":  "🖼️",
     "web_search_engine": "⚙️",
     "web_fetch":         "🌐",
     "web_screenshot":    "📸",
@@ -110,12 +112,12 @@ _DEFAULT_HEADERS = {
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _get(url: str, timeout: int = _DEFAULT_TIMEOUT,
-         extra_headers: dict = None) -> requests.Response:
+         extra_headers: dict = None) -> httpx.Response:
     """Effectue un GET avec les headers par défaut."""
     headers = dict(_DEFAULT_HEADERS)
     if extra_headers:
         headers.update(extra_headers)
-    resp = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
+    resp = httpx.get(url, headers=headers, timeout=timeout, follow_redirects=True)
     resp.raise_for_status()
     return resp
 
@@ -230,7 +232,7 @@ def _search_ddg(
     if filtre_domaine:
         query = f"site:{filtre_domaine} {query}"
 
-    resp = requests.post(
+    resp = httpx.post(
         "https://html.duckduckgo.com/html/",
         data={"q": query, "kl": region},
         headers=_DEFAULT_HEADERS,
@@ -297,7 +299,7 @@ def _search_searxng(
     if time_range:
         params["time_range"] = time_range  # "day", "week", "month", "year"
 
-    resp = requests.get(
+    resp = httpx.get(
         f"{base_url}/search",
         params=params,
         headers=_DEFAULT_HEADERS,
@@ -437,9 +439,9 @@ def web_search(
             "resultats": resultats,
         }
 
-    except requests.exceptions.Timeout:
+    except httpx.TimeoutException:
         return {"status": "error", "error": f"Timeout après {timeout}s."}
-    except requests.exceptions.ConnectionError as e:
+    except httpx.ConnectError as e:
         return {"status": "error", "error": f"Connexion impossible : {e}"}
     except Exception as e:
         return {"status": "error", "error": f"Erreur de recherche : {e}"}
@@ -549,12 +551,183 @@ def web_search_news(
             "resultats": resultats,
         }
 
-    except requests.exceptions.Timeout:
+    except httpx.TimeoutException:
         return {"status": "error", "error": f"Timeout après {timeout}s."}
-    except requests.exceptions.ConnectionError as e:
+    except httpx.ConnectError as e:
         return {"status": "error", "error": f"Connexion impossible : {e}"}
     except Exception as e:
         return {"status": "error", "error": f"Erreur recherche actualités : {e}"}
+
+
+@tool(
+    name="web_image_search",
+    description=(
+        "Recherche des images sur le web et retourne leurs URLs directes. "
+        "Retourne pour chaque image : l'URL directe (img_url), une miniature (thumbnail), "
+        "le titre, la page source et le format. "
+        "Avec SearXNG : résultats natifs de la catégorie 'images' (tous sujets). "
+        "Sans SearXNG : repli sur Wikimedia Commons (images libres de droits). "
+        "Pour télécharger une image trouvée, utiliser web_download_file avec son img_url."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "requete": {
+                "type": "string",
+                "description": (
+                    "Description de l'image recherchée. "
+                    "Ex: 'logo Python', 'carte France régions', 'Charmander Pokémon'."
+                ),
+            },
+            "limite": {
+                "type": "integer",
+                "description": f"Nombre de résultats (défaut: 10, max: {_MAX_RESULTS}).",
+            },
+            "langue": {
+                "type": "string",
+                "description": "Langue des résultats (défaut: 'fr-FR').",
+            },
+            "timeout": {
+                "type": "integer",
+                "description": f"Délai max en secondes (défaut: {_DEFAULT_TIMEOUT}).",
+            },
+        },
+        "required": ["requete"],
+    },
+)
+def web_image_search(
+    requete: str,
+    limite: int = 10,
+    langue: str = "",
+    timeout: int = _DEFAULT_TIMEOUT,
+) -> dict:
+    limite = min(max(1, limite), _MAX_RESULTS)
+    engine = _get_engine()
+    lang   = langue or _get_default_lang()
+
+    try:
+        if engine == "searxng":
+            # ── SearXNG : catégorie images native ─────────────────────────
+            base_url = _get_searxng_url()
+            params: dict = {
+                "q":          requete,
+                "format":     "json",
+                "categories": "images",
+                "language":   lang,
+            }
+            resp = httpx.get(
+                f"{base_url}/search",
+                params=params,
+                headers=_DEFAULT_HEADERS,
+                timeout=timeout,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            resultats = []
+            for r in data.get("results", [])[:limite]:
+                img_url = r.get("img_src") or r.get("url", "")
+                if not img_url:
+                    continue
+                resultats.append({
+                    "titre":     r.get("title", ""),
+                    "img_url":   img_url,
+                    "thumbnail": r.get("thumbnail_src") or r.get("thumbnail", ""),
+                    "source":    r.get("url", ""),
+                    "domaine":   urlparse(r.get("url", "")).netloc,
+                    "format":    r.get("img_format", ""),
+                    "moteur":    "SearXNG",
+                })
+
+        else:
+            # ── Repli Wikimedia Commons : API publique, images libres ──────
+            # DDG HTML ne retourne pas d'URLs d'images directes ; Wikimedia
+            # Commons offre une API JSON fiable sans clé ni authentification.
+            params_wm: dict = {
+                "action":      "query",
+                "generator":   "search",
+                "gsrsearch":   f"filetype:bitmap|drawing {requete}",
+                "gsrnamespace": "6",          # NS 6 = File:
+                "gsrlimit":    str(limite),
+                "prop":        "imageinfo",
+                "iiprop":      "url|mime|size|extmetadata",
+                "iiurlwidth":  "400",          # miniature 400px
+                "format":      "json",
+                "origin":      "*",
+            }
+            resp = httpx.get(
+                "https://commons.wikimedia.org/w/api.php",
+                params=params_wm,
+                headers=_DEFAULT_HEADERS,
+                timeout=timeout,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            pages = data.get("query", {}).get("pages", {})
+            resultats = []
+            for page in pages.values():
+                ii = page.get("imageinfo", [{}])[0]
+                img_url = ii.get("url", "")
+                if not img_url:
+                    continue
+                # Titre sans le préfixe "File:"
+                titre = page.get("title", "").removeprefix("File:").rsplit(".", 1)[0]
+                # Description depuis les métadonnées EXIF/XMP si disponible
+                extmeta = ii.get("extmetadata", {})
+                desc = (
+                    extmeta.get("ImageDescription", {}).get("value", "")
+                    or extmeta.get("ObjectName", {}).get("value", "")
+                )
+                # Nettoyer le HTML éventuel dans la description
+                if desc:
+                    desc = BeautifulSoup(desc, "lxml").get_text(strip=True)[:200]
+                mime = ii.get("mime", "")
+                resultats.append({
+                    "titre":     titre,
+                    "img_url":   img_url,
+                    "thumbnail": ii.get("thumburl", ""),
+                    "source":    f"https://commons.wikimedia.org/wiki/{quote_plus(page.get('title', ''))}",
+                    "domaine":   "commons.wikimedia.org",
+                    "format":    mime.split("/")[-1] if mime else "",
+                    "description": desc,
+                    "moteur":    "Wikimedia Commons",
+                })
+                if len(resultats) >= limite:
+                    break
+
+        if not resultats:
+            msg = (
+                "Aucune image trouvée."
+                if engine == "searxng"
+                else (
+                    "Aucune image trouvée sur Wikimedia Commons pour cette requête. "
+                    "Essayez avec des termes en anglais, ou configurez SearXNG "
+                    "(WEB_SEARCH_ENGINE=searxng) pour une recherche plus large."
+                )
+            )
+            return {
+                "status":    "success",
+                "requete":   requete,
+                "nombre":    0,
+                "resultats": [],
+                "message":   msg,
+            }
+
+        return {
+            "status":    "success",
+            "requete":   requete,
+            "moteur":    engine if engine == "searxng" else "Wikimedia Commons",
+            "nombre":    len(resultats),
+            "resultats": resultats,
+        }
+
+    except httpx.TimeoutException:
+        return {"status": "error", "error": f"Timeout après {timeout}s."}
+    except httpx.ConnectError as e:
+        return {"status": "error", "error": f"Connexion impossible : {e}"}
+    except Exception as e:
+        return {"status": "error", "error": f"Erreur recherche images : {e}"}
 
 
 @tool(
@@ -581,7 +754,7 @@ def web_search_engine() -> dict:
     if engine == "searxng":
         searxng_url = _get_searxng_url()
         try:
-            resp = requests.get(
+            resp = httpx.get(
                 f"{searxng_url}/config",
                 headers=_DEFAULT_HEADERS,
                 timeout=5,
@@ -702,11 +875,11 @@ def web_fetch(
             "code_http":        resp.status_code,
         }
 
-    except requests.exceptions.Timeout:
+    except httpx.TimeoutException:
         return {"status": "error", "error": f"Timeout après {timeout}s : {url}"}
-    except requests.exceptions.HTTPError as e:
+    except httpx.HTTPStatusError as e:
         return {"status": "error", "error": f"Erreur HTTP {e.response.status_code} : {url}"}
-    except requests.exceptions.ConnectionError:
+    except httpx.ConnectError:
         return {"status": "error", "error": f"Impossible de se connecter à : {url}"}
     except Exception as e:
         return {"status": "error", "error": f"Erreur inattendue : {e}"}
@@ -780,9 +953,9 @@ def web_screenshot(
             "tronque":      truncated,
         }
 
-    except requests.exceptions.Timeout:
+    except httpx.TimeoutException:
         return {"status": "error", "error": f"Timeout après {timeout}s"}
-    except requests.exceptions.HTTPError as e:
+    except httpx.HTTPStatusError as e:
         return {"status": "error", "error": f"Erreur HTTP {e.response.status_code}"}
     except Exception as e:
         return {"status": "error", "error": f"Erreur : {e}"}
@@ -871,9 +1044,9 @@ def web_extract(
             "resultats":        resultats,
         }
 
-    except requests.exceptions.Timeout:
+    except httpx.TimeoutException:
         return {"status": "error", "error": f"Timeout après {timeout}s"}
-    except requests.exceptions.HTTPError as e:
+    except httpx.HTTPStatusError as e:
         return {"status": "error", "error": f"Erreur HTTP {e.response.status_code}"}
     except Exception as e:
         return {"status": "error", "error": f"Erreur : {e}"}
@@ -979,9 +1152,9 @@ def web_links(
             "liens":           liens,
         }
 
-    except requests.exceptions.Timeout:
+    except httpx.TimeoutException:
         return {"status": "error", "error": f"Timeout après {timeout}s"}
-    except requests.exceptions.HTTPError as e:
+    except httpx.HTTPStatusError as e:
         return {"status": "error", "error": f"Erreur HTTP {e.response.status_code}"}
     except Exception as e:
         return {"status": "error", "error": f"Erreur : {e}"}
@@ -1087,9 +1260,9 @@ def web_tables(
             "tableaux":        [_parse_table(t) for t in tables_html],
         }
 
-    except requests.exceptions.Timeout:
+    except httpx.TimeoutException:
         return {"status": "error", "error": f"Timeout après {timeout}s"}
-    except requests.exceptions.HTTPError as e:
+    except httpx.HTTPStatusError as e:
         return {"status": "error", "error": f"Erreur HTTP {e.response.status_code}"}
     except Exception as e:
         return {"status": "error", "error": f"Erreur : {e}"}
@@ -1190,9 +1363,9 @@ def web_rss(
             "articles":   articles,
         }
 
-    except requests.exceptions.Timeout:
+    except httpx.TimeoutException:
         return {"status": "error", "error": f"Timeout après {timeout}s"}
-    except requests.exceptions.HTTPError as e:
+    except httpx.HTTPStatusError as e:
         return {"status": "error", "error": f"Erreur HTTP {e.response.status_code}"}
     except Exception as e:
         return {"status": "error", "error": f"Erreur lecture flux RSS : {e}"}
@@ -1246,8 +1419,8 @@ def web_download_file(
     try:
         # ── Vérification optionnelle de la taille via HEAD ─────────────────
         try:
-            head = requests.head(url, headers=_DEFAULT_HEADERS,
-                                 timeout=10, allow_redirects=True)
+            head = httpx.head(url, headers=_DEFAULT_HEADERS,
+                              timeout=10, follow_redirects=True)
             content_length = int(head.headers.get("Content-Length", 0))
             if content_length > taille_max:
                 return {
@@ -1260,23 +1433,40 @@ def web_download_file(
         except Exception:
             pass  # HEAD non supporté ou timeout → on tente quand même
 
-        resp = requests.get(url, headers=_DEFAULT_HEADERS,
-                            timeout=timeout, stream=True, allow_redirects=True)
-        resp.raise_for_status()
+        # ── Télécharger en streaming avec contrôle de taille ──────────────
+        buf = _io.BytesIO()
+        total = 0
+        final_url = url
+        resp_headers: dict = {}
+
+        with httpx.stream("GET", url, headers=_DEFAULT_HEADERS,
+                          timeout=timeout, follow_redirects=True) as resp:
+            resp.raise_for_status()
+            final_url = str(resp.url)
+            resp_headers = dict(resp.headers)
+
+            for chunk in resp.iter_bytes(chunk_size=8192):
+                total += len(chunk)
+                if total > taille_max:
+                    return {
+                        "status": "error",
+                        "error": f"Fichier trop volumineux (dépasse {taille_max_mo} Mo pendant le téléchargement).",
+                    }
+                buf.write(chunk)
 
         # ── Déduire le nom de fichier ──────────────────────────────────────
         filename = ""
-        cd = resp.headers.get("Content-Disposition", "")
+        cd = resp_headers.get("content-disposition", "")
         if "filename=" in cd:
             m = re.search(r'filename[^;=\n]*=[\'\"]?([^\'\"\n;]+)', cd)
             if m:
                 filename = m.group(1).strip()
 
         if not filename:
-            parsed = urlparse(resp.url)
+            parsed = urlparse(final_url)
             filename = Path(parsed.path).name or "fichier_telecharge"
             if "." not in filename:
-                ct = resp.headers.get("Content-Type", "").split(";")[0].strip()
+                ct = resp_headers.get("content-type", "").split(";")[0].strip()
                 ext = mimetypes.guess_extension(ct) or ""
                 filename += ext
 
@@ -1289,21 +1479,9 @@ def web_download_file(
         else:
             vfs_dest = f"/downloads/{filename}"
 
-        # ── Télécharger en mémoire avec contrôle de taille ────────────────
-        buf = _io.BytesIO()
-        total = 0
-        for chunk in resp.iter_content(chunk_size=8192):
-            total += len(chunk)
-            if total > taille_max:
-                return {
-                    "status": "error",
-                    "error": f"Fichier trop volumineux (dépasse {taille_max_mo} Mo pendant le téléchargement).",
-                }
-            buf.write(chunk)
-
         # ── Ingérer dans le VFS ────────────────────────────────────────────
         data = buf.getvalue()
-        mime_type = resp.headers.get("Content-Type", "").split(";")[0].strip()
+        mime_type = resp_headers.get("content-type", "").split(";")[0].strip()
         if not mime_type or mime_type == "*/*":
             mime_type, _ = mimetypes.guess_type(filename)
             mime_type = mime_type or "application/octet-stream"
@@ -1318,7 +1496,7 @@ def web_download_file(
 
         return {
             "status":    "success",
-            "url":       resp.url,
+            "url":       final_url,
             "fichier":   vfs_dest,
             "vfs":       True,
             "nom":       filename,
@@ -1326,9 +1504,9 @@ def web_download_file(
             "type_mime": mime_type,
         }
 
-    except requests.exceptions.Timeout:
+    except httpx.TimeoutException:
         return {"status": "error", "error": f"Timeout après {timeout}s"}
-    except requests.exceptions.HTTPError as e:
+    except httpx.HTTPStatusError as e:
         return {"status": "error", "error": f"Erreur HTTP {e.response.status_code}"}
     except Exception as e:
         return {"status": "error", "error": f"Erreur téléchargement : {e}"}
