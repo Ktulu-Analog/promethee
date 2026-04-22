@@ -27,6 +27,14 @@ RUN npm run build
 # ─────────────────────────────────────────────
 FROM python:3.11-slim AS app
 
+# ── Forcer apt à utiliser HTTPS (proxies transparents qui bloquent le port 80) ─
+RUN echo 'Acquire::http::Pipeline-Depth "0";\nAcquire::https::Pipeline-Depth "0";' \
+      > /etc/apt/apt.conf.d/99https \
+ && sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/*.sources 2>/dev/null || true \
+ && sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list 2>/dev/null || true \
+ && sed -i 's|http://security.debian.org|https://security.debian.org|g' /etc/apt/sources.list.d/*.sources 2>/dev/null || true \
+ && sed -i 's|http://security.debian.org|https://security.debian.org|g' /etc/apt/sources.list 2>/dev/null || true
+
 # ── Dépendances système ───────────────────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
     # OCR
