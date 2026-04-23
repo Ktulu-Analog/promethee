@@ -758,11 +758,20 @@ export const ArtifactPanel = memo(function ArtifactPanel({
   // Reset les refs quand on change d'artefact
   useEffect(() => { echartsRef.current = null; mermaidSvgRef.current = null; }, [activeIdx]);
 
+  // Masque le toolbox le temps du snapshot puis le restaure — évite qu'il
+  // apparaisse dans l'image exportée.
+  function getEchartsDataURLClean(chart: any, pixelRatio = 2): string {
+    chart.setOption({ toolbox: { show: false } });
+    const url = chart.getDataURL({ type: "png", pixelRatio, backgroundColor: "#ffffff" });
+    chart.setOption({ toolbox: { show: true } });
+    return url;
+  }
+
   // Fonction PNG téléchargeable depuis la toolbar
   const downloadEchartsPng = async (pixelRatio: number = 2) => {
     const chart = echartsRef.current;
     if (!chart) throw new Error("Graphique non encore initialisé");
-    const url = chart.getDataURL({ type: "png", pixelRatio, backgroundColor: "#ffffff" });
+    const url = getEchartsDataURLClean(chart, pixelRatio);
     const a = document.createElement("a");
     a.href = url;
     a.download = "graphique_echarts.png";
@@ -773,7 +782,7 @@ export const ArtifactPanel = memo(function ArtifactPanel({
   const copyEchartsPng = async () => {
     const chart = echartsRef.current;
     if (!chart) throw new Error("Graphique non encore initialisé");
-    const dataUrl = chart.getDataURL({ type: "png", pixelRatio: 2, backgroundColor: "#ffffff" });
+    const dataUrl = getEchartsDataURLClean(chart, 2);
     // Convertir le data URI en Blob PNG
     const res  = await fetch(dataUrl);
     const blob = await res.blob();

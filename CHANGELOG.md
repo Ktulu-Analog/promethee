@@ -4,6 +4,12 @@ Toutes les modifications notables sont documentées dans ce fichier.
 Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) — versioning [SemVer](https://semver.org/lang/fr/).
 
 ---
+## [3.0.2] — 2026-04-23
+
+### Modifié
+- 🐛 Correction d'une régression sur l'analyse d'image
+- 🐛 Modification du fichier Docker pour fonctionner avec les proxies transparents (forçage HTTPS)
+
 ## [3.0.1] — 2026-04-22
 
 ### Modifié

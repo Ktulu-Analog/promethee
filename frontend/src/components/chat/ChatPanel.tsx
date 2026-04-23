@@ -98,6 +98,8 @@ export interface ChatPanelProps {
   onProfileChange?: (profile: { name: string; prompt: string; is_personal?: boolean } | null) => void;
   username?: string;
   onClearRequest?: (clearFn: () => void) => void;
+  /** Modèle actif sélectionné dans les paramètres (transmis tel quel au serveur). */
+  activeModel?: string | null;
   /** Dossiers disponibles (pour le menu titre) */
   folders?: { id: string; name: string }[];
   /** Callbacks conversation (pour le menu titre) */
@@ -172,6 +174,7 @@ export function ChatPanel({
   onProfileChange,
   username,
   onClearRequest,
+  activeModel = null,
   folders = [],
   onRenameConv,
   onStarConv,
@@ -374,6 +377,7 @@ export function ChatPanel({
         // system_prompt contient uniquement le contexte RAG si présent.
         // Le serveur le concatène après le prompt de profil + skills.
         system_prompt: ragSystemPrompt,
+        model: activeModel ?? undefined,
         use_tools: agentMode,
         max_iterations: maxIterations,
         disable_context_management: disableContextManagement,

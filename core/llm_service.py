@@ -115,6 +115,87 @@ from .llm_clients import (
 # ── stream_chat ───────────────────────────────────────────────────────────────
 
 
+# ── Helper vision : détection d'image dans le dernier message user ────────────
+
+
+def _last_msg_has_image(msgs: list[dict]) -> bool:
+    """
+    Retourne True si le dernier message de rôle 'user' dans la liste
+    contient au moins un bloc de type 'image_url'.
+
+    Utilisé pour adapter tool_choice à l'itération 0 : quand l'utilisateur
+    joint une image, on ne force pas "required" afin que le LLM puisse
+    analyser l'image directement sans être contraint d'appeler un outil.
+
+    Parameters
+    ----------
+    msgs : list[dict]
+        Liste de messages au format OpenAI (après strip_internal_markers).
+
+    Returns
+    -------
+    bool
+        True si une image est présente dans le dernier message user.
+    """
+    for m in reversed(msgs):
+        if m.get("role") == "user":
+            content = m.get("content")
+            if isinstance(content, list):
+                return any(
+                    isinstance(part, dict) and part.get("type") == "image_url"
+                    for part in content
+                )
+            return False  # message user texte pur — pas d'image
+    return False
+
+
+# ── Helper vision : détection des modèles capables de traiter des images ──────
+
+#: Fragments de nom (en minuscules) qui identifient un modèle multimodal.
+#: Un modèle dont le nom contient l'un de ces fragments est considéré vision.
+_VISION_MODEL_FRAGMENTS: tuple[str, ...] = (
+    "pixtral",
+    "vision",
+    "vl-",
+    "-vl",
+    "llava",
+    "bakllava",
+    "cogvlm",
+    "qwen-vl",
+    "internvl",
+    "idefics",
+    "mistral-small-3",   # Mistral-Small-3.x est multimodal
+    "mistral-medium-3",
+    "gpt-4o",
+    "gpt-4-turbo",
+    "gpt-4-vision",
+    "claude-3",
+    "gemini",
+)
+
+
+def _model_supports_vision(model: str) -> bool:
+    """
+    Heuristique : retourne True si le modèle est (probablement) multimodal.
+
+    Se base sur des fragments connus dans le nom du modèle (insensible à la
+    casse). Faux négatifs possibles pour de nouveaux modèles — dans ce cas,
+    ajouter le fragment à ``_VISION_MODEL_FRAGMENTS``.
+
+    Parameters
+    ----------
+    model : str
+        Identifiant du modèle tel que passé à l'API (ex: ``openai/gpt-oss-120b``).
+
+    Returns
+    -------
+    bool
+        True si le modèle semble supporter les images.
+    """
+    m = model.lower()
+    return any(frag in m for frag in _VISION_MODEL_FRAGMENTS)
+
+
 # ── Helper interne : consommation d'un stream LLM ────────────────────────────
 
 
@@ -247,6 +328,17 @@ def stream_chat(
         usage        = TokenUsage()
         active_model = model or Config.active_model()
 
+        # ── Garde vision : avertir si le modèle ne supporte pas les images ────
+        if _last_msg_has_image(msgs) and not _model_supports_vision(active_model):
+            warning = (
+                f"⚠️ Le modèle **{active_model}** ne supporte pas l'analyse d'images.\n\n"
+                "Pour analyser des images, veuillez sélectionner un modèle multimodal "
+                "dans les paramètres (ex : `mistralai/Mistral-Small-3.1-24B-Instruct-2503`)."
+            )
+            if on_token:
+                on_token(warning)
+            return warning
+
         resp = client.chat.completions.create(
             model=active_model,
             messages=msgs,
@@ -351,6 +443,19 @@ def agent_loop(
         # avec tool_calls. Le modèle principal reste utilisé pour la décision.
         _final_client = client
         _final_model  = active_model
+
+        # ── Garde vision : avertir si le modèle ne supporte pas les images ────
+        # Vérifié ici, avant d'étendre msgs avec l'historique, car le dernier
+        # message user est encore isolé dans `messages`.
+        if _last_msg_has_image(list(messages)) and not _model_supports_vision(active_model):
+            warning = (
+                f"⚠️ Le modèle **{active_model}** ne supporte pas l'analyse d'images.\n\n"
+                "Pour analyser des images, veuillez sélectionner un modèle multimodal "
+                "dans les paramètres (ex : `mistralai/Mistral-Small-3.1-24B-Instruct-2503`)."
+            )
+            if on_token:
+                on_token(warning)
+            return warning
 
         # ── Fenêtre glissante initiale ────────────────────────────────────────
         if disable_context_management:
@@ -459,9 +564,12 @@ def agent_loop(
             #
             # CORRECTION BUG 2 — Politique tool_choice par itération :
             #
-            #   iteration == 0            → "required"
+            #   iteration == 0            → "required" (sauf vision)
             #     Force le LLM à appeler au moins un outil sur le premier tour.
             #     Évite la hallucination "j'enregistre le fichier" sans appel réel.
+            #     EXCEPTION : si le message user contient une image (image_url),
+            #     on passe à "auto" pour que le LLM puisse analyser l'image
+            #     directement sans être contraint d'appeler un outil d'abord.
             #
             #   0 < iteration < max-1     → "auto"
             #     Après le premier outil, le LLM choisit librement : chaîner
@@ -476,7 +584,9 @@ def agent_loop(
             if iteration == max_iterations - 1:
                 _tool_choice = "none"
             elif iteration == 0:
-                _tool_choice = "required"
+                # Ne pas forcer "required" si le dernier message user contient
+                # une image — le LLM doit pouvoir l'analyser directement.
+                _tool_choice = "auto" if _last_msg_has_image(api_msgs) else "required"
             else:
                 _tool_choice = "auto"
 

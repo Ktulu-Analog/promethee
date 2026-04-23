@@ -1,16 +1,21 @@
-# Prométhée v3.0.1
+# Prométhée v3.0.2
 
 
 ![Ecran de connexion](assets/git-0.png)
 
 
-- **Assistant IA web** — Interface FastAPI + React connectée à un LLM (Albert API, OpenAI-compatible), avec outils intégrés, RAG, mémoire long terme et support Légifrance/Judilibre.
+- **Assistant IA web** — Interface FastAPI + React connectée à un LLM (Albert API, OpenAI-compatible), avec outils intégrés, RAG, mémoire long terme et support Légifrance, Judilibre, data.gouv.fr, Grist.
 - **Système de fichiers virtuel** - les utilisateurs disposent d'un espace de stockage (utilisé par le LLM et les outils) compatible S3 via Garage.
 - **Conçu principalement pour fonctionner avec l'API Albert de la DiNum**
 
 ---
 
 ## 📋 Changelog
+
+## v3.0.2
+- 🐛 Correction d'une régression sur l'analyse d'image
+- 🐛 Modification du fichier Docker pour fonctionner avec les proxies transparents (forçage HTTPS)
+
 
 ### v3.0.1
 - 🐛 Mise en cohérence de bibliothèques : suppression d'utilisation résiduelle de requests pour alignement sur httpx
@@ -263,7 +268,6 @@ promethee/
 │   ├── export_template_tools.py # Export depuis gabarits organisationnels
 │   ├── data_tools.py            # Manipulation et analyse de données
 │   ├── data_file_tools.py       # Chargement et transformation CSV/Excel (pandas)
-│   ├── docs_tools.py            # Lecture de documents (PDF, docx…)
 │   ├── ocr_tools.py             # OCR via Tesseract
 │   ├── vfs_tools.py             # Opérations VFS (lecture, écriture, archives…)
 │   ├── skill_tools.py           # Consultation dynamique des guides de compétences

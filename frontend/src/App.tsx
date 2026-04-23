@@ -225,6 +225,7 @@ export default function App() {
           <ChatPanel
             key={state.activeConvId}
             convId={state.activeConvId}
+            activeModel={state.modelLabel}
             onClearRequest={(fn) => { clearMessagesRef.current = fn; }}
             ragCollection={ragCollection}
             onCollectionChange={(col) => setRagCollection(col)}

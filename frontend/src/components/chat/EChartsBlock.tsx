@@ -244,14 +244,25 @@ export function EChartsBlock({ code, isDark, onChartReady, variant = "chat" }: P
   }, [code, isDark]);
 
   // ── Téléchargement PNG ────────────────────────────────────────────────
+  // Le toolbox est masqué le temps du snapshot puis restauré immédiatement,
+  // afin qu'il n'apparaisse pas dans l'image exportée.
+
+  function getDataURLClean(pixelRatio = 2, bgColor?: string): string {
+    const chart = chartRef.current;
+    if (!chart) return "";
+    chart.setOption({ toolbox: { show: false } });
+    const url = chart.getDataURL({
+      type: "png",
+      pixelRatio,
+      backgroundColor: bgColor ?? (isDark ? "#1c1c1f" : "#ffffff"),
+    });
+    chart.setOption({ toolbox: { show: true } });
+    return url;
+  }
 
   function downloadPng() {
     if (!chartRef.current) return;
-    const url = chartRef.current.getDataURL({
-      type: "png",
-      pixelRatio: 2,
-      backgroundColor: isDark ? "#1c1c1f" : "#ffffff",
-    });
+    const url = getDataURLClean(2);
     const a = document.createElement("a");
     a.href = url;
     a.download = "graphique.png";
