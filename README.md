@@ -10,6 +10,23 @@
 
 ---
 
+## [3.0.3] — 2026-05-24
+
+Inclusion de modifications issues de Demeter.
+
+### Ajouté
+- **Génération Word côté client** : nouveau module `lib/docx.ts` basé sur la lib `docx` (npm) — produit un fichier `.docx` directement dans le navigateur sans round-trip serveur, avec rendu des graphiques ECharts en image PNG intégrée
+- **Bouton ↓ .docx** dans l'ArtifactPanel : enregistre le document Word directement dans le VFS (`/exports/`) via le nouvel endpoint `POST /vfs/save-blob`
+- **Endpoint `POST /vfs/save-blob`** : reçoit un blob binaire depuis le frontend et le persiste dans le VFS de l'utilisateur avec dédoublonnage automatique du nom de fichier
+- **Bloc `word` dans l'ArtifactPanel** : détection et rendu des blocs ` ```word ``` ` comme artefacts dédiés (kind `word`) avec ReactMarkdown, support ECharts/Mermaid imbriqués
+- **Module `lib/artifacts.ts`** : extraction des artefacts découplée de React, testable en isolation — support des blocs `word` avec parser d'imbrication et `reconstructWordContent`
+- **Module `lib/mermaid-sanitizer.ts`** : correction préventive des erreurs LLM les plus fréquentes avant rendu Mermaid (accents, C4 → graph TD, séquences mal fermées, mots-clés réservés…)
+- **Module `lib/echarts-defaults.ts`** : thème ECharts cohérent avec la charte CSS de Prométhée — `buildEChartsDefaults`, `mergeEChartsOption`, `cleanEChartsCode` (parseur caractère-par-caractère en remplacement des regex en cascade)
+
+Voir CHANGELOG.md pour les modifications antérieures.
+
+---
+
 ## ✨ Fonctionnalités
 
 - 💬 **Chat en streaming** avec historique chiffré (AES-GCM)
