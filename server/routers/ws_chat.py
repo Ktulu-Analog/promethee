@@ -52,7 +52,7 @@ from jose import JWTError
 from core import llm_service, tools_engine, llm_events
 from core.database import HistoryDB
 from core.user_config import UserConfig
-from core.request_context import set_user_config
+from core.request_context import set_user_config, set_writer_session_id
 from core import user_manager
 from server.schemas import ChatPayload
 from server.routers.monitoring import update_session_stats, update_model_usage
@@ -307,6 +307,7 @@ async def ws_chat(
     # Positionne le UserConfig dans le contexte asyncio courant
     # → propagé automatiquement dans le thread via asyncio.to_thread()
     set_user_config(user_cfg)
+    set_writer_session_id(payload.writer_session_id)
 
     try:
         final_text = await asyncio.to_thread(

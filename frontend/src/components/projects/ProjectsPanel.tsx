@@ -272,7 +272,7 @@ export function ProjectsPanel({
 
   // ── Overlay plein écran ──────────────────────────────────────────────────
   return (
-    <div style={sp.overlay} onClick={onClose}>
+    <div style={sp.overlay}>
       <div style={sp.container} onClick={e => e.stopPropagation()}>
 
         {/* ── Formulaire de création ── */}

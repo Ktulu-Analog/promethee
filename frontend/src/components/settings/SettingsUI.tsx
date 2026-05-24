@@ -20,6 +20,7 @@
  */
 
 import React, { useState, useRef, useEffect } from "react";
+import { createPortal } from "react-dom";
 
 // ── FormRow ───────────────────────────────────────────────────────────────
 
@@ -144,60 +145,91 @@ export function ComboInput({
 }) {
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState("");
+  const [dropPos, setDropPos] = useState<{ top?: number; bottom?: number; left: number; width: number }>({ left: 0, width: 0 });
   const inputRef = useRef<HTMLInputElement>(null);
   const dropRef = useRef<HTMLDivElement>(null);
 
   // Fermer le dropdown au clic extérieur
   useEffect(() => {
     function handle(e: MouseEvent) {
-      if (!dropRef.current?.contains(e.target as Node)) setOpen(false);
+      if (
+        !dropRef.current?.contains(e.target as Node) &&
+        !inputRef.current?.contains(e.target as Node)
+      ) setOpen(false);
     }
     document.addEventListener("mousedown", handle);
     return () => document.removeEventListener("mousedown", handle);
   }, []);
 
+  // Calculer la position du dropdown en fixed depuis l'input
+  function computeDropPos() {
+    if (!inputRef.current) return;
+    const rect = inputRef.current.getBoundingClientRect();
+    const dropMaxH = 240;
+    const spaceBelow = window.innerHeight - rect.bottom - 8;
+    if (spaceBelow >= Math.min(dropMaxH, options.length * 32)) {
+      setDropPos({ top: rect.bottom + 2, left: rect.left, width: rect.width });
+    } else {
+      setDropPos({ bottom: window.innerHeight - rect.top + 2, left: rect.left, width: rect.width });
+    }
+  }
+
   const filtered = filter
     ? options.filter((o) => o.toLowerCase().includes(filter.toLowerCase()))
     : options;
 
+  const dropdown = open && options.length > 0 && createPortal(
+    <div
+      ref={dropRef}
+      style={{
+        ...s.dropdown,
+        position: "fixed",
+        top: dropPos.top,
+        bottom: dropPos.bottom,
+        left: dropPos.left,
+        width: dropPos.width,
+        margin: 0,
+        zIndex: 9999,
+      }}
+    >
+      {filtered.slice(0, 30).map((opt) => (
+        <div
+          key={opt}
+          style={{
+            ...s.dropItem,
+            background: opt === value ? "var(--sidebar-item-active-bg)" : undefined,
+          }}
+          onMouseDown={() => { onChange(opt); setOpen(false); setFilter(""); }}
+        >
+          {opt}
+        </div>
+      ))}
+      {filtered.length === 0 && (
+        <div style={s.dropEmpty}>Aucun résultat</div>
+      )}
+    </div>,
+    document.body
+  );
+
   return (
     <div style={{ display: "flex", gap: 6, flex: 1 }}>
-      <div ref={dropRef} style={{ position: "relative", flex: 1 }}>
+      <div style={{ position: "relative", flex: 1 }}>
         <input
           ref={inputRef}
           type="text"
           value={value}
-          onChange={(e) => { onChange(e.target.value); setFilter(e.target.value); setOpen(true); }}
-          onFocus={() => { setFilter(""); setOpen(options.length > 0); }}
+          onChange={(e) => { onChange(e.target.value); setFilter(e.target.value); computeDropPos(); setOpen(true); }}
+          onFocus={() => { computeDropPos(); setFilter(""); setOpen(options.length > 0); }}
           onBlur={() => setTimeout(() => setOpen(false), 150)}
           placeholder={placeholder}
           disabled={disabled}
           style={{ ...s.input, width: "100%", paddingRight: 24 }}
         />
         {/* Flèche */}
-        <span style={s.dropArrow} onClick={() => { setOpen((v) => !v); inputRef.current?.focus(); }}>
+        <span style={s.dropArrow} onClick={() => { computeDropPos(); setOpen((v) => !v); inputRef.current?.focus(); }}>
           ▾
         </span>
-
-        {open && options.length > 0 && (
-          <div style={s.dropdown}>
-            {filtered.slice(0, 30).map((opt) => (
-              <div
-                key={opt}
-                style={{
-                  ...s.dropItem,
-                  background: opt === value ? "var(--sidebar-item-active-bg)" : undefined,
-                }}
-                onMouseDown={() => { onChange(opt); setOpen(false); setFilter(""); }}
-              >
-                {opt}
-              </div>
-            ))}
-            {filtered.length === 0 && (
-              <div style={s.dropEmpty}>Aucun résultat</div>
-            )}
-          </div>
-        )}
+        {dropdown}
       </div>
 
       {/* Bouton refresh */}

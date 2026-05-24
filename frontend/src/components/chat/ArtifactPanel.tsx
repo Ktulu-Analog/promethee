@@ -23,6 +23,7 @@
  *   - Echarts  : rendu diagramme + "📋 Copier (source)" + "💾 Copier l'image" + "📄 Copier (Word)"
  *   - Table    : rendu HTML natif  + "📋 Copier (brut)" + "📄 Copier (Word)"
  *   - Document : rendu Markdown    + "📋 Copier (brut)" + "📄 Copier (Word)"
+ *   - Word     : rendu Markdown    + "📋 Copier (brut)" + "📄 Copier (Word)"
  *   - Image    : img zoomable      + "💾 Copier l'image"
  *
  * La toolbar de copie est unifiée et placée dans l'en-tête du panneau,
@@ -40,6 +41,7 @@ import { MermaidBlock } from "./MermaidBlock";
 import { EChartsBlock } from "./EChartsBlock";
 import { useTheme } from "../../lib/useTheme";
 import { markdownToHtml } from "../../lib/markdownToHtml";
+import { generateDocx } from "../../lib/docx";
 import type { Artifact } from "../../hooks/useArtifactPanel";
 
 // ── Icônes par type ─────────────────────────────────────────────────────────
@@ -51,6 +53,7 @@ const KIND_ICON: Record<string, string> = {
   image:    "◫",
   full:     "❖",
   echarts:  "📊",
+  word:     "📝",
 };
 
 // ── Hook copie générique ─────────────────────────────────────────────────────
@@ -240,6 +243,78 @@ function PngDownloadBtn({ onDownload }: PngDownloadBtnProps) {
 
 // ── Barre de copie par type d'artefact ──────────────────────────────────────
 
+// ── Bouton téléchargement .docx ─────────────────────────────────────────────
+
+interface DocxDownloadBtnProps {
+  content: string;
+  filename?: string;
+}
+
+function DocxDownloadBtn({ content, filename }: DocxDownloadBtnProps) {
+  const [state, setState]   = useState<"idle" | "loading" | "ok" | "err">("idle");
+  const [vfsPath, setVfsPath] = useState<string | null>(null);
+
+  const label =
+    state === "loading" ? "⏳ Génération…" :
+    state === "ok"      ? "✓ Enregistré"   :
+    state === "err"     ? "✗ Erreur"        :
+    "↓ .docx";
+
+  async function handleClick() {
+    if (state === "loading") return;
+    setState("loading");
+    setVfsPath(null);
+    try {
+      const path = await generateDocx(content, filename);
+      setVfsPath(path);
+      setState("ok");
+    } catch (e) {
+      console.error("generateDocx failed:", e);
+      setState("err");
+    } finally {
+      setTimeout(() => setState("idle"), 4000);
+    }
+  }
+
+  return (
+    <div style={{ display: "inline-flex", flexDirection: "column", gap: 2 }}>
+      <button
+        onClick={handleClick}
+        disabled={state === "loading"}
+        title="Générer un fichier Word (.docx) et l'enregistrer dans le VFS — les graphiques ECharts sont inclus en image"
+        style={{
+          ...btnStyle,
+          color: state === "ok"      ? "#5aaa7a"
+               : state === "err"     ? "#e07878"
+               : state === "loading" ? "var(--accent)"
+               : "var(--text-muted)",
+          borderColor: state === "ok"  ? "#3a7a5a"
+                     : state === "err" ? "#6e3030"
+                     : "var(--border)",
+          opacity: state === "loading" ? 0.7 : 1,
+        }}
+      >
+        {label}
+      </button>
+      {vfsPath && state === "ok" && (
+        <span style={{
+          fontSize: 10,
+          color: "#5aaa7a",
+          fontFamily: "monospace",
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          maxWidth: 160,
+        }}
+          title={vfsPath}
+        >
+          {vfsPath}
+        </span>
+      )}
+    </div>
+  );
+}
+
 function CopyToolbar({ artifact, onDownloadPng, onCopyPng }: {
   artifact: Artifact;
   onDownloadPng?: (pixelRatio: number) => Promise<void>;
@@ -308,7 +383,35 @@ function CopyToolbar({ artifact, onDownloadPng, onCopyPng }: {
     );
   }
 
-  // ── Table, Document & Réponse complète : brut + Word ─────────────────────────────────
+  // ── Word : brut + copie HTML + téléchargement .docx ────────────────────
+  if (kind === "word") {
+    const slug = artifact.title.slice(0, 40).replace(/[^a-zA-Z0-9_\- ]/g, "").trim().replace(/\s+/g, "_") || "document";
+    return (
+      <div style={toolbarStyle}>
+        <CopyBtn
+          label="📋 Copier (brut)"
+          title="Copier le Markdown brut"
+          onCopy={() => navigator.clipboard.writeText(content)}
+        />
+        <CopyBtn
+          label="📄 Copier (Word)"
+          title="Copier en HTML mis en forme (Word, LibreOffice, Pages…)"
+          onCopy={async () => {
+            const html = markdownToHtml(content);
+            const blob = new Blob([html], { type: "text/html" });
+            await navigator.clipboard.write([
+              new ClipboardItem({ "text/html": blob }),
+            ]);
+          }}
+        />
+        <DocxDownloadBtn content={content} filename={`${slug}.docx`} />
+      </div>
+    );
+  }
+
+  // ── Table, Document & Réponse complète : brut + copie HTML + .docx ──────
+  const isDownloadable = kind === "document" || kind === "full";
+  const slugGeneric = artifact.title.slice(0, 40).replace(/[^a-zA-Z0-9_\- ]/g, "").trim().replace(/\s+/g, "_") || "document";
   return (
     <div style={toolbarStyle}>
       <CopyBtn
@@ -327,6 +430,9 @@ function CopyToolbar({ artifact, onDownloadPng, onCopyPng }: {
           ]);
         }}
       />
+      {isDownloadable && (
+        <DocxDownloadBtn content={content} filename={`${slugGeneric}.docx`} />
+      )}
     </div>
   );
 }
@@ -461,6 +567,82 @@ const ArtifactContent = memo(function ArtifactContent({
             {artifact.content}
           </SyntaxHighlighter>
         </div>
+      </div>
+    );
+  }
+
+  // ── Word — rendu Markdown (identique à document, kind distinct pour toolbar) ─
+  if (artifact.kind === "word") {
+    return (
+      <div style={s.mdContainer}>
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm, remarkMath]}
+          rehypePlugins={[rehypeKatex]}
+          components={{
+            table({ children }) {
+              return (
+                <div style={{ overflowX: "auto", margin: "8px 0" }}>
+                  <table style={{ borderCollapse: "collapse", width: "100%", fontSize: "13px" }}>
+                    {children}
+                  </table>
+                </div>
+              );
+            },
+            th({ children }) {
+              return (
+                <th style={{ border: "1px solid var(--border)", padding: "7px 12px",
+                  background: "var(--elevated-bg)", textAlign: "left", fontWeight: 600 }}>
+                  {children}
+                </th>
+              );
+            },
+            td({ children }) {
+              return (
+                <td style={{ border: "1px solid var(--border)", padding: "6px 12px" }}>
+                  {children}
+                </td>
+              );
+            },
+            code({ node, inline, className, children, ...props }: any) {
+              const lang = /language-(\w+)/.exec(className || "")?.[1];
+              const codeText = String(children).replace(/\n$/, "");
+              if (!inline && lang === "mermaid") return <MermaidBlock code={codeText} isDark={isDark} variant="panel" />;
+              if (!inline && lang === "echarts") return <EChartsBlock code={codeText} isDark={isDark} variant="panel" />;
+              if (!inline && lang) {
+                return (
+                  <SyntaxHighlighter style={codeStyle} language={lang} PreTag="div"
+                    customStyle={{ margin: "8px 0", borderRadius: 6, fontSize: "13px",
+                      background: "var(--code-block-bg)" }}>
+                    {codeText}
+                  </SyntaxHighlighter>
+                );
+              }
+              return (
+                <code style={{ fontFamily: "monospace", fontSize: "0.875em",
+                  color: "var(--code-inline-color)", background: "var(--code-bg)",
+                  borderRadius: 3, padding: "1px 5px" }} {...props}>
+                  {children}
+                </code>
+              );
+            },
+            a({ href, children }) {
+              return (
+                <a href={href} target="_blank" rel="noopener noreferrer"
+                  style={{ color: "var(--link-color)" }}>{children}</a>
+              );
+            },
+            blockquote({ children }) {
+              return (
+                <blockquote style={{ borderLeft: "3px solid var(--accent)", margin: "8px 0",
+                  padding: "6px 12px", background: "var(--blockquote-bg)", borderRadius: "0 4px 4px 0" }}>
+                  {children}
+                </blockquote>
+              );
+            },
+          }}
+        >
+          {artifact.content}
+        </ReactMarkdown>
       </div>
     );
   }

@@ -442,7 +442,7 @@ function GlitchTitle() {
 const FEATURES = [
   { icon:"⚡", label:"Moteur IA multi-modèles" },
   { icon:"🇫🇷", label:"Albert API" },
-  { icon:"🏛️", label:"API Légifrance, Judilibre, Data.gouv, Grist, Docs" },
+  { icon:"🏛️", label:"API Légifrance, Judilibre, Data.gouv, Grist" },
   { icon:"🔧", label:"Outils & Agents autonomes" },
   { icon:"📁", label:"Système de fichiers virtuel" },
   { icon:"🇫🇷", label:"Stockage S3 par Garage" },

@@ -1,4 +1,4 @@
-# Prométhée v3.0.2
+# Prométhée v3.0.3
 
 
 ![Ecran de connexion](assets/git-0.png)
@@ -7,50 +7,6 @@
 - **Assistant IA web** — Interface FastAPI + React connectée à un LLM (Albert API, OpenAI-compatible), avec outils intégrés, RAG, mémoire long terme et support Légifrance, Judilibre, data.gouv.fr, Grist.
 - **Système de fichiers virtuel** - les utilisateurs disposent d'un espace de stockage (utilisé par le LLM et les outils) compatible S3 via Garage.
 - **Conçu principalement pour fonctionner avec l'API Albert de la DiNum**
-
----
-
-## 📋 Changelog
-
-## v3.0.2
-- 🐛 Correction d'une régression sur l'analyse d'image
-- 🐛 Modification du fichier Docker pour fonctionner avec les proxies transparents (forçage HTTPS)
-
-
-### v3.0.1
-- 🐛 Mise en cohérence de bibliothèques : suppression d'utilisation résiduelle de requests pour alignement sur httpx
-- 📚 Rajout de fonctions de recherche d'images dans web_tools (première source : Wikimedia)
-
-### v3.0
-- 📚 Application multi-utilisateurs FastAPI-React (suppression du mode desktop mono-utilisateur)
-- 📚 VFS avec Garage (stockage compatible S3)
-- 📊 Rendu de graphiques avec echarts (typiquement depuis un fichier .csv ou tableur)
-- 🐛 Corrections de bugs dans les outils (encore pas mal de travail pour Légifrance)
-- 🐛 Rajouts de bugs un peu partout (un peu comme une chasse aux oeufs)
-
-
-### v2.2.4
-- 📚 **Rajout de l'export structuré** du contenu de la réponse vers Word/LibreOffice. L'utilisateur peut choisir un copier/coller brut (markdown) ou riche (type RTF) depuis l'interface de chat.
-    Pratique pour faire de la récupération rapide de contenu sans passer par les outils d'export.
-- 🐛 Corrections de bugs sur des cas limites dans le RAG
-
-
-### v2.2.3
-- 🐛 Corrections de bugs dans le rendu LaTeX et Mermaid
-- 🔧 **Rajout d'un outil** pour reformuler les comptes rendus oraux dans un style adapté à l'écrit
-- 💬 **Rajout du profil associé** à cet outil (Rédacteur) et d'un skill dédié.
-
-
-### v2.2.2
-- 🐛 Corrections de bugs dans le RAG avec Qdrant
-
-
-### v2.2.1
-- 🐛 Corrections de bugs sur l'affichage des images dans le chat
-- 🎨 Correctifs divers sur l'interface utilisateur
-- 🧠 Amélioration de la mémoire long terme (LTM) : réduction des souvenirs parasites
-- 🗑️ Suppression de la mémoire long terme possible depuis l'interface
-- 🔧 Refactorisation de plusieurs scripts pour améliorer la maintenabilité et contenir leur taille
 
 ---
 

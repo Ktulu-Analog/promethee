@@ -38,6 +38,7 @@
  */
 
 import React, { useEffect, useRef, useState } from "react";
+import { buildEChartsDefaults, mergeEChartsOption, cleanEChartsCode } from "../../lib/echarts-defaults";
 
 interface Props {
   code: string;          // contenu brut du bloc ```echarts
@@ -55,127 +56,6 @@ function getECharts(): Promise<typeof import("echarts")> {
     echartsPromise = import("echarts");
   }
   return echartsPromise;
-}
-
-// ── Nettoyage JSON robuste (tolérant aux sorties LLM imparfaites) ─────────
-//
-// Les LLM produisent régulièrement du "JSON-like" invalide pour les types
-// de graphiques complexes (pie, scatter, radar, funnel, gauge…) :
-//   • commentaires JS  // ... ou /* ... */
-//   • virgules trailing avant } ou ]
-//   • clés non-quotées  { xAxis: { ... } }
-//   • fonctions inline  formatter: function(v) { return v; }
-//   • valeurs NaN / Infinity / undefined
-//   • apostrophes à la place des guillemets  'bar'
-//   • retours à la ligne dans les strings
-//
-// Stratégie en deux passes :
-//   1. Nettoyage textuel des patterns les plus courants
-//   2. Évaluation via Function() en sandbox restreinte pour récupérer
-//      les configurations contenant de vraies fonctions JS (formatter, etc.)
-//      → les fonctions sont remplacées par null pour que JSON.parse passe,
-//        puis réinjectées dans l'objet final via eval contrôlé.
-
-function parseEChartsConfig(raw: string): any {
-  // ── Passe 1 : nettoyage textuel ────────────────────────────────────────
-
-  let cleaned = raw.trim();
-
-  // Supprimer les commentaires JS sur une ligne  //...
-  cleaned = cleaned.replace(/\/\/[^\n\r]*/g, "");
-
-  // Supprimer les commentaires JS sur plusieurs lignes  /* ... */
-  cleaned = cleaned.replace(/\/\*[\s\S]*?\*\//g, "");
-
-  // Supprimer les virgules trailing avant } ou ]
-  cleaned = cleaned.replace(/,\s*([}\]])/g, "$1");
-
-  // Remplacer les valeurs spéciales JS non-JSON
-  cleaned = cleaned.replace(/\bNaN\b/g, "null");
-  cleaned = cleaned.replace(/\bInfinity\b/g, "null");
-  cleaned = cleaned.replace(/\bundefined\b/g, "null");
-
-  // ── Tentative 1 : JSON.parse direct ───────────────────────────────────
-  try {
-    return JSON.parse(cleaned);
-  } catch (_) {
-    // continue vers les passes suivantes
-  }
-
-  // ── Passe 2 : citer les clés non-quotées ──────────────────────────────
-  // Transforme  { xAxis: {  →  { "xAxis": {
-  // Attention : ne pas toucher aux clés déjà quotées ni aux valeurs string
-  const quotedKeys = cleaned.replace(
-    /([{,]\s*)([a-zA-Z_$][a-zA-Z0-9_$]*)(\s*:)/g,
-    (_, prefix, key, colon) => `${prefix}"${key}"${colon}`
-  );
-
-  try {
-    return JSON.parse(quotedKeys);
-  } catch (_) {
-    // continue
-  }
-
-  // ── Passe 3 : extraction des fonctions + JSON.parse ───────────────────
-  // Les fonctions JS (formatter, etc.) sont remplacées par un placeholder
-  // unique, puis réinjectées après parsing.
-  const functions: string[] = [];
-  const withPlaceholders = quotedKeys.replace(
-    /:\s*(function\s*\([^)]*\)\s*\{[\s\S]*?\}|(?:\([^)]*\)|[a-zA-Z_$][a-zA-Z0-9_$]*)\s*=>\s*(?:\{[\s\S]*?\}|[^,\n\]}\)]+))/g,
-    (_, fn) => {
-      const idx = functions.length;
-      functions.push(fn);
-      return `: "__FN_${idx}__"`;
-    }
-  );
-
-  // Re-tenter la suppression virgules trailing après les remplacements
-  const cleanedAgain = withPlaceholders.replace(/,\s*([}\]])/g, "$1");
-
-  let parsed: any;
-  try {
-    parsed = JSON.parse(cleanedAgain);
-  } catch (_) {
-    // Passe 4 (dernier recours) : eval dans une Function isolée
-    try {
-      // eslint-disable-next-line no-new-func
-      parsed = new Function(`"use strict"; return (${raw.trim()})`)();
-      return parsed;
-    } catch (evalErr: any) {
-      throw new Error(`JSON invalide — impossible de parser la config ECharts.\n${evalErr?.message ?? ""}`);
-    }
-  }
-
-  // Réinjecter les fonctions JS parsées
-  if (functions.length > 0) {
-    const rehydrate = (obj: any): any => {
-      if (obj === null || obj === undefined) return obj;
-      if (typeof obj === "string") {
-        const match = obj.match(/^__FN_(\d+)__$/);
-        if (match) {
-          try {
-            // eslint-disable-next-line no-new-func
-            return new Function(`"use strict"; return (${functions[parseInt(match[1], 10)]})`)();
-          } catch {
-            return null; // si la fonction est invalide, on la neutralise
-          }
-        }
-        return obj;
-      }
-      if (Array.isArray(obj)) return obj.map(rehydrate);
-      if (typeof obj === "object") {
-        const result: any = {};
-        for (const [k, v] of Object.entries(obj)) {
-          result[k] = rehydrate(v);
-        }
-        return result;
-      }
-      return obj;
-    };
-    return rehydrate(parsed);
-  }
-
-  return parsed;
 }
 
 // ── Composant ─────────────────────────────────────────────────────────────
@@ -202,18 +82,26 @@ export function EChartsBlock({ code, isDark, onChartReady, variant = "chat" }: P
           chartRef.current = null;
         }
 
-        const config = parseEChartsConfig(code);
+        // Nettoyage du code LLM (parseur caractère par caractère, robuste)
+        // puis évaluation via new Function() — même stratégie que Démeter.
+        let userOption: Record<string, unknown>;
+        try {
+          const cleaned = cleanEChartsCode(code);
+          // eslint-disable-next-line no-new-func
+          userOption = new Function(`"use strict"; return (${cleaned})`)() as Record<string, unknown>;
+        } catch (parseErr: any) {
+          throw new Error(`Config ECharts invalide — ${parseErr?.message ?? "erreur de parsing"}`);
+        }
 
-        // Créer l'instance avec le bon thème
-        const chart = echarts.init(containerRef.current, isDark ? "dark" : null, {
+        // Créer l'instance sans thème ECharts natif :
+        // les couleurs et styles sont entièrement gérés par nos defaults CSS.
+        const chart = echarts.init(containerRef.current, null, {
           renderer: "canvas",
         });
 
-        // Fusionner un backgroundColor transparent pour coller au thème de l'app
-        const finalConfig = {
-          backgroundColor: "transparent",
-          ...config,
-        };
+        // Fusionner defaults (CSS Prométhée) + option LLM
+        const defaults    = buildEChartsDefaults(isDark);
+        const finalConfig = mergeEChartsOption(defaults, userOption);
 
         chart.setOption(finalConfig);
         chartRef.current = chart;

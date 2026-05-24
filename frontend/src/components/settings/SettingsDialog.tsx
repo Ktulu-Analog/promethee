@@ -142,13 +142,7 @@ export function SettingsDialog({ open, onClose, onSaved }: Props) {
     }
   }, [open]);
 
-  // Fermer avec Escape
-  useEffect(() => {
-    if (!open) return;
-    function handle(e: KeyboardEvent) { if (e.key === "Escape") onClose(); }
-    document.addEventListener("keydown", handle);
-    return () => document.removeEventListener("keydown", handle);
-  }, [open, onClose]);
+  // NB : fermeture volontairement limitée à la croix (pas d'Escape, pas de clic overlay)
 
   // Navigation programmatique vers « Mes clés API » (depuis TabModel)
   const navigateToApiKeys = useCallback(() => {
@@ -216,7 +210,7 @@ export function SettingsDialog({ open, onClose, onSaved }: Props) {
   return (
     <>
       {/* Overlay */}
-      <div style={s.overlay} onClick={onClose} />
+      <div style={s.overlay} />
 
       {/* Dialog */}
       <div style={s.dialog} role="dialog" aria-modal="true" aria-label="Paramètres">
@@ -334,7 +328,7 @@ const s: Record<string, React.CSSProperties> = {
     left: "50%",
     transform: "translate(-50%, -50%)",
     zIndex: 901,
-    width: 580,
+    width: 640,
     maxWidth: "calc(100vw - 32px)",
     maxHeight: "calc(100vh - 48px)",
     background: "var(--surface-bg)",
@@ -395,7 +389,8 @@ const s: Record<string, React.CSSProperties> = {
     borderBottomColor: "var(--surface-bg)",
   },
   body: {
-    flex: 1,
+    flex: "none",
+    height: 380,
     overflowY: "auto",
     padding: "16px 20px",
     minHeight: 0,
@@ -410,9 +405,11 @@ const s: Record<string, React.CSSProperties> = {
     display: "flex",
     alignItems: "center",
     gap: 8,
-    padding: "12px 20px 16px",
+    padding: "0 20px",
+    height: 60,
     borderTop: "1px solid var(--border)",
     flexShrink: 0,
+    boxSizing: "border-box",
   },
   errorMsg: {
     fontSize: 12,

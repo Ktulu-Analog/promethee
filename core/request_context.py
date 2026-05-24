@@ -52,6 +52,12 @@ _USER_CONFIG_VAR: contextvars.ContextVar[Optional["UserConfig"]] = (
     contextvars.ContextVar("user_config", default=None)
 )
 
+# Session LibreOffice Writer active pour la requête courante.
+# Injectée par ws_chat si l'utilisateur a envoyé un writer_session_id.
+_WRITER_SESSION_ID_VAR: contextvars.ContextVar[Optional[str]] = (
+    contextvars.ContextVar("writer_session_id", default=None)
+)
+
 
 def set_user_config(user_config: Optional["UserConfig"]) -> None:
     """Positionne le UserConfig pour la requête courante (à appeler depuis la coroutine FastAPI)."""
@@ -61,3 +67,13 @@ def set_user_config(user_config: Optional["UserConfig"]) -> None:
 def get_user_config() -> Optional["UserConfig"]:
     """Retourne le UserConfig de la requête courante, ou None (mode Qt6 / hors requête)."""
     return _USER_CONFIG_VAR.get()
+
+
+def set_writer_session_id(session_id: Optional[str]) -> None:
+    """Injecte le session_id Writer dans le contexte de la requête courante."""
+    _WRITER_SESSION_ID_VAR.set(session_id)
+
+
+def get_writer_session_id() -> Optional[str]:
+    """Retourne le session_id Writer du contexte courant, ou None."""
+    return _WRITER_SESSION_ID_VAR.get()

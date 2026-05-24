@@ -148,6 +148,14 @@ class ChatPayload(BaseModel):
     save_user_message: Optional[str] = Field(
         None, description="Si fourni, persiste ce texte en DB comme message user avant génération"
     )
+    writer_session_id: Optional[str] = Field(
+        None,
+        description=(
+            "Identifiant de la session LibreOffice Writer connectée via l'extension "
+            "Prométhée Bridge. Si fourni, les outils writer_tools envoient les événements "
+            "en temps réel au document Writer ouvert."
+        ),
+    )
 
 
 class CancelPayload(BaseModel):

@@ -86,6 +86,7 @@ from server.routers.upload import router as upload_router
 from server.routers.vfs_router import router as vfs_router
 from server.routers.admin import router as admin_router
 from server.routers.ingest_admin import router as ingest_admin_router
+from server.routers.ws_libreoffice import router as ws_libreoffice_router
 
 
 # ── Lifespan (startup / shutdown) ─────────────────────────────────────────────
@@ -160,6 +161,7 @@ app.add_middleware(
 app.include_router(auth_router,             prefix="/auth",          tags=["auth"])
 app.include_router(conversations_router,    prefix="/conversations",  tags=["conversations"])
 app.include_router(ws_chat_router,                                   tags=["websocket"])
+app.include_router(ws_libreoffice_router,                            tags=["websocket-writer"])
 app.include_router(rag_router,              prefix="/rag",            tags=["rag"])
 app.include_router(settings_router,         prefix="/settings",       tags=["settings"])
 app.include_router(monitoring_router,       prefix="/monitoring",     tags=["monitoring"])

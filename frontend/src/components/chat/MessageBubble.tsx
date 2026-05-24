@@ -251,6 +251,17 @@ const MarkdownContent = memo(function MarkdownContent({
             const codeText = String(children).replace(/\n$/, "");
             if (!inline && isMermaid(lang)) return <MermaidBlock code={codeText} isDark={isDark} />;
             if (!inline && isECharts(lang)) return <EChartsBlock code={codeText} isDark={isDark} />;
+            // Les blocs word sont rendus comme du Markdown normal dans le chat
+            // (l'ArtifactPanel en fait une version enrichie, mais le texte reste lisible ici)
+            if (!inline && lang === "word") {
+              return (
+                <div style={{ marginTop: 4, marginBottom: 4 }}>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeKatex, rehypeRaw]}>
+                    {codeText}
+                  </ReactMarkdown>
+                </div>
+              );
+            }
             if (!inline && lang) {
               return (
                 <div style={styles.codeWrapper}>

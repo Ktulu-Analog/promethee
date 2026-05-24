@@ -302,6 +302,63 @@ async def vfs_move(
         raise _http_err(e)
 
 
+# ── Sauvegarde d'un blob généré côté client (ex : docx généré par generateDocx) ──
+
+from fastapi import UploadFile, File as FastAPIFile
+
+@router.post("/save-blob")
+async def vfs_save_blob(
+    file: UploadFile = FastAPIFile(...),
+    path: str = Query(
+        default="",
+        description="Chemin VFS cible optionnel (ex: /exports/rapport.docx). "
+                    "Si omis, le fichier est placé dans /exports/.",
+    ),
+    user: dict = Depends(require_auth),
+):
+    """
+    Sauvegarde un blob binaire généré côté client dans le VFS de l'utilisateur.
+
+    Utilisé par le bouton ↓ .docx de l'ArtifactPanel : le frontend génère le
+    fichier Word en mémoire (via la lib docx) puis le POST ici pour le persister
+    dans le VFS sans passer par l'outil export_docx.
+
+    Retourne le chemin VFS effectif du fichier créé.
+    """
+    try:
+        raw       = await file.read()
+        filename  = file.filename or "document.docx"
+        mime_type = (file.content_type
+                     or "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+
+        vfs = _vfs(user)
+
+        # Résoudre le chemin cible
+        if path:
+            target = path if path.startswith("/") else f"/{path}"
+        else:
+            target = f"/exports/{filename}"
+
+        # Dédoublonnage : rapport.docx → rapport_1.docx, etc.
+        stem   = PurePosixPath(target).stem
+        suffix = PurePosixPath(target).suffix
+        parent = str(PurePosixPath(target).parent)
+        counter = 1
+        while vfs.exists(target):
+            target = f"{parent}/{stem}_{counter}{suffix}"
+            counter += 1
+
+        vfs.write_bytes(target, raw, mime_type=mime_type)
+        _log.info("[VFS] save-blob : %s → %s (%d octets)", filename, target, len(raw))
+        return {"status": "ok", "path": target, "size_bytes": len(raw)}
+
+    except VFSError as e:
+        raise _http_err(e)
+    except Exception as e:
+        _log.exception("[VFS] save-blob erreur inattendue")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ==============================================================================
 # Intégration avec upload.py
 # ==============================================================================

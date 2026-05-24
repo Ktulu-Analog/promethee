@@ -4,6 +4,36 @@ Toutes les modifications notables sont documentées dans ce fichier.
 Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) — versioning [SemVer](https://semver.org/lang/fr/).
 
 ---
+
+## [3.0.3] — 2026-05-24
+
+### Ajouté
+- **Génération Word côté client** : nouveau module `lib/docx.ts` basé sur la lib `docx` (npm) — produit un fichier `.docx` directement dans le navigateur sans round-trip serveur, avec rendu des graphiques ECharts en image PNG intégrée
+- **Bouton ↓ .docx** dans l'ArtifactPanel : enregistre le document Word directement dans le VFS (`/exports/`) via le nouvel endpoint `POST /vfs/save-blob`
+- **Endpoint `POST /vfs/save-blob`** : reçoit un blob binaire depuis le frontend et le persiste dans le VFS de l'utilisateur avec dédoublonnage automatique du nom de fichier
+- **Bloc `word` dans l'ArtifactPanel** : détection et rendu des blocs ` ```word ``` ` comme artefacts dédiés (kind `word`) avec ReactMarkdown, support ECharts/Mermaid imbriqués
+- **Module `lib/artifacts.ts`** : extraction des artefacts découplée de React, testable en isolation — support des blocs `word` avec parser d'imbrication et `reconstructWordContent`
+- **Module `lib/mermaid-sanitizer.ts`** : correction préventive des erreurs LLM les plus fréquentes avant rendu Mermaid (accents, C4 → graph TD, séquences mal fermées, mots-clés réservés…)
+- **Module `lib/echarts-defaults.ts`** : thème ECharts cohérent avec la charte CSS de Prométhée — `buildEChartsDefaults`, `mergeEChartsOption`, `cleanEChartsCode` (parseur caractère-par-caractère en remplacement des regex en cascade)
+
+### Modifié
+- **`MermaidBlock`** : sandbox singleton réutilisable (div hors-écran fixe) en remplacement de la création/destruction DOM à chaque render — `sanitizeMermaid` appelé avant chaque `mermaid.render()`
+- **`EChartsBlock`** : `parseEChartsConfig` (cascades de regex) remplacé par `cleanEChartsCode` ; thème natif ECharts `"dark"` supprimé au profit des defaults CSS
+- **`useArtifactPanel`** : délègue entièrement l'extraction à `lib/artifacts.ts`, réduit à la gestion d'état React pur
+- **`MessageBubble`** : les blocs ` ```word ``` ` sont rendus comme du Markdown normal dans le chat (titres, listes, graphiques ECharts/Mermaid inline)
+- **`prompts.yml`** : suppression de `export_tools` et `export_template_tools` de tous les profils rédactionnels — règle "Documents Word → bloc `word`" injectée dans 7 profils
+
+### Supprimé
+- `tools/export_tools.py` — remplacé par la génération Word côté client
+- `tools/export_template_tools.py` — supprimé (gabarits personnalisés non utilisés)
+- `skills/guide_export_docx_pdf.md` — supprimé (déclencheur du comportement erratique lors de l'export)
+- `skills/guide_utilisation_templates.md` — supprimé
+
+### Dépendances
+- **Frontend** : ajout de `docx` (génération Word côté client)
+
+---
+
 ## [3.0.2] — 2026-04-23
 
 ### Modifié

@@ -37,14 +37,16 @@ Prérequis pour legifrance_tools (obtenir les clés via Piste):
 Prérequis pour grist_tools :
     GRIST_API_KEY=votre_clé_api_grist
     GRIST_BASE_URL=https://votre-instance.grist.com   # défaut: https://docs.getgrist.com
+
+Prérequis pour writer_tools :
+    Aucun prérequis serveur. L'utilisateur doit avoir l'extension
+    "Prométhée Bridge" installée dans LibreOffice et connectée.
 """
 
 
 def register_all() -> None:
     """Importe tous les modules d'outils pour les enregistrer dans tools_engine."""
     from tools import vfs_tools
-    from tools import export_tools
-    from tools import export_template_tools
     from tools import reformulation_tools
     from tools import data_tools
     from tools import data_file_tools
@@ -58,5 +60,4 @@ def register_all() -> None:
     from tools import grist_tools
     from tools import tool_creator_tools
     from tools import meteo_tools
-
-
+    from tools import writer_tools  # ← LibreOffice Writer Bridge

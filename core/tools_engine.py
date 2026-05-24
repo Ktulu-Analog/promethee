@@ -40,6 +40,8 @@ from typing import Callable
 
 
 # ── Registre global ────────────────────────────────────────────────────────
+# Ces trois dicts sont en lecture seule après l'import des modules de tools
+# (write-once au chargement) : pas de risque de race condition entre coroutines.
 
 _TOOLS: dict[str, dict] = {}
 
@@ -136,22 +138,60 @@ def save_user_families(user_id: str) -> None:
         pass
 
 
-
 # ── Registre des modèles assignés par famille ──────────────────────────────
 #
+# Historique des architectures :
+#
+#   v1 – fichier global   ~/.promethee_family_models.json
+#         Problème : vestige desktop mono-utilisateur, perdu à chaque
+#         recréation du conteneur.
+#
+#   v2 – variable globale _FAMILY_MODELS: dict[str, dict]
+#         Problème : partagée entre toutes les coroutines FastAPI simultanées.
+#         load_user_family_models("A") écrasait le dict vu par l'utilisateur B
+#         en cours d'exécution d'agent_loop(). Risque : outil de B exécuté
+#         avec le modèle de A.
+#
+#   v3 (actuelle) – ContextVar par coroutine/thread
+#         Même stratégie que _DISABLED_FAMILIES_VAR. Chaque requête charge
+#         ses propres modèles dans son ContextVar ; les requêtes concurrentes
+#         ne peuvent plus se polluer mutuellement.
+#         asyncio.to_thread() propage le contexte, donc agent_loop() et les
+#         outils exécutés dans un thread worker voient le bon état.
+#
 # Persistance dans le kv_store SQLite par utilisateur (clé "family_models").
-# Remplace ~/.promethee_family_models.json (vestige desktop mono-utilisateur).
 # Format stocké : { "imap_tools": { "backend": "openai", "model": "...",
 #                                    "base_url": "" }, ... }
 #
 # Les familles absentes héritent du modèle principal (build_client).
+# Interface publique inchangée : load_user_family_models(), save_user_family_models(),
+# get_family_model(), set_family_model(), clear_family_model() — les appelants
+# n'ont rien à modifier.
 
-_FAMILY_MODELS: dict[str, dict] = {}
+_FAMILY_MODELS_VAR: contextvars.ContextVar[dict[str, dict]] = contextvars.ContextVar(
+    "family_models", default=None  # type: ignore[arg-type]
+)
+
+
+def _get_family_models() -> dict[str, dict]:
+    """Retourne le dict des modèles de familles pour le contexte courant.
+    Crée un dict vide si le ContextVar n'a pas encore été initialisé
+    dans ce contexte (première requête ou contexte hors FastAPI)."""
+    val = _FAMILY_MODELS_VAR.get(None)
+    if val is None:
+        val = {}
+        _FAMILY_MODELS_VAR.set(val)
+    return val
+
+
+def _set_family_models(models: dict[str, dict]) -> None:
+    """Remplace le dict des modèles de familles pour le contexte courant."""
+    _FAMILY_MODELS_VAR.set(models)
 
 
 def load_user_family_models(user_id: str) -> None:
-    """Charge les modèles de familles depuis le kv_store de l'utilisateur."""
-    global _FAMILY_MODELS
+    """Charge les modèles de familles depuis le kv_store de l'utilisateur.
+    Isolation par requête garantie via ContextVar."""
     try:
         from pathlib import Path as _Path
         data_dir = _Path(__file__).resolve().parent.parent / "data" / user_id
@@ -159,9 +199,9 @@ def load_user_family_models(user_id: str) -> None:
         from core.database import HistoryDB
         db = HistoryDB(db_path=db_path)
         raw = db.kv_get("family_models")
-        _FAMILY_MODELS = json.loads(raw) if raw else {}
+        _set_family_models(json.loads(raw) if raw else {})
     except Exception:
-        _FAMILY_MODELS = {}
+        _set_family_models({})
 
 
 def save_user_family_models(user_id: str) -> None:
@@ -173,7 +213,7 @@ def save_user_family_models(user_id: str) -> None:
         db_path = str(data_dir / "history.db")
         from core.database import HistoryDB
         db = HistoryDB(db_path=db_path)
-        db.kv_set("family_models", json.dumps(_FAMILY_MODELS))
+        db.kv_set("family_models", json.dumps(_get_family_models()))
     except Exception:
         pass
 
@@ -186,7 +226,7 @@ def get_family_model(family: str) -> dict | None:
     Retourne un dict :
         { "backend": "openai"|"ollama", "model": str, "base_url": str }
     """
-    entry = _FAMILY_MODELS.get(family)
+    entry = _get_family_models().get(family)
     if not entry or not entry.get("model", "").strip():
         return None
     return entry
@@ -198,27 +238,32 @@ def set_family_model(family: str, backend: str, model: str, base_url: str = "", 
     et revenir au modèle principal.
     Persiste dans le kv_store SQLite de l'utilisateur si user_id est fourni.
     """
+    models = dict(_get_family_models())  # copie pour ne pas muter en place
     if not model.strip():
-        _FAMILY_MODELS.pop(family, None)
+        models.pop(family, None)
     else:
-        _FAMILY_MODELS[family] = {
+        models[family] = {
             "backend":  backend.strip().lower(),
             "model":    model.strip(),
             "base_url": base_url.strip(),
         }
+    _set_family_models(models)
     if user_id:
         save_user_family_models(user_id)
 
 
 def clear_family_model(family: str, user_id: str | None = None) -> None:
     """Supprime l'assignation de modèle pour une famille (retour au modèle principal)."""
-    _FAMILY_MODELS.pop(family, None)
+    models = dict(_get_family_models())  # copie pour ne pas muter en place
+    models.pop(family, None)
+    _set_family_models(models)
     if user_id:
         save_user_family_models(user_id)
 
 
-
 # ── Famille courante (positionnée par chaque module avant ses @tool) ───────
+# Ces trois variables sont write-once à l'import de chaque module de tools,
+# en dehors de tout contexte de requête : pas de risque de race condition.
 
 _current_family: str = "Inconnu"
 _current_family_label: str = "Inconnu"
@@ -382,11 +427,12 @@ def list_families() -> list[dict]:
     L'état enabled/disabled reflète le ContextVar de la requête courante.
     """
     disabled = _get_disabled()
+    family_models = _get_family_models()
     families: dict[str, dict] = {}
     for name, t in _TOOLS.items():
         fam = t.get("family", "unknown")
         if fam not in families:
-            assigned = _FAMILY_MODELS.get(fam, {})
+            assigned = family_models.get(fam, {})
             families[fam] = {
                 "family":         fam,
                 "label":          t.get("family_label", fam),
@@ -464,8 +510,26 @@ def registered_tool_names() -> list[str]:
 
 
 # ── Progression en cours d'exécution d'outil ───────────────────────────────
+#
+# Historique des architectures :
+#
+#   v1 – variable globale _progress_callback: Callable | None
+#         Problème : partagée entre toutes les coroutines FastAPI simultanées.
+#         set_tool_progress_callback() de la requête A écrasait le callback de B.
+#         La progression d'un outil de A pouvait être envoyée dans le WebSocket
+#         de B, ou inversement.
+#
+#   v2 (actuelle) – ContextVar par coroutine/thread
+#         Chaque requête installe son propre callback dans son ContextVar.
+#         asyncio.to_thread() propage le contexte vers les threads workers,
+#         donc report_progress() appelle toujours le bon WebSocket.
+#
+# Interface publique inchangée : set_tool_progress_callback(), report_progress()
+# — les appelants (AgentWorker) n'ont rien à modifier.
 
-_progress_callback: Callable[[str], None] | None = None
+_PROGRESS_CALLBACK_VAR: contextvars.ContextVar[Callable[[str], None] | None] = (
+    contextvars.ContextVar("progress_callback", default=None)
+)
 
 
 def set_tool_progress_callback(fn: Callable[[str], None] | None) -> None:
@@ -473,18 +537,19 @@ def set_tool_progress_callback(fn: Callable[[str], None] | None) -> None:
     Installe un callback appelé par les outils pour signaler leur progression.
     Passer None pour désinstaller.
     Appelé par AgentWorker avant/après agent_loop.
+    Isolation par requête : opère sur le ContextVar, pas sur un global partagé.
     """
-    global _progress_callback
-    _progress_callback = fn
+    _PROGRESS_CALLBACK_VAR.set(fn)
 
 
 def report_progress(message: str) -> None:
     """
     À appeler depuis un outil pour signaler une étape de progression.
-    Sans effet si aucun callback n'est installé.
+    Sans effet si aucun callback n'est installé dans le contexte courant.
     """
-    if _progress_callback is not None:
+    cb = _PROGRESS_CALLBACK_VAR.get()
+    if cb is not None:
         try:
-            _progress_callback(message)
+            cb(message)
         except Exception:
             pass

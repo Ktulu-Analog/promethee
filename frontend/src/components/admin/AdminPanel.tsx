@@ -134,7 +134,7 @@ function CreateUserModal({ onClose, onCreated }: { onClose: () => void; onCreate
   }
 
   return (
-    <div style={s.overlay} onClick={onClose}>
+    <div style={s.overlay}>
       <div style={s.modal} onClick={e => e.stopPropagation()}>
         <h3 style={s.modalTitle}>Créer un utilisateur</h3>
         <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -213,7 +213,7 @@ function ResetPasswordModal({ user, onClose, onDone }: { user: AdminUser; onClos
   }
 
   return (
-    <div style={s.overlay} onClick={onClose}>
+    <div style={s.overlay}>
       <div style={s.modal} onClick={e => e.stopPropagation()}>
         <h3 style={s.modalTitle}>Réinitialiser le mot de passe</h3>
         <p style={{ margin: "0 0 12px", fontSize: 13, color: "var(--text-secondary)" }}>
@@ -259,7 +259,7 @@ function DeleteUserModal({ user, onClose, onDeleted }: { user: AdminUser; onClos
   }
 
   return (
-    <div style={s.overlay} onClick={onClose}>
+    <div style={s.overlay}>
       <div style={s.modal} onClick={e => e.stopPropagation()}>
         <h3 style={{ ...s.modalTitle, color: "#e07878" }}>Supprimer l'utilisateur</h3>
         <p style={{ margin: "0 0 8px", fontSize: 13, color: "var(--text-secondary)" }}>
@@ -323,7 +323,7 @@ function SetQuotaModal({
   }
 
   return (
-    <div style={s.overlay} onClick={onClose}>
+    <div style={s.overlay}>
       <div style={s.modal} onClick={e => e.stopPropagation()}>
         <h3 style={s.modalTitle}>💾 Quota VFS — {user.username}</h3>
 
@@ -446,7 +446,7 @@ export function AdminPanel({ open, onClose, currentUserId }: Props) {
   if (!open) return null;
 
   return (
-    <div style={s.backdrop} onClick={onClose}>
+    <div style={s.backdrop}>
       <div style={s.panel} onClick={e => e.stopPropagation()}>
 
         {/* Header */}

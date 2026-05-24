@@ -411,7 +411,12 @@ export function ConvSidePanel({
       {activePanel && (
         <div
           style={s.modalOverlay}
-          onMouseDown={(e) => { if (e.target === e.currentTarget) setActivePanel(null); }}
+          onMouseDown={(e) => {
+            // Fermeture au clic extérieur désactivée pour profils, outils, VFS et Ingestion Qdrant
+            // (seule la croix doit fermer ces panneaux)
+            const noClickClose = activePanel === "profiles" || activePanel === "tools" || activePanel === "vfs" || activePanel === "ingest" || activePanel === "discussions";
+            if (!noClickClose && e.target === e.currentTarget) setActivePanel(null);
+          }}
         >
           <div style={
             activePanel === "profiles"    ? { ...s.modalBox, ...s.modalBoxWide }

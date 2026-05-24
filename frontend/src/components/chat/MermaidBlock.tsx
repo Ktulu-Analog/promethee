@@ -28,6 +28,7 @@
  */
 
 import React, { useEffect, useRef, useState } from "react";
+import { sanitizeMermaid } from "../../lib/mermaid-sanitizer";
 
 interface Props {
   code: string;
@@ -46,23 +47,47 @@ let mermaidIdCounter = 0;
 /** Dernier thème passé à mermaid.initialize() — null = jamais initialisé */
 let lastMermaidTheme: string | null = null;
 
-/**
- * File d'attente globale pour sérialiser les appels à mermaid.render().
- * Mermaid v11 n'est pas thread-safe : plusieurs renders simultanés se
- * disputent le DOM et produisent "can't access property firstChild, C is null".
- * Chaque appel enchaîne une Promise sur la précédente — les renders s'exécutent
- * l'un après l'autre sans jamais se chevaucher.
- */
-let mermaidRenderQueue: Promise<void> = Promise.resolve();
-
-function enqueueMermaidRender(fn: () => Promise<void>): Promise<void> {
-  mermaidRenderQueue = mermaidRenderQueue.then(() => fn()).catch(() => fn());
-  return mermaidRenderQueue;
-}
-
 async function getMermaid() {
   const m = await import("mermaid");
   return m.default;
+}
+
+/**
+ * Sandbox singleton pour mermaid.render().
+ *
+ * Un unique div positionné hors-écran (position:fixed, top:-9999px) est créé
+ * une seule fois et réutilisé pour tous les renders, au lieu de créer/détruire
+ * un div temporaire à chaque appel. Avantages :
+ *   - Moins d'opérations DOM (pas d'appendChild/removeChild à chaque render)
+ *   - Le sandbox porte data-mermaid-host="true", donc purgeMermaidErrorNodes()
+ *     des autres instances ne le touche jamais
+ *   - Simplifie doRender() : plus besoin de try/finally pour le nettoyage
+ *
+ * Mermaid v11 n'est pas thread-safe. Pour éviter les corruptions DOM dues aux
+ * renders simultanés, on exploite le fait que le sandbox est unique : un seul
+ * render à la fois s'y déroule naturellement via le flag `rendering` ci-dessous.
+ * Les renders en attente s'enchaînent via une micro-queue Promise.
+ */
+let _mermaidSandbox: HTMLElement | null = null;
+let _mermaidQueue: Promise<void> = Promise.resolve();
+
+function getMermaidSandbox(): HTMLElement {
+  if (!_mermaidSandbox) {
+    const el = document.createElement("div");
+    el.setAttribute("data-mermaid-host", "true");
+    el.style.cssText =
+      "position:fixed;top:-9999px;left:-9999px;" +
+      "width:1px;height:1px;overflow:hidden;visibility:hidden;pointer-events:none;";
+    document.body.appendChild(el);
+    _mermaidSandbox = el;
+  }
+  return _mermaidSandbox;
+}
+
+/** Sérialise les renders via le sandbox singleton */
+function enqueueMermaidRender(fn: () => Promise<void>): Promise<void> {
+  _mermaidQueue = _mermaidQueue.then(() => fn()).catch(() => fn());
+  return _mermaidQueue;
 }
 
 /** Supprime tous les éléments d'erreur que Mermaid injecte hors-React dans le DOM */
@@ -110,22 +135,18 @@ export function MermaidBlock({ code, isDark, onError, variant = "chat", onSvgRea
           lastMermaidTheme = theme;
         }
 
-        // Rendre dans un conteneur détaché attaché à <body> avec data-mermaid-host
-        // pour que purgeMermaidErrorNodes() d'une autre instance ne le supprime pas
-        const host = document.createElement("div");
-        host.setAttribute("data-mermaid-host", "true");
-        host.style.position = "absolute";
-        host.style.visibility = "hidden";
-        host.style.pointerEvents = "none";
-        document.body.appendChild(host);
+        // Correction préventive des erreurs LLM les plus fréquentes
+        // (accents, C4, mots-clés réservés, séquences mal fermées…)
+        const sanitized = sanitizeMermaid(code);
 
-        let svg: string;
-        try {
-          ({ svg } = await mermaid.render(idRef.current, code, host));
-        } finally {
-          // Toujours retirer le conteneur temporaire, succès ou échec
-          if (host.parentNode) host.parentNode.removeChild(host);
-        }
+        // Render dans le sandbox singleton — pas de création/destruction DOM
+        const sandbox = getMermaidSandbox();
+        const { svg } = await mermaid.render(idRef.current, sanitized, sandbox);
+
+        // Nettoyer l'élément SVG injecté dans le sandbox par Mermaid
+        // (il porte l'id du render courant)
+        const injected = document.getElementById(idRef.current);
+        if (injected && sandbox.contains(injected)) injected.remove();
 
         if (!cancelled) {
           setSvgContent(svg);
