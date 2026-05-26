@@ -85,7 +85,7 @@ import os
 import re
 import sys
 import time
-from datetime import date
+from datetime import date as _date_today
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -360,6 +360,20 @@ def _strip_html(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
+def _fmt_date(d) -> str:
+    """Convertit une date en string lisible.
+    Accepte : string ISO, timestamp Unix en ms (int), ou None."""
+    if not d:
+        return ""
+    if isinstance(d, int):
+        from datetime import datetime, timezone
+        try:
+            return datetime.fromtimestamp(d / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+        except Exception:
+            return str(d)
+    return str(d)
+
+
 def _fmt_search(data: Dict, query: str) -> str:
     results = data.get("results", [])
     total   = data.get("totalResultNumber", 0)
@@ -369,7 +383,8 @@ def _fmt_search(data: Dict, query: str) -> str:
     for i, r in enumerate(results, 1):
         t_list = r.get("titles", [{}])
         title  = t_list[0].get("title", r.get("title", "Sans titre"))
-        rid    = t_list[0].get("id",    r.get("id", ""))
+        # SearchTitle.id = identifiant de version ; SearchTitle.cid = Chronical ID requis par /consult/jorf
+        rid    = t_list[0].get("cid",    t_list[0].get("id", r.get("cid", r.get("id", ""))))
         date_p = t_list[0].get("datePubliTexte", "")
         # Titre tronqué à 120 chars pour limiter la taille du contexte
         title  = title[:120] + ("…" if len(title) > 120 else "")
@@ -554,7 +569,7 @@ def legifrance_consulter_code(code: str, date: Optional[str] = None) -> str:
         return str(e)
     data = c._req("/consult/legi/tableMatieres", body={
         "textId": tid,
-        "date":   date or globals()["date"].today().isoformat(),
+        "date":   _date_today.today().isoformat() if date is None else date,
     })
     return _fmt_toc(data, code)
 
@@ -669,7 +684,7 @@ def legifrance_loi_decret(text_id: str, date: Optional[str] = None) -> str:
     c    = _get_client()
     data = c._req("/consult/lawDecree", body={
         "textId": text_id,
-        "date":   date or globals()["date"].today().isoformat(),
+        "date":   _date_today.today().isoformat() if date is None else date,
     })
     titre    = data.get("title", text_id)
     nature   = data.get("nature", "")
@@ -693,15 +708,18 @@ def legifrance_loi_decret(text_id: str, date: Optional[str] = None) -> str:
 @tool(
     name="legifrance_jorf",
     description=(
-        "Consulte un texte publié au Journal Officiel de la République Française (JORF). "
-        "Retourne le contenu et les métadonnées de publication."
+        "Consulte et retourne le contenu complet d'un texte du Journal Officiel (JORF). "
+        "IMPORTANT : text_cid doit etre un Chronical ID (CID) de type JORFTEXT... "
+        "obtenu via legifrance_sommaire_jorf ou legifrance_derniers_jo. "
+        "Ne pas utiliser les IDs de version retournes par legifrance_rechercher. "
+        "Flux recommande : legifrance_derniers_jo -> legifrance_sommaire_jorf -> legifrance_jorf."
     ),
     parameters={
         "type": "object",
         "properties": {
             "text_cid": {
                 "type": "string",
-                "description": "CID du texte JORF (ex: JORFTEXT000000000001)",
+                "description": "Chronical ID du texte JORF (ex: JORFTEXT000053598801). Commence toujours par JORFTEXT.",
             },
         },
         "required": ["text_cid"],
@@ -710,17 +728,38 @@ def legifrance_loi_decret(text_id: str, date: Optional[str] = None) -> str:
 def legifrance_jorf(text_cid: str) -> str:
     c      = _get_client()
     data   = c._req("/consult/jorf", body={"textCid": text_cid})
-    # ConsultJorfResponse → title, dateParution, nor, sections, articles (swagger)
+    # ConsultJorfResponse → title, dateParution, nor, nature, jurisState, eli, sections, articles (swagger)
     titre  = data.get("title", text_cid)
     date_p = data.get("dateParution", "")
     nor    = data.get("nor", "")
+    nature = data.get("nature", "")
+    etat   = data.get("jurisState", data.get("etat", ""))
+    eli    = data.get("eli", "")
     lines  = [f"# {titre}\n"]
-    if date_p: lines.append(f"**Publication JO** : {date_p}")
-    if nor:    lines.append(f"**NOR** : {nor}")
+    if nature:  lines.append(f"**Nature** : {nature}")
+    if date_p:  lines.append(f"**Publication JO** : {date_p}")
+    if nor:     lines.append(f"**NOR** : {nor}")
+    if eli:     lines.append(f"**ELI** : {eli}")
+    if etat:    lines.append(f"**Etat** : {etat}")
+    # Retourner directement le contenu des articles (ne pas renvoyer vers jorf_part sans ID)
     arts  = data.get("articles", [])
     sects = data.get("sections", [])
-    nb    = len(arts) + sum(len(s.get("articles", [])) for s in sects)
-    if nb: lines.append(f"\n*{nb} article(s) — utilisez legifrance_jorf_part pour le contenu*")
+    all_arts = list(arts)
+    for s in sects:
+        all_arts.extend(s.get("articles", []))
+    if all_arts:
+        lines.append(f"\n**{len(all_arts)} article(s)**\n")
+        for a in all_arts[:50]:
+            lines.append(_fmt_article(a))
+            lines.append("")
+        if len(all_arts) > 50:
+            lines.append(f"*... {len(all_arts)-50} article(s) supplementaires — utilisez legifrance_jorf_part avec l'ID de section*")
+    elif sects:
+        lines.append(f"\n**{len(sects)} section(s)** — utilisez legifrance_jorf_part avec l'ID de section")
+        for s in sects[:10]:
+            sid = s.get("id", "")
+            t   = s.get("title", s.get("titre", ""))
+            lines.append(f"  - {t}" + (f" (`{sid}`)" if sid else ""))
     return "\n".join(lines)
 
 
@@ -1060,7 +1099,7 @@ def legifrance_derniers_jo(nb: int = 10) -> str:
     total = data.get("totalNbResult", len(items))
     lines = [f"**{len(items)} dernier(s) Journal(aux) Officiel(s)** (total API : {total})\n"]
     for jo in items:
-        date_p = jo.get("datePubli", "")          # clé réelle : datePubli
+        date_p = _fmt_date(jo.get("datePubli", ""))          # clé réelle : datePubli
         num    = jo.get("num", jo.get("numero", ""))  # clé réelle : num
         cid    = jo.get("cid", jo.get("id", ""))  # préférer cid (stable)
         titre  = jo.get("titre", "")
@@ -1083,26 +1122,31 @@ def legifrance_derniers_jo(nb: int = 10) -> str:
         "properties": {
             "date": {
                 "type": "string",
-                "description": "Date de parution du JO au format YYYY-MM-DD (ex: '2024-01-15')",
+                "description": "Date de debut YYYY-MM-DD (ex: '2026-03-01'). Pour un mois entier, combiner avec date_fin.",
+            },
+            "date_fin": {
+                "type": "string",
+                "description": "Date de fin YYYY-MM-DD (ex: '2026-03-31'). Si omis, recherche sur date seule.",
             },
             "jorf_id": {
                 "type": "string",
-                "description": "Identifiant du conteneur JORF (optionnel, ex: JORFCONT000049456397)",
+                "description": "Identifiant du conteneur JORF (prioritaire sur date, ex: JORFCONT000049456397)",
             },
             "recherche": {
                 "type": "string",
-                "description": "Texte à rechercher dans le sommaire (optionnel)",
+                "description": "Texte a rechercher dans les titres du sommaire (optionnel)",
             },
             "nb_resultats": {
                 "type": "integer",
                 "default": 20,
-                "description": "Nombre de résultats (défaut: 20)",
+                "description": "Nombre de resultats (defaut: 20, max: 100)",
             },
         },
     },
 )
 def legifrance_sommaire_jorf(
     date: Optional[str] = None,
+    date_fin: Optional[str] = None,
     jorf_id: Optional[str] = None,
     recherche: Optional[str] = None,
     nb_resultats: int = 20,
@@ -1111,8 +1155,16 @@ def legifrance_sommaire_jorf(
     body: Dict[str, Any] = {"pageNumber": 1, "pageSize": nb_resultats}
     if jorf_id:
         body["id"] = jorf_id
-    if date:
-        body["date"] = date
+    elif date:
+        # L'API attend ConsultDateRequest {year, month, dayOfMonth}, pas une string ISO
+        def _to_consult_date(d: str) -> Dict[str, int]:
+            parts = d.split("-")
+            req: Dict[str, int] = {"year": int(parts[0])}
+            if len(parts) > 1: req["month"] = int(parts[1])
+            if len(parts) > 2: req["dayOfMonth"] = int(parts[2])
+            return req
+        body["start"] = _to_consult_date(date)
+        body["end"]   = _to_consult_date(date_fin if date_fin else date)
     if recherche:
         body["searchText"] = recherche
     data  = c._req("/consult/jorfCont", body=body)
@@ -1131,7 +1183,7 @@ def legifrance_sommaire_jorf(
             continue
         titre  = cont.get("titre", "Sans titre")
         nature = cont.get("nature", "")
-        date_p = cont.get("datePubli", "")
+        date_p = _fmt_date(cont.get("datePubli", ""))
         cid    = cont.get("cid", cont.get("id", ""))
         num    = cont.get("num", "")
         suffix = " | ".join(filter(None, [nature, f"n°{num}" if num else "", date_p]))
@@ -1595,7 +1647,7 @@ def legifrance_historique_texte(
 ) -> str:
     c = _get_client()
     if date_consult is None:
-        date_consult = globals()["date"].today().isoformat()
+        date_consult = _date_today.today().isoformat()
     data     = c._req("/chrono/textCid", body={
         "textCid":     text_cid,
         "dateConsult": date_consult,
@@ -2419,7 +2471,7 @@ def legifrance_code_complet(code: str, date: Optional[str] = None) -> str:
         return str(e)
     data    = c._req("/consult/code", body={
         "textId": tid,
-        "date":   date or globals()["date"].today().isoformat(),
+        "date":   _date_today.today().isoformat() if date is None else date,
     })
     # ConsultTextResponse → title (swagger)
     titre   = data.get("title", code)  # clé réelle : title
@@ -2921,7 +2973,7 @@ def legifrance_legi_part(text_id: str, date: Optional[str] = None) -> str:
     c    = _get_client()
     data = c._req("/consult/legiPart", body={
         "textId": text_id,
-        "date":   date or globals()["date"].today().isoformat(),
+        "date":   _date_today.today().isoformat() if date is None else date,
     })
     # ConsultTextResponse → title, etat, dateParution, articles, sections (swagger)
     titre   = data.get("title", text_id)   # clé réelle : title (pas titre)

@@ -5,6 +5,16 @@ Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) — versioning
 
 ---
 
+## [3.0.4] — 2026-05-24
+
+### Corrigé
+- **`tools/legifrance_tools.py` — import `date` shadowé** : `from datetime import date` renommé en `from datetime import date as _date_today` — l'ancien import était masqué par le paramètre `date: Optional[str]` dans 5 fonctions (`legifrance_consulter_code`, `legifrance_loi_decret`, `legifrance_historique_texte`, `legifrance_code_complet`, `legifrance_code_par_ancien_id`), provoquant une `AttributeError` silencieuse dès qu'aucune date n'était fournie ; le contournement `globals()["date"].today()` présent dans le fichier était inopérant pour la même raison
+- **`tools/legifrance_tools.py` — `_fmt_search` extrayait l'ID de version au lieu du Chronical ID** : `SearchTitle` expose deux champs distincts : `id` (identifiant de version, ex: `JORFARTI000...`) et `cid` (Chronical ID stable, ex: `JORFTEXT000...`) ; le code utilisait `id`, causant un `400 Bad Request` systématique lors des appels à `legifrance_jorf` en aval
+- **`tools/legifrance_tools.py` — `legifrance_sommaire_jorf` passait la date en string ISO** : l'endpoint `/consult/jorfCont` attend un `ConsultDateRequest` (`{year, month, dayOfMonth}`) pour les champs `start`/`end`, pas une string `YYYY-MM-DD` — la date était ignorée ou rejetée ; ajout du paramètre `date_fin` pour permettre la recherche sur une période (ex: mois entier)
+- **`tools/legifrance_tools.py` — `legifrance_jorf` retournait une coquille vide** : la fonction comptait les articles sans les afficher et renvoyait vers `legifrance_jorf_part` sans fournir les IDs de sections nécessaires, laissant le modèle sans contenu exploitable ; les articles sont désormais retournés directement (jusqu'à 50), avec fallback sur les IDs de sections pour les textes volumineux
+
+---
+
 ## [3.0.3] — 2026-05-24
 
 ### Ajouté
