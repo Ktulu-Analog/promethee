@@ -9,6 +9,15 @@
 [![OpenAI compatible](https://img.shields.io/badge/API-OpenAI--compatible-412991?logo=openai&logoColor=white)](https://platform.openai.com/docs/api-reference)
 [![Qdrant](https://img.shields.io/badge/RAG-Qdrant-DC244C?logo=qdrant&logoColor=white)](https://qdrant.tech/)
 
+---
+
+Prométhée est un assistant IA web auto-hébergé, pensé pour les environnements professionnels qui ne peuvent pas — ou ne veulent pas — dépendre de services cloud tiers. Il s'appuie sur n'importe quel LLM compatible OpenAI (dont [Albert](https://albert.api.etalab.gouv.fr/), l'API souveraine de la DiNum) et expose une interface React fluide avec streaming.
+
+Ce qui le distingue : une suite d'outils directement activables par le LLM — recherche web, OCR, export bureautique (docx/pptx/xlsx/pdf), analyse de données, messagerie IMAP/SMTP, accès aux APIs juridiques Légifrance et Judilibre, intégration Grist — le tout complété par un RAG via Qdrant, une mémoire long terme vectorisée et un système de fichiers virtuel isolé par utilisateur. Le LLM peut même générer ses propres outils à la volée.
+
+Conçu pour être déployé en production avec Docker Compose en quelques minutes.
+
+---
 
 ![Ecran de connexion](assets/git-0.png)
 
