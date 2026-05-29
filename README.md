@@ -1,5 +1,14 @@
 # Prométhée v3.0.4
 
+[![Version](https://img.shields.io/badge/version-3.0.4-blue?style=flat-square)](https://github.com/Ktulu-Analog/promethee/releases)
+[![Licence](https://img.shields.io/badge/licence-AGPL--3.0-red?style=flat-square)](https://www.gnu.org/licenses/agpl-3.0.html)
+[![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-backend-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![React](https://img.shields.io/badge/React-frontend-61DAFB?style=flat-square&logo=react&logoColor=black)](https://react.dev/)
+[![Docker](https://img.shields.io/badge/Docker-compatible-2496ED?style=flat-square&logo=docker&logoColor=white)](https://www.docker.com/)
+[![OpenAI compatible](https://img.shields.io/badge/API-OpenAI--compatible-412991?style=flat-square&logo=openai&logoColor=white)](https://platform.openai.com/docs/api-reference)
+[![Qdrant](https://img.shields.io/badge/RAG-Qdrant-DC244C?style=flat-square&logo=qdrant&logoColor=white)](https://qdrant.tech/)
+
 
 ![Ecran de connexion](assets/git-0.png)
 
